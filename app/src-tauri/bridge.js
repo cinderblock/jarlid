@@ -42,7 +42,11 @@
   }
   function txt(name) {
     var el = qa(name);
-    return el ? (el.textContent || "").trim() : "";
+    if (!el) return "";
+    // Pandora wraps text in a scrolling marquee that CLONES its content element
+    // for long strings (producing doubled text). Read only the first clone.
+    var content = el.querySelector(".Marquee__wrapper__content");
+    return ((content || el).textContent || "").trim();
   }
   // Pandora keeps multiple <audio> elements (it preloads the next track), so the
   // first one is often the previous/ended track. Pick the live one.
@@ -116,7 +120,9 @@
       thumbUp: attrPressed("up"),
       thumbDown: attrPressed("down"),
     };
-    var key = data.title + "|" + data.artist + "|" + data.album;
+    // Include art in the key: Pandora updates the art element slightly after the
+    // title, so a title-only key would leave stale art on screen.
+    var key = data.title + "|" + data.artist + "|" + data.album + "|" + data.art;
     if (key !== lastKey) {
       lastKey = key;
       emit("engine://nowplaying", data);

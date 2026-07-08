@@ -115,11 +115,12 @@ fn show_engine(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebView2 was crashing on pandora.com (STATUS_ACCESS_VIOLATION) — a native renderer
-    // crash. Disabling GPU acceleration is the canonical fix for this on WebView2.
-    // (Do NOT add --autoplay-policy=no-user-gesture-required here — that also crashed it.)
+    // crash fixed by disabling GPU acceleration (that, not the autoplay flag, was the
+    // cause). With GPU disabled, the autoplay-policy flag is safe and lets the UI's play
+    // button start audio in the hidden engine without an in-page user gesture.
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-gpu --disable-gpu-compositing",
+        "--disable-gpu --disable-gpu-compositing --autoplay-policy=no-user-gesture-required",
     );
 
     tauri::Builder::default()

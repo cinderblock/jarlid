@@ -125,6 +125,46 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
 - [ ] Then: switch to lighter GPU flag (try `--use-angle=gl`), set engine `visible(false)` +
       re-enable nowplaying auto-hide for the real single-window experience.
 
+## Session/window lifecycle (2026-07-08)
+- Engine window: `visible(false)` by default; shown on `engine://needs-login`, re-hidden on
+  `engine://nowplaying`. Reveal manually with **Ctrl+Shift+E** (or the login-card button).
+- Engine CloseRequested → `prevent_close()` + hide (closing it would destroy WebView2 + kill audio).
+- Main window CloseRequested → `handle.exit(0)` (else hidden engine keeps a zombie process alive).
+- OPEN: with autoplay flag removed + engine hidden, cold-start playback needs a gesture. Does the
+  UI play button start audio when engine is hidden? If WebView2 blocks programmatic play(), options:
+  auto-reveal engine on failed start, or find a safe autoplay enable. NEEDS USER TEST.
+
+## Git
+- Repo initialized at project root 2026-07-08. First commit b8e1627. target/, node_modules/, dist/,
+  *.log ignored; lockfiles committed. Commit at each logical step going forward.
+
+## Fixes applied 2026-07-08 (post-first-run)
+- `[hidden]{display:none!important}` — our explicit `display` was overriding the attribute, so the
+  sign-in card (and player toggling) never actually hid. THIS was the stuck-card cause (not logic).
+- Layout: `#player` never scrolls; art/meta/controls is a fixed panel; only `#lyrics` scrolls
+  (min-height:0 chain). Narrow/portrait stacks art-on-top fixed, lyrics scroll below.
+- Times-broken-on-skip: bridge `audioEl()` now picks the actively-playing `<audio>` (Pandora
+  preloads next track as a 2nd element; we were reading the old/ended one).
+
+## Fixes applied 2026-07-08 (round 2)
+- Lyrics not loading: title was DOUBLED ("X...X...") because Pandora's `.Marquee` CLONES
+  `.Marquee__wrapper__content` for long titles. `txt()` now reads the first
+  `.Marquee__wrapper__content` → clean single title → LRCLIB matches. (Short titles weren't
+  cloned, which is why earlier tracks worked.)
+- Album art lagging behind: art element updates a beat after the title, so a title-only change key
+  left stale art. Bridge change-key now includes `data.art`; main.ts still gates lyric fetch on
+  title|artist|album so art-only re-emits refresh art without refetching lyrics.
+- Play button dead / autoplay: CORRECTED earlier misattribution — the STATUS_ACCESS_VIOLATION crash
+  was GPU, NOT the autoplay flag (removing autoplay alone didn't fix it; disabling GPU did). So
+  re-added `--autoplay-policy=no-user-gesture-required` ALONGSIDE `--disable-gpu` so the UI play
+  button can start audio in the hidden engine. NEEDS USER TEST: does play now start cold, no crash?
+
+## Publish (2026-07-08)
+- Target: https://github.com/cinderblock/pandora-desktop, MIT license, public.
+- LICENSE added (MIT, Cameron Tacklind, 2026). README has Disclaimer (unofficial, no DRM
+  circumvention, needs user's own paid account) + License section.
+- gh authed as cinderblock (ssh). Repo did not exist → create + push.
+
 ## Key files
 - `app/src-tauri/bridge.js` — injected into Pandora webview (the only DOM-coupled code).
 - `app/src-tauri/src/lib.rs` — commands + engine window + event relay.

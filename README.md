@@ -41,5 +41,16 @@ data keyed to app id `com.camer.pandora-desktop`).
 
 ## Status
 
-Early. v1 wires the bridge, backend, SMTC, and UI. During initial testing the engine window is
-kept visible; it becomes hidden once the bridge is verified. Tracked in `plans/`.
+Early but working: the bridge, backend, SMTC, synced lyrics, and UI are wired up and the engine
+runs hidden. Rough edges are tracked in `plans/pandora-desktop-app.md`.
+
+## Disclaimer
+
+This is an unofficial, personal project. It is not affiliated with, endorsed by, or supported by
+Pandora Media or SiriusXM. It does not circumvent DRM or provide any content itself — it drives
+Pandora's own authenticated web player in an embedded browser, so it requires your own valid
+(paid) Pandora account. Use it in accordance with Pandora's Terms of Service.
+
+## License
+
+[MIT](LICENSE) © Cameron Tacklind
