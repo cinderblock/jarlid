@@ -1,6 +1,7 @@
-# Pandora Desktop
+# Jarlid
 
-A custom desktop client for a **paid Pandora account**, built after Pandora discontinued their
+**Jarlid** (the lid of the jar — in the original myth, Pandora opened a *pithos*) is an
+unofficial desktop client for a **paid Pandora account**, built after Pandora discontinued their
 official desktop app. It wraps Pandora's own authenticated web player (so login, DRM, ad-free
 playback, and skips are all handled by Pandora) and overlays a redesigned UI that puts the
 current song's **album art and synced lyrics front and center**, with full **Windows system
@@ -46,8 +47,9 @@ runs hidden. Rough edges are tracked in `plans/pandora-desktop-app.md`.
 
 ## Disclaimer
 
-This is an unofficial, personal project. It is not affiliated with, endorsed by, or supported by
-Pandora Media or SiriusXM. It does not circumvent DRM or provide any content itself — it drives
+Jarlid is an unofficial, personal project. It is not affiliated with, endorsed by, or supported
+by Pandora Media or SiriusXM; "Pandora" is used only to identify the service this client
+connects to. It does not circumvent DRM or provide any content itself — it drives
 Pandora's own authenticated web player in an embedded browser, so it requires your own valid
 (paid) Pandora account. Use it in accordance with Pandora's Terms of Service.
 

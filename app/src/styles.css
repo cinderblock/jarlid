@@ -173,6 +173,16 @@ body {
   font-weight: 600;
 }
 
+#version {
+  position: fixed;
+  bottom: 8px;
+  right: 12px;
+  z-index: 6;
+  font-size: 0.65rem;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
 /* engine window toggle (top-right corner) */
 #engine-btn {
   position: fixed;

@@ -249,6 +249,20 @@ pub fn run() {
                 }
             });
 
+            // Dev-only: trace playhead events so the engine→host pipeline is
+            // observable in the dev log (every ~5s).
+            #[cfg(debug_assertions)]
+            {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static N: AtomicU64 = AtomicU64::new(0);
+                app.listen_any("engine://playhead", move |event| {
+                    let n = N.fetch_add(1, Ordering::Relaxed);
+                    if n % 10 == 0 {
+                        eprintln!("[playhead #{n}] {}", event.payload());
+                    }
+                });
+            }
+
             // Closing the main (UI) window quits the whole app — otherwise the
             // hidden engine window would keep the process alive with nothing visible.
             if let Some(main) = app.get_webview_window("main") {

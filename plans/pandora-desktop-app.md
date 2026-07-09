@@ -197,6 +197,18 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
 - Gotcha: `taskkill app.exe` does NOT kill the orphaned Vite dev server → next launch dies with
   "Port 1420 is already in use". Fix: netstat -ano | find 1420 LISTENING pid → taskkill //PID.
 
+## Round 6 (2026-07-09)
+- Icon STILL broken after aria fix → probe showed play_button aria-label stays "Play" even while
+  audio plays (Pandora a11y bug/quirk), so isPausedUi() always said paused. STOPPED trusting
+  Pandora's DOM & <audio> for state: UI now derives playing/paused from PLAYHEAD MOTION
+  (position advanced >0.05s between ticks → playing; static >1.6s → paused). Cannot lie.
+  bridge isPausedUi still feeds SMTC playbackState — fix similarly if SMTC state looks wrong.
+- Gallery thumbnails clickable → modal (art 180px, title/artist/album, played-at). History now
+  stores album + at:Date.now() (older entries lack them, handled).
+- IMPORTANT context: user now runs the INSTALLED release copy (dev instance died with old
+  session; no vite on :1420). Frontend changes require `bun run tauri build` + reinstall to
+  reach them. Dev-mode tip: taskkill app.exe does NOT kill vite (port 1420) or vice versa.
+
 ## Queued (user requests, not yet done)
 - Title marquee: DONE (hover-scrub, round 3). VERIFY with user.
 - Lighter GPU flag (`--use-angle=gl`) instead of full `--disable-gpu`.

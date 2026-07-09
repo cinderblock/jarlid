@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 
 // ---- types -------------------------------------------------------------
 interface NowPlaying {
@@ -292,24 +293,43 @@ function onPlayhead(ph: Playhead) {
   if (Math.abs(ph.position - lastPos) > 0.05) {
     lastPos = ph.position;
     lastMoveAt = now;
-    playIcon.hidden = true;
-    pauseIcon.hidden = false;
+    setPlayingIcon(true);
   } else if (now - lastMoveAt > 1600) {
-    playIcon.hidden = false;
-    pauseIcon.hidden = true;
+    setPlayingIcon(false);
   }
   highlightLine(ph.position);
 }
 
 // ---- controls ----------------------------------------------------------
 const cmd = (c: string) => invoke("player_cmd", { cmd: c }).catch(() => {});
-$("play").addEventListener("click", () => {
+// The icons are SVG elements: the `.hidden` PROPERTY does not exist on
+// SVGElement (it's HTMLElement-only), so it must be the attribute.
+let uiPlaying = false;
+function setPlayingIcon(playing: boolean) {
+  uiPlaying = playing;
+  if (playing) {
+    playIcon.setAttribute("hidden", "");
+    pauseIcon.removeAttribute("hidden");
+  } else {
+    pauseIcon.setAttribute("hidden", "");
+    playIcon.removeAttribute("hidden");
+  }
+}
+
+function togglePlayback() {
   // optimistic flip for instant feedback; playhead events correct it if wrong
-  const wasPaused = !playIcon.hidden;
-  playIcon.hidden = wasPaused;
-  pauseIcon.hidden = !wasPaused;
+  setPlayingIcon(!uiPlaying);
   cmd("toggle");
+}
+$("play").addEventListener("click", togglePlayback);
+// Space toggles playback (unless typing in the station search)
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && (e.target as HTMLElement).tagName !== "INPUT") {
+    e.preventDefault();
+    togglePlayback();
+  }
 });
+getVersion().then((v) => ($("version").textContent = `v${v}`)).catch(() => {});
 $("skip").addEventListener("click", () => cmd("skip"));
 $("replay").addEventListener("click", () => cmd("replay"));
 thumbUpBtn.addEventListener("click", () => cmd("thumbUp"));
