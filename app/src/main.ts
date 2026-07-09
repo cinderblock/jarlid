@@ -35,6 +35,7 @@ const loginHint = $("login-hint");
 const bg = $("bg");
 const artEl = $<HTMLImageElement>("art");
 const titleEl = $("title");
+const titleInner = $("title-inner");
 const artistEl = $("artist");
 const albumEl = $("album");
 const stationEl = $("station");
@@ -131,7 +132,12 @@ async function onNowPlaying(np: NowPlaying) {
   loginHint.hidden = true;
   player.hidden = false;
 
-  titleEl.textContent = np.title || "—";
+  titleInner.textContent = np.title || "—";
+  titleInner.style.transform = "translateX(0)";
+  // mark whether the title fits (hide the edge-fade hint if it does)
+  requestAnimationFrame(() =>
+    titleEl.classList.toggle("fits", titleInner.scrollWidth <= titleEl.clientWidth + 1)
+  );
   artistEl.textContent = np.artist || "";
   albumEl.textContent = np.album || "";
   stationEl.textContent = np.station || "";
@@ -221,6 +227,21 @@ window.addEventListener("keydown", (e) => {
   if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "e") {
     invoke("show_engine", { visible: true }).catch(() => {});
   }
+});
+
+// ---- title marquee: hover to scrub a long title with the mouse x-position ----
+titleEl.addEventListener("mousemove", (e) => {
+  const overflow = titleInner.scrollWidth - titleEl.clientWidth;
+  if (overflow <= 0) {
+    titleInner.style.transform = "translateX(0)";
+    return;
+  }
+  const rect = titleEl.getBoundingClientRect();
+  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  titleInner.style.transform = `translateX(${-ratio * overflow}px)`;
+});
+titleEl.addEventListener("mouseleave", () => {
+  titleInner.style.transform = "translateX(0)";
 });
 
 // ---- events from the engine bridge ------------------------------------

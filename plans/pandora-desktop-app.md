@@ -159,6 +159,24 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
   re-added `--autoplay-policy=no-user-gesture-required` ALONGSIDE `--disable-gpu` so the UI play
   button can start audio in the hidden engine. NEEDS USER TEST: does play now start cold, no crash?
 
+## Fixes applied 2026-07-08 (round 3)
+- Lyrics still failing on titles with parentheticals ("Somebody to Someone (I Just Wanna Fall in
+  Love)") even though display title was clean → it's LRCLIB MATCHING, not doubling. Rewrote
+  `fetch_lyrics`: `undouble()` (halve exactly-doubled strings, bulletproof vs any marquee leak),
+  search full title THEN `simplify_title()` (strip "(...)" and " - ..."), and `pick_best()` chooses
+  synced + closest-duration among results instead of blindly taking the first.
+- Play button dead + wrong icon while playing: switched play/pause/toggle to control the `<audio>`
+  element directly (a.play()/a.pause()) instead of clicking Pandora's button in a hidden window
+  (unreliable). Added `[bridge] cmd:` + `v3` version logging to confirm which bridge runs and
+  whether commands arrive. NEEDS USER TEST + engine console check.
+
+## Queued (user requests, not yet done)
+- Title marquee: hover a long title to scroll it; mouse x-position scrubs the text ahead/behind so
+  you can jump to the end without waiting. Frontend-only (title is currently 2-line clamp+ellipsis;
+  change to single-line scrub-on-hover). Do after lyrics/play confirmed.
+- Lighter GPU flag (`--use-angle=gl`) instead of full `--disable-gpu`.
+- Confirm Windows SMTC works (media keys / volume flyout).
+
 ## Publish (2026-07-08)
 - Target: https://github.com/cinderblock/pandora-desktop, MIT license, public.
 - LICENSE added (MIT, Cameron Tacklind, 2026). README has Disclaimer (unofficial, no DRM

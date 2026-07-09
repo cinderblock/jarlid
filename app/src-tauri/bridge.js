@@ -15,7 +15,7 @@
       console.log.apply(console, a);
     } catch (e) {}
   };
-  LOG("injected @", location.href, "top-frame:", window.top === window);
+  LOG("v3 injected @", location.href, "top-frame:", window.top === window);
   // Only run in the top frame — Pandora has cross-origin iframes we must ignore.
   if (window.top !== window) {
     LOG("skipping sub-frame");
@@ -193,17 +193,25 @@
     if (el) el.click();
   }
   function cmd(name, arg) {
+    LOG("cmd:", name);
+    var a = audioEl();
     switch (name) {
+      // Control the audio element directly — more reliable than clicking a button
+      // in a hidden window, and it keeps play/pause deterministic.
       case "play":
-      case "pause":
-      case "toggle": {
-        var a = audioEl();
-        // play_button toggles play/pause; only click when we need to change state
-        if (name === "toggle") click("play");
-        else if (a && a.paused && name === "play") click("play");
-        else if (a && !a.paused && name === "pause") click("play");
+        if (a) a.play().catch(function (e) { LOG("play() rejected", e && e.message); });
         break;
-      }
+      case "pause":
+        if (a) a.pause();
+        break;
+      case "toggle":
+        if (a) {
+          if (a.paused) a.play().catch(function (e) { LOG("play() rejected", e && e.message); });
+          else a.pause();
+        } else {
+          LOG("toggle: no audio element found");
+        }
+        break;
       case "skip": click("skip"); break;
       case "replay": click("replay"); break;
       case "thumbUp": click("up"); break;

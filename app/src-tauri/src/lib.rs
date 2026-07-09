@@ -8,8 +8,35 @@ struct Lyrics {
     source: String,
 }
 
-/// Fetch lyrics from LRCLIB. Tries the exact `get` endpoint first (best match, needs
-/// duration), then falls back to `search`. Returns synced (LRC) and/or plain text.
+/// If a string is exactly its first half repeated twice (Pandora marquee doubling
+/// that slipped through), return the single copy.
+fn undouble(s: &str) -> String {
+    let t = s.trim();
+    let n = t.len();
+    if n >= 2 && n % 2 == 0 {
+        let (a, b) = t.split_at(n / 2);
+        if a == b && !a.is_empty() {
+            return a.to_string();
+        }
+    }
+    t.to_string()
+}
+
+/// Strip trailing parentheticals / descriptors that hurt matching, e.g.
+/// "Song (I Just Wanna Fall in Love)" -> "Song", "Song - Single" -> "Song".
+fn simplify_title(s: &str) -> String {
+    let mut t = s.to_string();
+    if let Some(i) = t.find('(') {
+        t.truncate(i);
+    }
+    if let Some(i) = t.find(" - ") {
+        t.truncate(i);
+    }
+    t.trim().to_string()
+}
+
+/// Fetch lyrics from LRCLIB. Tries an exact `get`, then progressively looser
+/// `search`es, choosing the best synced result by closest duration.
 #[tauri::command]
 async fn fetch_lyrics(
     artist: String,
@@ -18,11 +45,15 @@ async fn fetch_lyrics(
     duration: Option<f64>,
 ) -> Result<Lyrics, String> {
     let client = reqwest::Client::builder()
-        .user_agent("PandoraDesktop (personal; https://github.com/cinderblock)")
+        .user_agent("PandoraDesktop (personal; https://github.com/cinderblock/pandora-desktop)")
         .build()
         .map_err(|e| e.to_string())?;
 
-    // 1) exact match
+    let artist = undouble(&artist);
+    let track = undouble(&track);
+    let album = album.map(|a| undouble(&a));
+
+    // 1) exact match via /get (needs duration)
     if let Some(dur) = duration {
         let mut q: Vec<(&str, String)> = vec![
             ("artist_name", artist.clone()),
@@ -34,12 +65,7 @@ async fn fetch_lyrics(
                 q.push(("album_name", al));
             }
         }
-        if let Ok(resp) = client
-            .get("https://lrclib.net/api/get")
-            .query(&q)
-            .send()
-            .await
-        {
+        if let Ok(resp) = client.get("https://lrclib.net/api/get").query(&q).send().await {
             if resp.status().is_success() {
                 if let Ok(v) = resp.json::<serde_json::Value>().await {
                     return Ok(from_lrclib(&v, "lrclib/get"));
@@ -48,29 +74,65 @@ async fn fetch_lyrics(
         }
     }
 
-    // 2) fuzzy search, take the first hit
-    let resp = client
-        .get("https://lrclib.net/api/search")
-        .query(&[("track_name", &track), ("artist_name", &artist)])
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Ok(Lyrics {
-            source: "none".into(),
-            ..Default::default()
-        });
+    // 2) search — full title first, then simplified title
+    let mut candidates: Vec<(&str, String)> = vec![("full", track.clone())];
+    let simple = simplify_title(&track);
+    if simple != track && !simple.is_empty() {
+        candidates.push(("simple", simple));
     }
-    let arr = resp
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Some(first) = arr.as_array().and_then(|a| a.first()) {
-        return Ok(from_lrclib(first, "lrclib/search"));
+    for (label, t) in candidates {
+        if let Ok(resp) = client
+            .get("https://lrclib.net/api/search")
+            .query(&[("track_name", t.as_str()), ("artist_name", artist.as_str())])
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(arr) = resp.json::<serde_json::Value>().await {
+                    if let Some(best) = pick_best(&arr, duration) {
+                        return Ok(from_lrclib(best, &format!("lrclib/search/{label}")));
+                    }
+                }
+            }
+        }
     }
+
     Ok(Lyrics {
         source: "none".into(),
         ..Default::default()
+    })
+}
+
+/// From a search-results array, prefer entries with synced lyrics and the closest
+/// duration to what's playing.
+fn pick_best<'a>(
+    arr: &'a serde_json::Value,
+    duration: Option<f64>,
+) -> Option<&'a serde_json::Value> {
+    let items = arr.as_array()?;
+    if items.is_empty() {
+        return None;
+    }
+    let target = duration.unwrap_or(0.0);
+    let score = |v: &serde_json::Value| -> (i32, f64) {
+        let has_synced = v
+            .get("syncedLyrics")
+            .and_then(|x| x.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        let dur = v.get("duration").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let dur_gap = if target > 0.0 && dur > 0.0 {
+            (dur - target).abs()
+        } else {
+            9999.0
+        };
+        // synced first (lower rank better), then smallest duration gap
+        (if has_synced { 0 } else { 1 }, dur_gap)
+    };
+    items.iter().min_by(|a, b| {
+        let (sa, ga) = score(a);
+        let (sb, gb) = score(b);
+        sa.cmp(&sb).then(ga.partial_cmp(&gb).unwrap_or(std::cmp::Ordering::Equal))
     })
 }
 
