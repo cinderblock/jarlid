@@ -30,7 +30,13 @@
           <img id="art" alt="Album art" />
         </div>
         <div class="meta">
-          <select id="station" title="Switch station"></select>
+          <div id="station-wrap">
+            <button id="station" title="Switch station"></button>
+            <div id="station-panel" hidden>
+              <input id="station-search" type="text" placeholder="Search stations…" spellcheck="false" />
+              <div id="station-list"></div>
+            </div>
+          </div>
           <h1 id="title"><span id="title-inner">—</span></h1>
           <div id="artist"></div>
           <div id="album"></div>
@@ -60,6 +66,8 @@
             <svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.3a2 2 0 0 0 2-1.7l1.4-9A2 2 0 0 0 19.7 9H14zM7 22H4.3A2.3 2.3 0 0 1 2 19.7v-6.4A2.3 2.3 0 0 1 4.3 11H7"/></svg>
           </button>
         </div>
+
+        <div id="history" title="Recently played"></div>
       </section>
 
       <section class="lyrics-pane">

@@ -97,27 +97,80 @@ body {
   margin-top: 26px;
   max-width: 100%;
 }
+#station-wrap {
+  position: relative;
+  display: inline-block;
+  margin-bottom: 10px;
+  max-width: 100%;
+}
 #station {
   text-transform: uppercase;
   letter-spacing: 0.14em;
   font-size: 0.72rem;
   color: var(--faint);
-  margin-bottom: 10px;
   background: transparent;
   border: none;
   outline: none;
   font-family: inherit;
-  text-align: center;
   cursor: pointer;
   max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 #station:hover {
   color: var(--dim);
 }
-#station option {
-  color: #111;
-  text-transform: none;
-  letter-spacing: normal;
+#station-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 280px;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(22, 22, 28, 0.92);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 8px;
+  z-index: 7;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.55);
+}
+#station-search {
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  outline: none;
+  border-radius: 8px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+}
+#station-search::placeholder {
+  color: var(--faint);
+}
+#station-list {
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.station-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  color: var(--dim);
+  cursor: pointer;
+  text-align: left;
+}
+.station-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--fg);
+}
+.station-item.active {
+  color: var(--fg);
+  font-weight: 600;
 }
 
 /* engine window toggle (top-right corner) */
@@ -268,6 +321,42 @@ button.icon.big:hover {
 }
 #thumbDown.active {
   color: #ff8f8f;
+}
+
+/* ---- recently-played gallery ---- */
+#history {
+  display: flex;
+  gap: 10px;
+  width: min(42vh, 100%);
+  margin-top: 22px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 6px 2px;
+  scroll-snap-type: x proximity;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+}
+#history::-webkit-scrollbar {
+  display: none;
+}
+#history:empty {
+  display: none;
+}
+.hist-item {
+  width: 54px;
+  height: 54px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  object-fit: cover;
+  scroll-snap-align: center;
+  opacity: 0.65;
+  transition: transform 0.15s, opacity 0.15s;
+  cursor: default;
+}
+.hist-item:hover {
+  transform: scale(1.35);
+  opacity: 1;
+  z-index: 2;
 }
 
 /* ---- lyrics ---- */

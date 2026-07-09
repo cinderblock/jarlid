@@ -57,7 +57,11 @@
     for (var i = 0; i < els.length; i++) {
       if (!els[i].paused && !els[i].ended) return els[i];
     }
-    // 2) a loaded, not-ended element with a real duration (covers paused state)
+    // 2) paused mid-track (currentTime > 0) — not the preloaded next track
+    for (var k = 0; k < els.length; k++) {
+      if (!els[k].ended && els[k].currentTime > 0) return els[k];
+    }
+    // 3) a loaded, not-ended element with a real duration
     for (var j = 0; j < els.length; j++) {
       if (!els[j].ended && isFinite(els[j].duration) && els[j].duration > 0)
         return els[j];
@@ -159,6 +163,18 @@
     return el.getAttribute("aria-pressed") === "true" || el.classList.contains("is-active");
   }
 
+  // Pandora's own play button is the most reliable playing/paused signal: its
+  // aria-label reads "Pause" while playing and "Play" while paused. The <audio>
+  // elements lie during crossfade/preload.
+  function isPausedUi() {
+    var el = qa("play");
+    var aria = el ? el.getAttribute("aria-label") || "" : "";
+    if (/pause/i.test(aria)) return false;
+    if (/play/i.test(aria)) return true;
+    var a = audioEl();
+    return a ? a.paused : true;
+  }
+
   // ---- playhead (for lyric sync) ----------------------------------------
   function emitPlayhead() {
     var a = audioEl();
@@ -166,7 +182,7 @@
     emit("engine://playhead", {
       position: a.currentTime || 0,
       duration: isFinite(a.duration) ? a.duration : 0,
-      paused: a.paused,
+      paused: isPausedUi(),
       volume: a.volume,
     });
   }
@@ -203,8 +219,7 @@
 
   function reflectPlaybackState() {
     if (!("mediaSession" in navigator)) return;
-    var a = audioEl();
-    if (a) navigator.mediaSession.playbackState = a.paused ? "paused" : "playing";
+    navigator.mediaSession.playbackState = isPausedUi() ? "paused" : "playing";
   }
 
   // ---- commands (called from host via eval, and by SMTC handlers) --------

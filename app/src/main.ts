@@ -38,7 +38,11 @@ const titleEl = $("title");
 const titleInner = $("title-inner");
 const artistEl = $("artist");
 const albumEl = $("album");
-const stationEl = $<HTMLSelectElement>("station");
+const stationBtn = $("station");
+const stationPanel = $("station-panel");
+const stationSearch = $<HTMLInputElement>("station-search");
+const stationList = $("station-list");
+const histEl = $("history");
 const barEl = $("bar");
 const tCur = $("t-cur");
 const tDur = $("t-dur");
@@ -140,11 +144,7 @@ async function onNowPlaying(np: NowPlaying) {
   );
   artistEl.textContent = np.artist || "";
   albumEl.textContent = np.album || "";
-  // stations event owns the dropdown; until it arrives, show the active station
-  if (stationEl.options.length === 0 && np.station) {
-    const opt = new Option(np.station, np.station, true, true);
-    stationEl.appendChild(opt);
-  }
+  if (np.station) stationBtn.textContent = np.station;
   setThumbs(np.thumbUp, np.thumbDown);
 
   const art = np.art || np.artFallback;
@@ -161,9 +161,55 @@ async function onNowPlaying(np: NowPlaying) {
     currentKey = key;
     syncedLines = null;
     activeLineIdx = -1;
+    pushHistory(np);
     await loadLyrics(np);
   }
 }
+
+// ---- recently-played gallery -------------------------------------------
+interface HistItem {
+  art: string;
+  title: string;
+  artist: string;
+}
+let history: HistItem[] = [];
+try {
+  history = JSON.parse(localStorage.getItem("history") || "[]");
+} catch {
+  history = [];
+}
+function renderHistory() {
+  histEl.innerHTML = "";
+  for (const h of history) {
+    const img = new Image();
+    img.src = h.art;
+    img.title = `${h.title} — ${h.artist}`;
+    img.className = "hist-item";
+    img.loading = "lazy";
+    histEl.appendChild(img);
+  }
+}
+function pushHistory(np: NowPlaying) {
+  const art = np.artFallback || np.art;
+  if (!art || !np.title) return;
+  if (history[0] && history[0].title === np.title && history[0].artist === np.artist) return;
+  history.unshift({ art, title: np.title, artist: np.artist });
+  history = history.slice(0, 40);
+  localStorage.setItem("history", JSON.stringify(history));
+  renderHistory();
+}
+renderHistory();
+// vertical wheel scrolls the strip horizontally
+histEl.addEventListener(
+  "wheel",
+  (e) => {
+    if (e.deltaY) {
+      histEl.scrollLeft += e.deltaY;
+      e.preventDefault();
+    }
+  },
+  { passive: false }
+);
 
 function setThumbs(up: boolean, down: boolean) {
   thumbUpBtn.classList.toggle("active", !!up);
@@ -242,20 +288,51 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-// ---- station switching --------------------------------------------------
+// ---- station switching (searchable picker) -------------------------------
 let stationNames: string[] = [];
-stationEl.addEventListener("change", () => {
-  const idx = stationEl.selectedIndex;
-  if (idx >= 0 && idx < stationNames.length) cmd(`station:${idx}`);
+let activeStation = "";
+
+function renderStationList(filter = "") {
+  const f = filter.trim().toLowerCase();
+  stationList.innerHTML = "";
+  stationNames.forEach((name, i) => {
+    if (f && !name.toLowerCase().includes(f)) return;
+    const item = document.createElement("div");
+    item.className = "station-item" + (name === activeStation ? " active" : "");
+    item.textContent = name;
+    item.addEventListener("click", () => {
+      cmd(`station:${i}`);
+      stationBtn.textContent = name;
+      stationPanel.hidden = true;
+    });
+    stationList.appendChild(item);
+  });
+}
+stationBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  stationPanel.hidden = !stationPanel.hidden;
+  if (!stationPanel.hidden) {
+    stationSearch.value = "";
+    renderStationList();
+    stationSearch.focus();
+  }
+});
+stationSearch.addEventListener("input", () => renderStationList(stationSearch.value));
+window.addEventListener("click", (e) => {
+  if (!stationPanel.hidden && !(e.target as HTMLElement).closest("#station-wrap")) {
+    stationPanel.hidden = true;
+  }
+});
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") stationPanel.hidden = true;
 });
 listen<{ stations: string[]; active: string }>("engine://stations", (e) => {
   const { stations, active } = e.payload;
   if (!stations.length) return;
   stationNames = stations;
-  stationEl.innerHTML = "";
-  stations.forEach((name, i) => {
-    stationEl.appendChild(new Option(name, String(i), false, name === active));
-  });
+  activeStation = active;
+  if (active) stationBtn.textContent = active;
+  if (!stationPanel.hidden) renderStationList(stationSearch.value);
 });
 
 // ---- title marquee: hover to scrub a long title with the mouse x-position ----

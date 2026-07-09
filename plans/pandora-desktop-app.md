@@ -183,11 +183,30 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
   binary at app/src-tauri/target/release/app.exe, installers under
   app/src-tauri/target/release/bundle/ (nsis/msi). VERIFY build succeeds + record paths.
 
+## Round 5 (2026-07-09)
+- Play/pause icon STILL wrong after optimistic flip → root cause hypothesis: `<audio>.paused` lies
+  during Pandora's crossfade/preload. New source of truth: Pandora play button's aria-label
+  ("Pause" while playing / "Play" while paused) via `isPausedUi()` — used for playhead events AND
+  mediaSession playbackState. Also audioEl() now prefers paused-mid-track (currentTime>0) over
+  preloaded-next. VERIFY with user.
+- Recently-played gallery: horizontal scrollable art strip under controls (localStorage
+  "history", cap 40, lazy imgs, wheel→horizontal, hover zoom). iTunes-CoverFlow-ish; flat not 3D.
+- Station picker v2: button + panel with SEARCH input filtering the scraped station list.
+  LIMITATION: list = Pandora's Now-Playing rail (recents, ~6); full collection would need
+  scraping My Collection page — future work if user wants.
+- Gotcha: `taskkill app.exe` does NOT kill the orphaned Vite dev server → next launch dies with
+  "Port 1420 is already in use". Fix: netstat -ano | find 1420 LISTENING pid → taskkill //PID.
+
 ## Queued (user requests, not yet done)
 - Title marquee: DONE (hover-scrub, round 3). VERIFY with user.
 - Lighter GPU flag (`--use-angle=gl`) instead of full `--disable-gpu`.
 - Confirm Windows SMTC works (media keys / volume flyout).
 - Lyrics matching for parenthetical titles: VERIFY round-3 fix with user.
+- Station full-collection list (scrape My Collection) if rail-only is insufficient.
+- Q4 (engine-less design) answered: NO without abandoning ban-safe web-session approach — engine
+  IS the auth+DRM+audio backend; hidden window ≈ idle WebView2 process (~150MB, ~0% CPU). The
+  alternative (direct REST + own audio pipeline) = unofficial-client territory = ban risk (see
+  "Strategy"). Don't reopen without new info (e.g. official API access granted).
 
 ## Publish (2026-07-08)
 - Target: https://github.com/cinderblock/pandora-desktop, MIT license, public.
