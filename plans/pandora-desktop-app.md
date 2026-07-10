@@ -244,6 +244,19 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
 - Tooltips: all native title= removed per user rule (saved to memory: no-native-title-tooltips);
   custom attachTip() tooltip on history thumbs.
 
+## Round 10 (2026-07-10): native SMTC — v0.3.0
+- User confirmed SMTC does NOT work via the engine's MediaSession (WebView2 never bridges it to
+  Windows). Implemented the planned fallback: `souvlaki` 0.8.3 native SMTC from Rust.
+  - hwnd from main window; metadata from engine://nowplaying (cover_url = artFallback 500px);
+    playback state motion-derived from engine://playhead (same logic as UI icon), throttled to
+    state changes + 5s progress refresh; SMTC events → engine_cmd (play/pause/toggle/skip/replay).
+  - Added --disable-features=HardwareMediaKeyHandling to WebView2 args so media keys route to
+    our session, not the webview.
+  - player_cmd refactored to engine_cmd() helper shared by command + SMTC callback.
+- NEEDS USER TEST (v0.3.0): media keys, volume-flyout panel (title/artist/art), lock screen.
+- User asked for "play-pause buttons on the start menu" — the Win11 media panel (quick settings /
+  volume flyout / lock screen) IS this SMTC integration; there is no separate start-menu media API.
+
 ## Queued (user requests, not yet done)
 - Title marquee: DONE (hover-scrub, round 3). VERIFY with user.
 - Lighter GPU flag (`--use-angle=gl`) instead of full `--disable-gpu`.

@@ -40,16 +40,31 @@
   function qa(name) {
     return document.querySelector('[data-qa="' + QA[name] + '"]');
   }
+  // Collapse a string that is exactly one part repeated k times ("AbcAbcAbc" →
+  // "Abc"). Pandora's marquee clones its content 2-3x while scrolling.
+  function derepeat(s) {
+    s = (s || "").trim();
+    for (var k = 4; k >= 2; k--) {
+      if (s.length >= k && s.length % k === 0) {
+        var part = s.slice(0, s.length / k);
+        var rebuilt = "";
+        for (var i = 0; i < k; i++) rebuilt += part;
+        if (rebuilt === s) return derepeat(part);
+      }
+    }
+    return s;
+  }
+
   function txt(name) {
     var el = qa(name);
     if (!el) return "";
-    // Pandora wraps text in a scrolling marquee that CLONES its content element
-    // for long strings (producing doubled text). Read only the first clone.
+    // Prefer the marquee's first content node, then collapse any cloned repeats.
     var content = el.querySelector(".Marquee__wrapper__content");
-    return ((content || el).textContent || "").trim();
+    return derepeat((content || el).textContent || "");
   }
-  // Pandora keeps multiple <audio> elements (it preloads the next track), so the
-  // first one is often the previous/ended track. Pick the live one.
+  // Pandora keeps multiple <audio> elements (preloaded next track AND leftover
+  // previous tracks after skips). Pick the live one; among paused candidates
+  // prefer the NEWEST (later in the DOM) — stale old tracks linger first.
   function audioEl() {
     var els = document.querySelectorAll("audio");
     if (!els.length) return null;
@@ -57,17 +72,24 @@
     for (var i = 0; i < els.length; i++) {
       if (!els[i].paused && !els[i].ended) return els[i];
     }
-    // 2) paused mid-track (currentTime > 0) — not the preloaded next track
-    for (var k = 0; k < els.length; k++) {
+    // 2) newest paused-mid-track element
+    for (var k = els.length - 1; k >= 0; k--) {
       if (!els[k].ended && els[k].currentTime > 0) return els[k];
     }
-    // 3) a loaded, not-ended element with a real duration
-    for (var j = 0; j < els.length; j++) {
+    // 3) newest loaded element with a real duration
+    for (var j = els.length - 1; j >= 0; j--) {
       if (!els[j].ended && isFinite(els[j].duration) && els[j].duration > 0)
         return els[j];
     }
-    // 3) fall back to the most recently added element
     return els[els.length - 1];
+  }
+
+  function isActuallyPlaying() {
+    var els = document.querySelectorAll("audio");
+    for (var i = 0; i < els.length; i++) {
+      if (!els[i].paused && !els[i].ended) return true;
+    }
+    return false;
   }
 
   // Pandora album art URLs embed size as _<w>W_<h>H.jpg — request a larger one for the hero.
@@ -229,23 +251,18 @@
   }
   function cmd(name, arg) {
     LOG("cmd:", name);
-    var a = audioEl();
     switch (name) {
-      // Control the audio element directly — more reliable than clicking a button
-      // in a hidden window, and it keeps play/pause deterministic.
+      // Play/pause go through Pandora's own button: its logic always targets the
+      // CURRENT track. Driving <audio> elements directly resurrected stale
+      // leftover tracks after skips (play() on the wrong element).
       case "play":
-        if (a) a.play().catch(function (e) { LOG("play() rejected", e && e.message); });
+        if (!isActuallyPlaying()) click("play");
         break;
       case "pause":
-        if (a) a.pause();
+        if (isActuallyPlaying()) click("play");
         break;
       case "toggle":
-        if (a) {
-          if (a.paused) a.play().catch(function (e) { LOG("play() rejected", e && e.message); });
-          else a.pause();
-        } else {
-          LOG("toggle: no audio element found");
-        }
+        click("play");
         break;
       case "skip": click("skip"); break;
       case "replay": click("replay"); break;

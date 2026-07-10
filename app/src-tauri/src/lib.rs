@@ -8,15 +8,17 @@ struct Lyrics {
     source: String,
 }
 
-/// If a string is exactly its first half repeated twice (Pandora marquee doubling
-/// that slipped through), return the single copy.
+/// Collapse a string that is exactly one part repeated 2-4 times (Pandora's
+/// marquee clones its content while scrolling: "AbcAbcAbc" -> "Abc").
 fn undouble(s: &str) -> String {
     let t = s.trim();
     let n = t.len();
-    if n >= 2 && n % 2 == 0 {
-        let (a, b) = t.split_at(n / 2);
-        if a == b && !a.is_empty() {
-            return a.to_string();
+    for k in (2..=4).rev() {
+        if n >= k && n % k == 0 {
+            let part = &t[..n / k];
+            if !part.is_empty() && t.as_bytes().chunks(n / k).all(|c| c == part.as_bytes()) {
+                return undouble(part);
+            }
         }
     }
     t.to_string()
@@ -189,54 +191,85 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     })
     .map_err(|e| format!("SMTC init: {e:?}"))?;
 
+    // Shared state: the controls live in a cell so the button callback can
+    // report the expected playback state to Windows IMMEDIATELY — waiting for
+    // motion-derived confirmation leaves the SMTC buttons unresponsive for
+    // seconds after each press.
+    let cell: Arc<Mutex<Option<MediaControls>>> = Arc::new(Mutex::new(None));
+    let playing_now = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let optimistic_until = Arc::new(Mutex::new(Instant::now()));
+
     let handle = app.handle().clone();
+    let cb_cell = cell.clone();
+    let cb_playing = playing_now.clone();
+    let cb_until = optimistic_until.clone();
     controls
         .attach(move |event: MediaControlEvent| {
-            let cmd = match event {
-                MediaControlEvent::Play => "play",
-                MediaControlEvent::Pause => "pause",
-                MediaControlEvent::Toggle => "toggle",
-                MediaControlEvent::Next => "skip",
-                MediaControlEvent::Previous => "replay",
-                MediaControlEvent::Stop => "pause",
+            use std::sync::atomic::Ordering;
+            let (cmd, desired) = match event {
+                MediaControlEvent::Play => ("play", Some(true)),
+                MediaControlEvent::Pause => ("pause", Some(false)),
+                MediaControlEvent::Toggle => {
+                    ("toggle", Some(!cb_playing.load(Ordering::Relaxed)))
+                }
+                MediaControlEvent::Next => ("skip", None),
+                MediaControlEvent::Previous => ("replay", None),
+                MediaControlEvent::Stop => ("pause", Some(false)),
                 _ => return,
             };
             let _ = engine_cmd(&handle, cmd);
+            if let Some(p) = desired {
+                cb_playing.store(p, Ordering::Relaxed);
+                *cb_until.lock().unwrap() = Instant::now() + Duration::from_secs(2);
+                if let Some(c) = cb_cell.lock().unwrap().as_mut() {
+                    let state = if p {
+                        MediaPlayback::Playing { progress: None }
+                    } else {
+                        MediaPlayback::Paused { progress: None }
+                    };
+                    let _ = c.set_playback(state);
+                }
+            }
         })
         .map_err(|e| format!("SMTC attach: {e:?}"))?;
-
-    let controls = Arc::new(Mutex::new(controls));
+    *cell.lock().unwrap() = Some(controls);
 
     // Track metadata from the bridge.
-    let c_meta = controls.clone();
+    let c_meta = cell.clone();
     app.listen_any("engine://nowplaying", move |event| {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
             return;
         };
         let s = |k: &str| v.get(k).and_then(|x| x.as_str()).filter(|x| !x.is_empty());
-        let mut c = c_meta.lock().unwrap();
-        let _ = c.set_metadata(MediaMetadata {
-            title: s("title"),
-            artist: s("artist"),
-            album: s("album"),
-            cover_url: s("artFallback").or_else(|| s("art")),
-            duration: None,
-        });
+        if let Some(c) = c_meta.lock().unwrap().as_mut() {
+            let _ = c.set_metadata(MediaMetadata {
+                title: s("title"),
+                artist: s("artist"),
+                album: s("album"),
+                cover_url: s("artFallback").or_else(|| s("art")),
+                duration: None,
+            });
+        }
     });
 
     // Playback state, motion-derived from the playhead (same logic as the UI:
     // Pandora's DOM and audio elements misreport paused, position motion doesn't).
-    let c_play = controls.clone();
-    let motion = Arc::new(Mutex::new((f64::MIN, Instant::now(), false, Instant::now())));
+    // During the optimistic grace window the button-press state wins.
+    let c_play = cell.clone();
+    let p_now = playing_now.clone();
+    let p_until = optimistic_until.clone();
+    let motion = Arc::new(Mutex::new((f64::MIN, Instant::now(), Instant::now())));
     app.listen_any("engine://playhead", move |event| {
+        use std::sync::atomic::Ordering;
         let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
             return;
         };
         let pos = v.get("position").and_then(|x| x.as_f64()).unwrap_or(0.0);
         let now = Instant::now();
         let mut m = motion.lock().unwrap();
-        let (ref mut last_pos, ref mut last_move, ref mut playing, ref mut last_sent) = *m;
-        let mut new_playing = *playing;
+        let (ref mut last_pos, ref mut last_move, ref mut last_sent) = *m;
+        let was_playing = p_now.load(Ordering::Relaxed);
+        let mut new_playing = was_playing;
         if (pos - *last_pos).abs() > 0.05 {
             *last_pos = pos;
             *last_move = now;
@@ -244,9 +277,12 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         } else if now.duration_since(*last_move) > Duration::from_millis(1600) {
             new_playing = false;
         }
+        if now < *p_until.lock().unwrap() {
+            new_playing = was_playing; // grace: don't fight a fresh button press
+        }
         // Update SMTC on state change, or every 5s to keep progress fresh.
-        if new_playing != *playing || now.duration_since(*last_sent) > Duration::from_secs(5) {
-            *playing = new_playing;
+        if new_playing != was_playing || now.duration_since(*last_sent) > Duration::from_secs(5) {
+            p_now.store(new_playing, Ordering::Relaxed);
             *last_sent = now;
             let progress = Some(MediaPosition(Duration::from_secs_f64(pos.max(0.0))));
             let state = if new_playing {
@@ -254,7 +290,9 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
             } else {
                 MediaPlayback::Paused { progress }
             };
-            let _ = c_play.lock().unwrap().set_playback(state);
+            if let Some(c) = c_play.lock().unwrap().as_mut() {
+                let _ = c.set_playback(state);
+            }
         }
     });
 
@@ -306,6 +344,13 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Remember main-window position/size across launches. The engine window
+        // is excluded — it's a hidden background window with managed visibility.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["engine"])
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             fetch_lyrics,
             player_cmd,
