@@ -521,12 +521,42 @@ pub fn run() {
 
             // Closing the main (UI) window quits the whole app — otherwise the
             // hidden engine window would keep the process alive with nothing visible.
+            //
+            // Window geometry is also saved ~1s after any move/resize (debounced):
+            // the window-state plugin only writes on clean exit, so without this a
+            // kill (installer upgrade, crash) would lose the position.
             if let Some(main) = app.get_webview_window("main") {
-                let handle = app.handle().clone();
-                main.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { .. } = event {
-                        handle.exit(0);
+                use std::sync::{Arc, Mutex};
+                use std::time::{Duration, Instant};
+                use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+
+                let dirty: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+                let saver_dirty = dirty.clone();
+                let saver_handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(Duration::from_millis(500));
+                    let due = {
+                        let mut d = saver_dirty.lock().unwrap();
+                        match *d {
+                            Some(t) if t.elapsed() > Duration::from_millis(800) => {
+                                *d = None;
+                                true
+                            }
+                            _ => false,
+                        }
+                    };
+                    if due {
+                        let _ = saver_handle.save_window_state(StateFlags::all());
                     }
+                });
+
+                let handle = app.handle().clone();
+                main.on_window_event(move |event| match event {
+                    tauri::WindowEvent::CloseRequested { .. } => handle.exit(0),
+                    tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                        *dirty.lock().unwrap() = Some(Instant::now());
+                    }
+                    _ => {}
                 });
             }
             Ok(())

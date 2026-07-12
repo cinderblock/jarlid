@@ -331,6 +331,16 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
   blanked.
 - UI unchanged from 0.4.0 (same remote://state contract).
 
+## Round 17 (2026-07-12): v0.5.0 — start music on WiiM from Jarlid
+- Speaker button (top-right, appears when a network player is discovered; hidden otherwise)
+  → "Play on <device>" panel listing WiiM presets via `getPresetInfo` (number/name/source/
+  picurl; LinkPlay strings-as-numbers handled by jnum()). Click → `MCUKeyShortClick:N` (fires
+  like the hardware preset button, N=1-12). remote_cmd gained "preset:N"; new `remote_presets`
+  command. Presets are the sanctioned "start playback" surface — full catalog browse lives in
+  WiiM's cloud app, not the local API.
+- User flow: click speaker → pick "Dove Cameron Radio" preset → WiiM starts it → remote mode
+  takes the screen with lyrics. Presets are configured in the WiiM Home app (up to 12).
+
 ## Queued (user requests, not yet done)
 - Title marquee: DONE (hover-scrub, round 3). VERIFY with user.
 - Lighter GPU flag (`--use-angle=gl`) instead of full `--disable-gpu`.
