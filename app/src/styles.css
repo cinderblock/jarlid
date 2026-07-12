@@ -460,6 +460,76 @@ button.icon.big:hover {
   color: #ff8f8f;
 }
 
+/* ---- remote volume (network player) ---- */
+#remote-vol-wrap {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  width: min(42vh, 100%);
+  margin-top: 18px;
+  color: var(--faint);
+}
+body.remote #remote-vol-wrap {
+  display: flex;
+}
+#remote-vol-wrap svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  flex: 0 0 auto;
+}
+#remote-vol {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.16);
+  outline: none;
+  cursor: pointer;
+}
+#remote-vol::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--fg);
+}
+
+/* ---- update banner ---- */
+#update-banner {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: rgba(22, 22, 28, 0.92);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 10px 12px 10px 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  font-size: 0.85rem;
+}
+#update-btn {
+  background: var(--fg);
+  color: #0a0a0c;
+  border: none;
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 /* ---- recently-played gallery ---- */
 #history {
   display: flex;

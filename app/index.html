@@ -13,6 +13,10 @@
     <div id="scrim"></div>
 
     <div id="version"></div>
+    <div id="update-banner" hidden>
+      <span id="update-text"></span>
+      <button id="update-btn">Install &amp; restart</button>
+    </div>
     <div id="tooltip" hidden></div>
     <button id="engine-btn">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14 0 18M12 3c-3 3.5-3 14 0 18"/></svg>
@@ -87,6 +91,11 @@
           <button id="thumbUp" class="icon">
             <svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.3a2 2 0 0 0 2-1.7l1.4-9A2 2 0 0 0 19.7 9H14zM7 22H4.3A2.3 2.3 0 0 1 2 19.7v-6.4A2.3 2.3 0 0 1 4.3 11H7"/></svg>
           </button>
+        </div>
+
+        <div id="remote-vol-wrap">
+          <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+          <input id="remote-vol" type="range" min="0" max="100" step="1" />
         </div>
 
         <div id="history"></div>

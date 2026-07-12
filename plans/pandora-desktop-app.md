@@ -341,6 +341,14 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
 - User flow: click speaker → pick "Dove Cameron Radio" preset → WiiM starts it → remote mode
   takes the screen with lyrics. Presets are configured in the WiiM Home app (up to 12).
 
+## Round 18 (2026-07-12): v0.5.1 — window-state save timing
+- User caught it: tauri-plugin-window-state writes only on clean exit → kills (installer
+  upgrade taskkill, crash) lose geometry. Added debounced saver: Moved/Resized events mark
+  dirty; background thread saves via AppHandleExt::save_window_state ~800ms after the last
+  event. Presets Q&A: presets ARE required to *start* WiiM playback from Jarlid (12-slot local
+  API limit); remote display/lyrics work for any source; audio-capture streamer remains the
+  only path past the ceiling (future).
+
 ## Queued (user requests, not yet done)
 - Title marquee: DONE (hover-scrub, round 3). VERIFY with user.
 - Lighter GPU flag (`--use-angle=gl`) instead of full `--disable-gpu`.

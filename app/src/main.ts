@@ -37,6 +37,7 @@ interface RemoteState {
   art: string;
   position: number;
   duration: number;
+  volume: number;
 }
 
 // ---- element helpers ---------------------------------------------------
@@ -444,7 +445,10 @@ window.addEventListener("keydown", (e) => {
 });
 
 // ---- station switching (searchable picker) -------------------------------
+// With ids (full collection via Pandora's web API) selection navigates to the
+// station directly; without (rail fallback) it clicks the nth rail item.
 let stationNames: string[] = [];
+let stationIds: string[] | null = null;
 let activeStation = "";
 
 function renderStationList(filter = "") {
@@ -456,7 +460,8 @@ function renderStationList(filter = "") {
     item.className = "station-item" + (name === activeStation ? " active" : "");
     item.textContent = name;
     item.addEventListener("click", () => {
-      cmd(`station:${i}`);
+      const id = stationIds?.[i];
+      cmd(id ? `playStation:${id}` : `station:${i}`);
       stationBtn.textContent = name;
       stationPanel.hidden = true;
     });
@@ -481,14 +486,20 @@ window.addEventListener("click", (e) => {
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") stationPanel.hidden = true;
 });
-listen<{ stations: string[]; active: string }>("engine://stations", (e) => {
-  const { stations, active } = e.payload;
-  if (!stations.length) return;
-  stationNames = stations;
-  activeStation = active;
-  if (active) stationBtn.textContent = active;
-  if (!stationPanel.hidden) renderStationList(stationSearch.value);
-});
+listen<{ stations: string[]; ids: string[] | null; active: string }>(
+  "engine://stations",
+  (e) => {
+    const { stations, ids, active } = e.payload;
+    if (!stations.length) return;
+    // Never downgrade from the full collection back to the rail list.
+    if (stationIds && !ids) return;
+    stationNames = stations;
+    stationIds = ids;
+    activeStation = active;
+    if (active) stationBtn.textContent = active;
+    if (!stationPanel.hidden) renderStationList(stationSearch.value);
+  }
+);
 
 // ---- title marquee: hover to scrub a long title with the mouse x-position ----
 titleEl.addEventListener("mousemove", (e) => {
@@ -595,6 +606,7 @@ listen<RemoteState>("remote://state", (e) => {
   remote = st && st.title ? st : null;
   remoteAt = Date.now();
   updateMode();
+  reflectRemoteVolume();
 });
 
 // ---- "Play on Speakers": the network player's presets --------------------
@@ -664,6 +676,42 @@ window.addEventListener("click", (e) => {
 });
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") speakersPanel.hidden = true;
+});
+
+// ---- remote volume slider -------------------------------------------------
+const remoteVol = $<HTMLInputElement>("remote-vol");
+let volDragging = false;
+let volSendTimer: number | undefined;
+remoteVol.addEventListener("pointerdown", () => (volDragging = true));
+remoteVol.addEventListener("pointerup", () => (volDragging = false));
+remoteVol.addEventListener("input", () => {
+  clearTimeout(volSendTimer);
+  volSendTimer = window.setTimeout(() => {
+    invoke("remote_cmd", { cmd: `vol:${remoteVol.value}` }).catch(() => {});
+  }, 150);
+});
+function reflectRemoteVolume() {
+  if (!remote || volDragging) return;
+  if (remote.volume >= 0) remoteVol.value = String(Math.round(remote.volume));
+  remoteVol.parentElement!.style.visibility = remote.volume >= 0 ? "visible" : "hidden";
+}
+
+// ---- update banner ---------------------------------------------------------
+const updateBanner = $("update-banner");
+const updateText = $("update-text");
+const updateBtn = $("update-btn");
+listen<string>("app://update-available", (e) => {
+  updateText.textContent = `Jarlid v${e.payload} is available`;
+  updateBanner.hidden = false;
+});
+updateBtn.addEventListener("click", () => {
+  updateBtn.textContent = "Installing…";
+  (updateBtn as HTMLButtonElement).disabled = true;
+  invoke("install_update").catch((err) => {
+    updateText.textContent = `Update failed: ${err}`;
+    updateBtn.textContent = "Retry";
+    (updateBtn as HTMLButtonElement).disabled = false;
+  });
 });
 
 // Interpolate the remote position between the 1s device polls.

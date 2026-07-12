@@ -23,6 +23,8 @@ pub struct RemoteState {
     pub art: String,
     pub position: f64,
     pub duration: f64,
+    /// 0-100; -1 when the device doesn't report volume (generic DLNA fallback).
+    pub volume: f64,
 }
 
 #[derive(Clone)]
@@ -212,6 +214,7 @@ async fn poll_linkplay(client: &reqwest::Client, base: &str, name: &str) -> Opti
     let playing = matches!(s("status").as_str(), "play" | "loading" | "load");
     let position = s("curpos").parse::<f64>().unwrap_or(0.0) / 1000.0;
     let duration = s("totlen").parse::<f64>().unwrap_or(0.0) / 1000.0;
+    let volume = s("vol").parse::<f64>().unwrap_or(-1.0);
 
     // getMetaInfo has clean text + album art (newer firmware); fall back to the
     // hex-encoded getPlayerStatus fields.
@@ -249,6 +252,7 @@ async fn poll_linkplay(client: &reqwest::Client, base: &str, name: &str) -> Opti
         art,
         position,
         duration,
+        volume,
     })
 }
 
@@ -300,6 +304,7 @@ async fn poll_upnp(client: &reqwest::Client, ctrl_url: &str, name: &str) -> Opti
         art: xml_unescape(&tag_content(&didl, "albumArtURI").unwrap_or_default()),
         position,
         duration,
+        volume: -1.0,
     })
 }
 
@@ -362,10 +367,16 @@ pub async fn command(client: &reqwest::Client, ctl: &RemoteCtl, cmd: &str) -> Re
                 "play" => "setPlayerCmd:resume".to_string(),
                 "pause" => "setPlayerCmd:pause".to_string(),
                 "skip" => "setPlayerCmd:next".to_string(),
+                "prev" => "setPlayerCmd:prev".to_string(),
                 // "preset:N" fires device preset N like its hardware button
                 c if c.starts_with("preset:") => {
                     let n: u32 = c[7..].parse().map_err(|_| "bad preset number")?;
                     format!("MCUKeyShortClick:{n}")
+                }
+                // "vol:N" sets device volume 0-100
+                c if c.starts_with("vol:") => {
+                    let n: u32 = c[4..].parse().map_err(|_| "bad volume")?;
+                    format!("setPlayerCmd:vol:{}", n.min(100))
                 }
                 _ => return Err(format!("unknown remote command: {cmd}")),
             };
@@ -381,6 +392,7 @@ pub async fn command(client: &reqwest::Client, ctl: &RemoteCtl, cmd: &str) -> Re
                 "play" => ("Play", "<Speed>1</Speed>"),
                 "pause" => ("Pause", ""),
                 "skip" => ("Next", ""),
+                "prev" => ("Previous", ""),
                 _ => return Err(format!("unknown remote command: {cmd}")),
             };
             soap(client, &ctrl_url, action, args)

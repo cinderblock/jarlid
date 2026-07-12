@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Jarlid",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "identifier": "com.camer.pandora-desktop",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -26,9 +26,18 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVCOTcxNjkxNkRGODlGMjkKUldRcG4vaHRrUmFYV3dXRTgvUEZOYkNGMGwwYUZQOXAvOUtsZXJjNFdSaUlVWVdCTUpLczZaVEIK",
+      "endpoints": [
+        "https://github.com/cinderblock/jarlid/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

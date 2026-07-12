@@ -265,26 +265,43 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     let cell: Arc<Mutex<Option<MediaControls>>> = Arc::new(Mutex::new(None));
     let playing_now = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let optimistic_until = Arc::new(Mutex::new(Instant::now()));
+    // Remote (network player) session takes over SMTC when it's the active
+    // audio source: local idle >3s while the renderer plays.
+    let ctl = app.state::<upnp::RemoteCtl>().inner().clone();
+    let remote_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let last_local_move = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(60)));
 
     let handle = app.handle().clone();
     let cb_cell = cell.clone();
     let cb_playing = playing_now.clone();
     let cb_until = optimistic_until.clone();
+    let cb_remote_active = remote_active.clone();
+    let cb_ctl = ctl.clone();
     controls
         .attach(move |event: MediaControlEvent| {
             use std::sync::atomic::Ordering;
-            let (cmd, desired) = match event {
-                MediaControlEvent::Play => ("play", Some(true)),
-                MediaControlEvent::Pause => ("pause", Some(false)),
+            let cur = cb_playing.load(Ordering::Relaxed);
+            let (engine_c, remote_c, desired): (&str, &str, Option<bool>) = match event {
+                MediaControlEvent::Play => ("play", "play", Some(true)),
+                MediaControlEvent::Pause => ("pause", "pause", Some(false)),
                 MediaControlEvent::Toggle => {
-                    ("toggle", Some(!cb_playing.load(Ordering::Relaxed)))
+                    ("toggle", if cur { "pause" } else { "play" }, Some(!cur))
                 }
-                MediaControlEvent::Next => ("skip", None),
-                MediaControlEvent::Previous => ("replay", None),
-                MediaControlEvent::Stop => ("pause", Some(false)),
+                MediaControlEvent::Next => ("skip", "skip", None),
+                MediaControlEvent::Previous => ("replay", "prev", None),
+                MediaControlEvent::Stop => ("pause", "pause", Some(false)),
                 _ => return,
             };
-            let _ = engine_cmd(&handle, cmd);
+            if cb_remote_active.load(Ordering::Relaxed) {
+                let ctl2 = cb_ctl.clone();
+                let rc = remote_c.to_string();
+                tauri::async_runtime::spawn(async move {
+                    let client = upnp::device_client();
+                    let _ = upnp::command(&client, &ctl2, &rc).await;
+                });
+            } else {
+                let _ = engine_cmd(&handle, engine_c);
+            }
             if let Some(p) = desired {
                 cb_playing.store(p, Ordering::Relaxed);
                 *cb_until.lock().unwrap() = Instant::now() + Duration::from_secs(2);
@@ -304,9 +321,13 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         .map_err(|e| format!("SMTC attach: {e:?}"))?;
     *cell.lock().unwrap() = Some(controls);
 
-    // Track metadata from the bridge.
+    // Track metadata from the bridge (local mode only).
     let c_meta = cell.clone();
+    let meta_remote_active = remote_active.clone();
     app.listen_any("engine://nowplaying", move |event| {
+        if meta_remote_active.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
             return;
         };
@@ -328,6 +349,8 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     let c_play = cell.clone();
     let p_now = playing_now.clone();
     let p_until = optimistic_until.clone();
+    let p_remote_active = remote_active.clone();
+    let p_local_move = last_local_move.clone();
     let motion = Arc::new(Mutex::new((f64::MIN, Instant::now(), Instant::now())));
     app.listen_any("engine://playhead", move |event| {
         use std::sync::atomic::Ordering;
@@ -343,9 +366,14 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         if (pos - *last_pos).abs() > 0.05 {
             *last_pos = pos;
             *last_move = now;
+            *p_local_move.lock().unwrap() = now;
             new_playing = true;
         } else if now.duration_since(*last_move) > Duration::from_millis(1600) {
             new_playing = false;
+        }
+        // While the remote session owns SMTC, local (paused) state stays out.
+        if p_remote_active.load(Ordering::Relaxed) {
+            return;
         }
         if now < *p_until.lock().unwrap() {
             new_playing = was_playing; // grace: don't fight a fresh button press
@@ -366,6 +394,106 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         }
     });
 
+    // Remote session → SMTC: when the network player is the active source,
+    // its metadata and state own the Windows media panel and media keys.
+    let c_remote = cell.clone();
+    let r_now = playing_now.clone();
+    let r_active = remote_active.clone();
+    let r_local_move = last_local_move.clone();
+    let r_until = optimistic_until.clone();
+    let r_last_meta = Arc::new(Mutex::new(String::new()));
+    let r_last_sent = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(60)));
+    app.listen_any("remote://state", move |event| {
+        use std::sync::atomic::Ordering;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
+            return;
+        };
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let playing = v.get("playing").and_then(|x| x.as_bool()).unwrap_or(false);
+        let title = s("title");
+        let local_recent = r_local_move.lock().unwrap().elapsed() < Duration::from_secs(3);
+        let active = playing && !title.is_empty() && !local_recent;
+        let was_active = r_active.swap(active, Ordering::Relaxed);
+        if !active {
+            if was_active {
+                r_last_meta.lock().unwrap().clear();
+            }
+            return;
+        }
+
+        let artist = s("artist");
+        let album = s("album");
+        let art = s("art");
+        let meta_key = format!("{title}|{artist}|{album}|{art}");
+        {
+            let mut lm = r_last_meta.lock().unwrap();
+            if *lm != meta_key {
+                *lm = meta_key;
+                if let Some(c) = c_remote.lock().unwrap().as_mut() {
+                    fn opt(x: &str) -> Option<&str> {
+                        if x.is_empty() {
+                            None
+                        } else {
+                            Some(x)
+                        }
+                    }
+                    let _ = c.set_metadata(MediaMetadata {
+                        title: opt(&title),
+                        artist: opt(&artist),
+                        album: opt(&album),
+                        cover_url: opt(&art),
+                        duration: None,
+                    });
+                }
+            }
+        }
+
+        let now = Instant::now();
+        let was_playing = r_now.load(Ordering::Relaxed);
+        if now < *r_until.lock().unwrap() && playing != was_playing {
+            return; // optimistic grace after an SMTC button press
+        }
+        let mut send = playing != was_playing || !was_active;
+        {
+            let mut ls = r_last_sent.lock().unwrap();
+            if now.duration_since(*ls) > Duration::from_secs(5) {
+                send = true;
+            }
+            if send {
+                *ls = now;
+            }
+        }
+        if send {
+            r_now.store(playing, Ordering::Relaxed);
+            let pos = v.get("position").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let progress = Some(MediaPosition(Duration::from_secs_f64(pos.max(0.0))));
+            let state = if playing {
+                MediaPlayback::Playing { progress }
+            } else {
+                MediaPlayback::Paused { progress }
+            };
+            if let Some(c) = c_remote.lock().unwrap().as_mut() {
+                let _ = c.set_playback(state);
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Download and install a pending update, then restart. The startup check only
+/// notifies; this runs when the user clicks the banner.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
+        update
+            .download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|e| e.to_string())?;
+        app.restart();
+    }
     Ok(())
 }
 
@@ -401,19 +529,23 @@ fn show_engine(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebView2 was crashing on pandora.com (STATUS_ACCESS_VIOLATION) — a native renderer
-    // crash fixed by disabling GPU acceleration (that, not the autoplay flag, was the
-    // cause). With GPU disabled, the autoplay-policy flag is safe and lets the UI's play
-    // button start audio in the hidden engine without an in-page user gesture.
-    // HardwareMediaKeyHandling is disabled so WebView2 can't intercept media keys —
-    // the native SMTC session (souvlaki) owns them instead.
+    // pandora.com crashed WebView2's renderer (STATUS_ACCESS_VIOLATION) with default
+    // GPU settings. Full --disable-gpu fixed it but forced software rendering; the
+    // D3D11 ANGLE backend keeps hardware acceleration while avoiding the default
+    // (D3D11on12/GL mix) path that crashed. If STATUS_ACCESS_VIOLATION ever returns,
+    // fall back to "--disable-gpu --disable-gpu-compositing".
+    // autoplay-policy lets the UI start audio in the hidden engine without an
+    // in-page gesture; HardwareMediaKeyHandling is off so media keys reach our
+    // native SMTC session instead of the webview.
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-gpu --disable-gpu-compositing --autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling",
+        "--use-angle=d3d11 --autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling",
     );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // Remember main-window position/size across launches. The engine window
         // is excluded — it's a hidden background window with managed visibility.
         .plugin(
@@ -423,6 +555,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             fetch_lyrics,
+            install_update,
             player_cmd,
             remote_cmd,
             remote_presets,
@@ -469,16 +602,37 @@ pub fn run() {
                 }
             });
 
+            // Update check (release builds): notify the UI when a newer GitHub
+            // release exists; the banner's button runs install_update.
+            #[cfg(not(debug_assertions))]
+            {
+                use tauri_plugin_updater::UpdaterExt;
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    let Ok(updater) = handle.updater() else { return };
+                    match updater.check().await {
+                        Ok(Some(update)) => {
+                            eprintln!("[updater] v{} available", update.version);
+                            let _ = handle.emit("app://update-available", update.version.clone());
+                        }
+                        Ok(None) => {}
+                        Err(e) => eprintln!("[updater] check failed: {e}"),
+                    }
+                });
+            }
+
+            // Network (UPnP/DLNA) player watcher — feeds remote-mode overlay and
+            // SMTC remote routing (must be managed before SMTC setup).
+            let remote_ctl = upnp::RemoteCtl::new();
+            app.manage(remote_ctl.clone());
+            upnp::start(app.handle().clone(), remote_ctl);
+
             // Native Windows media session (media keys + volume-flyout panel).
             #[cfg(windows)]
             if let Err(e) = setup_media_controls(app) {
                 eprintln!("[smtc] setup failed: {e}");
             }
-
-            // Network (UPnP/DLNA) player watcher — feeds remote-mode overlay.
-            let remote_ctl = upnp::RemoteCtl::new();
-            app.manage(remote_ctl.clone());
-            upnp::start(app.handle().clone(), remote_ctl);
 
             // Watchdog: the bridge emits engine://heartbeat every 5s. If the engine
             // page wedges (renderer crash, stuck navigation), heartbeats stop and we

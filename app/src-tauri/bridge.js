@@ -162,22 +162,72 @@
   }
 
   // ---- stations -----------------------------------------------------------
+  // Full collection comes from Pandora's own web API (same-origin, session
+  // cookies); the visible rail (recents) is the fallback if that fails.
   var lastStations = "";
+  var fullStations = null; // [{id, name}] when the API works
   function stationEls() {
     return document.querySelectorAll('[data-qa="now_playing_station_list_station"]');
   }
   function collectStations() {
-    var els = stationEls();
-    var names = [];
-    for (var i = 0; i < els.length; i++) {
-      names.push((els[i].textContent || "").trim());
+    var payload;
+    if (fullStations && fullStations.length) {
+      payload = {
+        stations: fullStations.map(function (s) { return s.name; }),
+        ids: fullStations.map(function (s) { return s.id; }),
+        active: txt("station"),
+      };
+    } else {
+      var els = stationEls();
+      var names = [];
+      for (var i = 0; i < els.length; i++) {
+        names.push((els[i].textContent || "").trim());
+      }
+      payload = { stations: names, ids: null, active: txt("station") };
     }
-    var payload = { stations: names, active: txt("station") };
     var s = JSON.stringify(payload);
     if (s !== lastStations) {
       lastStations = s;
       emit("engine://stations", payload);
     }
+  }
+
+  function refreshStationList() {
+    var m = document.cookie.match(/csrftoken=([^;]+)/);
+    if (!m || !window.fetch) return;
+    var bodies = ['{"pageSize":500}', "{}"];
+    var attempt = function (i) {
+      if (i >= bodies.length) return;
+      fetch("/api/v1/station/getStations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CsrfToken": m[1] },
+        body: bodies[i],
+        credentials: "same-origin",
+      })
+        .then(function (r) {
+          if (!r.ok) throw new Error("http " + r.status);
+          return r.json();
+        })
+        .then(function (j) {
+          var arr = (j && (j.stations || j.items)) || [];
+          if (arr.length) {
+            fullStations = arr
+              .map(function (s) {
+                return { id: String(s.stationId || s.pandoraId || ""), name: s.name || "" };
+              })
+              .filter(function (s) { return s.id && s.name; });
+            LOG("station list:", fullStations.length, "stations via API");
+            collectStations();
+          } else {
+            throw new Error("empty list");
+          }
+        })
+        .catch(function (e) {
+          LOG("getStations body#" + i + " failed:", e && e.message);
+          attempt(i + 1);
+        });
+    };
+    attempt(0);
   }
 
   function attrPressed(name) {
@@ -279,8 +329,12 @@
       case "thumbUp": click("up"); break;
       case "thumbDown": click("down"); break;
       default:
+        // "playStation:<id>" — navigate to any station in the collection
+        if (name.indexOf("playStation:") === 0) {
+          location.assign("/station/play/" + name.slice(12));
+        }
         // "station:<index>" — click the nth station in Pandora's station rail
-        if (name.indexOf("station:") === 0) {
+        else if (name.indexOf("station:") === 0) {
           var idx = parseInt(name.slice(8), 10);
           var els = stationEls();
           if (els[idx]) els[idx].click();
@@ -319,6 +373,8 @@
 
     setInterval(emitPlayhead, 500);
     setInterval(snapshot, 3000); // safety net
+    setTimeout(refreshStationList, 5000); // after login/session settles
+    setInterval(refreshStationList, 300000);
     // Heartbeat lets the host detect a dead/wedged page and auto-reload it.
     setInterval(function () {
       emit("engine://heartbeat", { t: 1 });
