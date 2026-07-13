@@ -481,6 +481,19 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// On-demand update check (version-badge click). Returns the available
+/// version, or None when current.
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    Ok(updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|u| u.version.clone()))
+}
+
 /// Download and install a pending update, then restart. The startup check only
 /// notifies; this runs when the user clicks the banner.
 #[tauri::command]
@@ -554,6 +567,7 @@ pub fn run() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
+            check_update,
             fetch_lyrics,
             install_update,
             player_cmd,

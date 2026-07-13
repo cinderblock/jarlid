@@ -207,6 +207,8 @@ body.remote #history {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
+/* Version badge doubles as the (unobtrusive) update control: faint version
+   number normally; accent "update to vX" when one is available; click acts. */
 #version {
   position: fixed;
   bottom: 8px;
@@ -215,6 +217,20 @@ body.remote #history {
   font-size: 0.65rem;
   color: var(--faint);
   font-variant-numeric: tabular-nums;
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  font-family: inherit;
+  cursor: pointer;
+}
+#version:hover {
+  color: var(--dim);
+}
+#version.update {
+  color: var(--accent);
+}
+#version.update:hover {
+  text-decoration: underline;
 }
 
 /* engine window toggle (top-right corner) */
@@ -498,36 +514,6 @@ body.remote #remote-vol-wrap {
   height: 12px;
   border-radius: 50%;
   background: var(--fg);
-}
-
-/* ---- update banner ---- */
-#update-banner {
-  position: fixed;
-  bottom: 18px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 9;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  background: rgba(22, 22, 28, 0.92);
-  backdrop-filter: blur(18px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  padding: 10px 12px 10px 20px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
-  font-size: 0.85rem;
-}
-#update-btn {
-  background: var(--fg);
-  color: #0a0a0c;
-  border: none;
-  border-radius: 999px;
-  padding: 7px 14px;
-  font-family: inherit;
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
 }
 
 /* ---- recently-played gallery ---- */

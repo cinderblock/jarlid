@@ -454,7 +454,57 @@ window.addEventListener("keydown", (e) => {
     togglePlayback();
   }
 });
-getVersion().then((v) => ($("version").textContent = `v${v}`)).catch(() => {});
+// The version badge is the entire (unobtrusive) update UI: shows the running
+// version; turns into "update to vX" when one exists; click checks/installs.
+const versionEl = $("version");
+let baseVersion = "";
+let pendingVersion: string | null = null;
+let versionBusy = false;
+function renderVersion() {
+  versionEl.classList.toggle("update", !!pendingVersion);
+  versionEl.textContent = pendingVersion ? `update to v${pendingVersion}` : baseVersion;
+}
+function flashVersion(text: string) {
+  versionEl.textContent = text;
+  setTimeout(() => {
+    if (!versionBusy) renderVersion();
+  }, 2200);
+}
+getVersion()
+  .then((v) => {
+    baseVersion = `v${v}`;
+    renderVersion();
+  })
+  .catch(() => {});
+listen<string>("app://update-available", (e) => {
+  pendingVersion = e.payload;
+  renderVersion();
+});
+versionEl.addEventListener("click", async () => {
+  if (versionBusy) return;
+  versionBusy = true;
+  try {
+    if (pendingVersion) {
+      versionEl.textContent = "installing…";
+      await invoke("install_update"); // restarts on success
+      versionBusy = false;
+      flashVersion("update failed");
+    } else {
+      versionEl.textContent = "checking…";
+      const v = await invoke<string | null>("check_update");
+      versionBusy = false;
+      if (v) {
+        pendingVersion = v;
+        renderVersion();
+      } else {
+        flashVersion("up to date");
+      }
+    }
+  } catch {
+    versionBusy = false;
+    flashVersion(pendingVersion ? "update failed" : "check failed");
+  }
+});
 $("skip").addEventListener("click", () =>
   remoteMode ? invoke("remote_cmd", { cmd: "skip" }).catch(() => {}) : cmd("skip")
 );
@@ -725,24 +775,6 @@ function reflectRemoteVolume() {
   if (remote.volume >= 0) remoteVol.value = String(Math.round(remote.volume));
   remoteVol.parentElement!.style.visibility = remote.volume >= 0 ? "visible" : "hidden";
 }
-
-// ---- update banner ---------------------------------------------------------
-const updateBanner = $("update-banner");
-const updateText = $("update-text");
-const updateBtn = $("update-btn");
-listen<string>("app://update-available", (e) => {
-  updateText.textContent = `Jarlid v${e.payload} is available`;
-  updateBanner.hidden = false;
-});
-updateBtn.addEventListener("click", () => {
-  updateBtn.textContent = "Installing…";
-  (updateBtn as HTMLButtonElement).disabled = true;
-  invoke("install_update").catch((err) => {
-    updateText.textContent = `Update failed: ${err}`;
-    updateBtn.textContent = "Retry";
-    (updateBtn as HTMLButtonElement).disabled = false;
-  });
-});
 
 // Interpolate the remote position between the 1s device polls.
 setInterval(() => {
