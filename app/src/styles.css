@@ -537,8 +537,9 @@ body.remote #remote-vol-wrap {
   width: min(42vh, 100%);
   margin-top: 22px;
   overflow-x: auto;
+  overflow-y: visible;
   scrollbar-width: none;
-  padding: 6px 2px;
+  padding: 10px 2px;
   scroll-snap-type: x proximity;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
   mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
@@ -549,21 +550,23 @@ body.remote #remote-vol-wrap {
 #history:empty {
   display: none;
 }
+.hist-wrap {
+  flex: 0 0 auto;
+  scroll-snap-align: center;
+  /* transform/opacity/z-index are scroll-driven (coverflow) via inline style */
+}
 .hist-item {
   width: 54px;
   height: 54px;
-  flex: 0 0 auto;
   border-radius: 8px;
   object-fit: cover;
-  scroll-snap-align: center;
-  opacity: 0.65;
-  transition: transform 0.15s, opacity 0.15s;
+  display: block;
+  transition: transform 0.15s;
   cursor: default;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
 }
 .hist-item:hover {
-  transform: scale(1.35);
-  opacity: 1;
-  z-index: 2;
+  transform: scale(1.4);
 }
 
 /* ---- lyrics ---- */

@@ -251,15 +251,39 @@ function attachTip(el: HTMLElement, text: () => string) {
 function renderHistory() {
   histEl.innerHTML = "";
   for (const h of history) {
+    const wrap = document.createElement("div");
+    wrap.className = "hist-wrap";
     const img = new Image();
     img.src = h.art;
     img.className = "hist-item";
     img.loading = "lazy";
     img.addEventListener("click", () => openHistModal(h));
     attachTip(img, () => `${h.title} — ${h.artist}`);
-    histEl.appendChild(img);
+    wrap.appendChild(img);
+    histEl.appendChild(wrap);
+  }
+  requestAnimationFrame(coverflow);
+}
+
+// Cover-Flow-style perspective: items tilt away from the strip's center as
+// they approach the edges (the wrap gets the scroll-driven transform so the
+// image's own hover zoom still works).
+function coverflow() {
+  const rect = histEl.getBoundingClientRect();
+  if (rect.width === 0) return;
+  const cx = rect.left + rect.width / 2;
+  for (const el of Array.from(histEl.children) as HTMLElement[]) {
+    const r = el.getBoundingClientRect();
+    const d = Math.max(-1, Math.min(1, (r.left + r.width / 2 - cx) / (rect.width / 2)));
+    el.style.transform = `perspective(420px) rotateY(${(-d * 32).toFixed(1)}deg) scale(${(
+      1 - Math.abs(d) * 0.16
+    ).toFixed(3)})`;
+    el.style.opacity = (1 - Math.abs(d) * 0.45).toFixed(2);
+    el.style.zIndex = String(100 - Math.round(Math.abs(d) * 50));
   }
 }
+histEl.addEventListener("scroll", () => requestAnimationFrame(coverflow));
+window.addEventListener("resize", () => requestAnimationFrame(coverflow));
 function pushHistory(np: NowPlaying) {
   const art = np.artFallback || np.art;
   if (!art || !np.title) return;
@@ -270,6 +294,12 @@ function pushHistory(np: NowPlaying) {
   renderHistory();
 }
 renderHistory();
+// Cap accumulated per-track sync offsets (no timestamps to age by; a rare
+// full reset beats unbounded growth).
+{
+  const offKeys = Object.keys(localStorage).filter((k) => k.startsWith("syncoff:"));
+  if (offKeys.length > 500) offKeys.forEach((k) => localStorage.removeItem(k));
+}
 // vertical wheel scrolls the strip horizontally
 histEl.addEventListener(
   "wheel",

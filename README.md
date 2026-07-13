@@ -22,7 +22,10 @@ current song's **album art and synced lyrics front and center**.
   play/pause/skip.
 - **Self-healing engine**: heartbeat watchdog auto-reloads a wedged Pandora page and
   auto-dismisses the "still listening?" prompt for all-day sessions.
-- Window position/size persist across launches (kill-safe).
+- **Auto-updates**: checks GitHub Releases (startup + every 4 h) and installs signed updates
+  with one click from an in-app banner.
+- Full station collection searchable in the picker; Cover-Flow-style recently-played gallery;
+  WiiM volume slider in remote mode; window position/size persist across launches (kill-safe).
 
 ## Why this approach
 
@@ -62,17 +65,19 @@ Requirements: Rust, Bun, and the WebView2 runtime (all already present on the de
 First launch: log in to Pandora once in the engine window; the session persists (WebView2 user
 data keyed to app id `com.camer.pandora-desktop`).
 
-## Install / Build
+## Install
 
-Build the installer with `cd app && bun run tauri build` — output lands in
-`app/src-tauri/target/release/bundle/nsis/Jarlid_<version>_x64-setup.exe` (an MSI is produced
-too). First launch: log in to Pandora once in the engine window (reveal it with the globe
-button or `Ctrl+Shift+E`); the session persists across updates.
+Grab `Jarlid_<version>_x64-setup.exe` from the
+[latest release](https://github.com/cinderblock/jarlid/releases/latest) and run it. The app
+keeps itself up to date from there. First launch: log in to Pandora once in the engine window
+(reveal it with the globe button or `Ctrl+Shift+E`); the session persists across updates.
+
+To build locally instead: `cd app && bun run tauri build` (requires Rust, Bun, WebView2;
+releases are built by `.github/workflows/release.yml` on version tags).
 
 ## Status
 
-Daily-driver ready. Remaining ideas (auto-updates via GitHub Releases, full station-collection
-search, WiiM volume, GPU-flag tuning) are tracked in `plans/pandora-desktop-app.md`.
+Daily-driver ready. Remaining ideas are tracked in `plans/pandora-desktop-app.md`.
 
 ## Disclaimer
 

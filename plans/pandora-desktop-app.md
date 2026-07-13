@@ -383,16 +383,25 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
   the banner (within ~10s of a fresh launch, or ≤4h if left running... 0.6.0 has startup-only
   check, so user must restart the app once to see it).
 
-## Queued (user requests, not yet done)
-- Title marquee: DONE (hover-scrub, round 3). VERIFY with user.
-- Lighter GPU flag (`--use-angle=gl`) instead of full `--disable-gpu`.
-- Confirm Windows SMTC works (media keys / volume flyout).
-- Lyrics matching for parenthetical titles: VERIFY round-3 fix with user.
-- Station full-collection list (scrape My Collection) if rail-only is insufficient.
-- Q4 (engine-less design) answered: NO without abandoning ban-safe web-session approach — engine
-  IS the auth+DRM+audio backend; hidden window ≈ idle WebView2 process (~150MB, ~0% CPU). The
-  alternative (direct REST + own audio pipeline) = unofficial-client territory = ban risk (see
-  "Strategy"). Don't reopen without new info (e.g. official API access granted).
+## Round 21 (2026-07-12): v0.6.2 — startup engine-window flash
+- **AUTO-UPDATE CONFIRMED WORKING** (0.6.0 → 0.6.1 via banner).
+- Engine window popped up on every cold start: "/" matched the loginish regex while the SPA
+  was still redirecting → needs-login → Rust showed the window. Fix: 8s grace after injection
+  (injectedAt), then only real evidence (password field, /account/sign path, or an
+  a[href*=/account/sign-in] link). v0.6.2 tagged → CI.
+- New release loop: edit → tag vX.Y.Z → CI publishes → user's app offers the update itself
+  (startup or ≤4h). No more local installer handoffs.
+
+## Queue (updated 2026-07-12, round 22 — everything earlier DONE)
+Remaining / awaiting-verification:
+- VERIFY (user): full-station search works on live session (bridge getStations was unverifiable
+  from a logged-out probe); SMTC album art in the volume flyout; GPU stability with
+  --use-angle=d3d11 (watch for STATUS_ACCESS_VIOLATION → revert to --disable-gpu).
+- Future (explicitly deferred): audio-capture → DLNA streamer (play ANY station on WiiM from
+  Jarlid, past the 12-preset ceiling); WiiM source picking; official-API pivot if Pandora ever
+  grants partner access; proper app icon (still default Tauri art).
+- Settled questions — don't reopen: engine-less design (NO — engine is the ban-safe
+  auth/DRM/audio backend); HA-mediated overlay (user chose direct device reads).
 
 ## Publish (2026-07-08)
 - Target: https://github.com/cinderblock/pandora-desktop, MIT license, public.
