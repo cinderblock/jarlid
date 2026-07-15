@@ -269,15 +269,87 @@
   }
 
   // ---- playhead (for lyric sync) ----------------------------------------
+  var lastPosVal = -1;
+  var lastPosMoveAt = Date.now();
   function emitPlayhead() {
     var a = audioEl();
     if (!a) return;
+    var pos = a.currentTime || 0;
+    if (Math.abs(pos - lastPosVal) > 0.05) {
+      lastPosVal = pos;
+      lastPosMoveAt = Date.now();
+    }
     emit("engine://playhead", {
-      position: a.currentTime || 0,
+      position: pos,
       duration: isFinite(a.duration) ? a.duration : 0,
       paused: isPausedUi(),
       volume: a.volume,
     });
+  }
+
+  // ---- stuck-playback recovery -------------------------------------------
+  // After a long pause Pandora's stream URL can expire: pressing play spins
+  // forever until the page is refreshed. Detect "play requested but nothing
+  // moved", then escalate: re-click play → reload the page and auto-resume.
+  var recovery = { attemptAt: 0, stage: 0 };
+  function armRecovery() {
+    recovery.attemptAt = Date.now();
+    recovery.stage = 0;
+  }
+  setInterval(function () {
+    if (!recovery.attemptAt) return;
+    if (Date.now() - lastPosMoveAt < 3000) {
+      recovery.attemptAt = 0; // audio is flowing — recovered/normal
+      return;
+    }
+    var waited = Date.now() - recovery.attemptAt;
+    if (recovery.stage === 0 && waited > 12000) {
+      recovery.stage = 1;
+      LOG("recovery: playback never started, re-clicking play");
+      var b = playPauseButton();
+      if (b) b.click();
+    } else if (recovery.stage === 1 && waited > 25000) {
+      recovery.stage = 2;
+      recovery.attemptAt = 0;
+      var lastReload = 0;
+      try {
+        lastReload = parseInt(sessionStorage.getItem("jarlid-last-reload") || "0", 10);
+      } catch (e) {}
+      if (Date.now() - lastReload < 180000) {
+        LOG("recovery: reload wanted but on cooldown (3min)");
+        return;
+      }
+      LOG("recovery: reloading page to refresh the stream");
+      try {
+        sessionStorage.setItem("jarlid-last-reload", String(Date.now()));
+        sessionStorage.setItem("jarlid-resume", "1");
+      } catch (e) {}
+      location.reload();
+    }
+  }, 2000);
+
+  // After a recovery reload, resume playback once the player is ready.
+  function maybeResumeAfterReload() {
+    var resume = false;
+    try {
+      resume = sessionStorage.getItem("jarlid-resume") === "1";
+      if (resume) sessionStorage.removeItem("jarlid-resume");
+    } catch (e) {}
+    if (!resume) return;
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries++;
+      if (qa("pause")) {
+        clearInterval(timer); // already playing
+      } else if (qa("play") && txt("title")) {
+        LOG("recovery: resuming playback after reload");
+        clearInterval(timer);
+        qa("play").click();
+        armRecovery();
+      } else if (tries > 30) {
+        clearInterval(timer);
+      }
+    }, 1000);
   }
 
   // ---- MediaSession / Windows SMTC --------------------------------------
@@ -334,7 +406,10 @@
       // leftover tracks after skips (play() on the wrong element).
       case "play": {
         var b1 = playPauseButton();
-        if (!isActuallyPlaying() && b1) b1.click();
+        if (!isActuallyPlaying() && b1) {
+          b1.click();
+          armRecovery();
+        }
         break;
       }
       case "pause": {
@@ -343,9 +418,12 @@
         break;
       }
       case "toggle": {
+        var wasPlaying = isActuallyPlaying();
         var b3 = playPauseButton();
-        if (b3) b3.click();
-        else LOG("toggle: no play/pause button found");
+        if (b3) {
+          b3.click();
+          if (!wasPlaying) armRecovery();
+        } else LOG("toggle: no play/pause button found");
         break;
       }
       case "skip": click("skip"); break;
@@ -399,6 +477,7 @@
     setInterval(snapshot, 3000); // safety net
     setTimeout(refreshStationList, 5000); // after login/session settles
     setInterval(refreshStationList, 300000);
+    maybeResumeAfterReload();
     // Heartbeat lets the host detect a dead/wedged page and auto-reload it.
     setInterval(function () {
       emit("engine://heartbeat", { t: 1 });

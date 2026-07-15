@@ -392,6 +392,13 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
 - New release loop: edit → tag vX.Y.Z → CI publishes → user's app offers the update itself
   (startup or ≤4h). No more local installer handoffs.
 
+## Round 23 (2026-07-12): v0.6.4 — badge-as-update-UI
+- User: version click should check; update control should be unobtrusive AT the badge.
+- Center banner REMOVED. #version (now a <button>) is the whole update UI: click → check
+  ("checking…" → "up to date" flash or accent "update to vX"); click pending → "installing…" →
+  restart. Auto-checks (4h loop) feed the same badge via app://update-available. New Rust
+  `check_update` command returns Option<version>.
+
 ## Queue (updated 2026-07-12, round 22 — everything earlier DONE)
 Remaining / awaiting-verification:
 - VERIFY (user): full-station search works on live session (bridge getStations was unverifiable
