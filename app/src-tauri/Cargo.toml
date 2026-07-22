@@ -1,6 +1,6 @@
 [package]
 name = "jarlid"
-version = "0.6.6"
+version = "0.6.7"
 description = "Jarlid — an unofficial desktop client for Pandora"
 authors = ["Cameron Tacklind <cameron@tacklind.com>"]
 edition = "2021"
@@ -28,4 +28,6 @@ tauri-plugin-window-state = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tokio = { version = "1", features = ["time", "sync"] }
+if-addrs = "0.13"
+socket2 = "0.5"
 

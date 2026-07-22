@@ -125,21 +125,73 @@ fn hex_decode(s: &str) -> String {
 
 // ---------- discovery ----------
 
-/// Send an SSDP M-SEARCH and collect MediaRenderer description URLs (blocking).
+/// Send an SSDP M-SEARCH out EVERY local IPv4 interface and collect
+/// MediaRenderer description URLs. Multi-homed machines (Hyper-V switches,
+/// multiple VLANs) send multicast on only the default interface otherwise, so
+/// a renderer on another subnet is never discovered.
 fn ssdp_search() -> Vec<String> {
-    let mut found = Vec::new();
-    let Ok(sock) = std::net::UdpSocket::bind(("0.0.0.0", 0)) else {
-        return found;
+    use std::collections::HashSet;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let mut ips: Vec<Ipv4Addr> = Vec::new();
+    if let Ok(addrs) = if_addrs::get_if_addrs() {
+        for a in addrs {
+            if let IpAddr::V4(v4) = a.ip() {
+                if !v4.is_loopback() && !v4.is_link_local() {
+                    ips.push(v4);
+                }
+            }
+        }
+    }
+    ips.sort();
+    ips.dedup();
+
+    if ips.is_empty() {
+        return ssdp_search_iface(None);
+    }
+    // One socket per interface, in parallel — ~3s total, not 3s * N.
+    let handles: Vec<_> = ips
+        .into_iter()
+        .map(|ip| std::thread::spawn(move || ssdp_search_iface(Some(ip))))
+        .collect();
+    let mut found: HashSet<String> = HashSet::new();
+    for h in handles {
+        if let Ok(urls) = h.join() {
+            found.extend(urls);
+        }
+    }
+    found.into_iter().collect()
+}
+
+fn ssdp_search_iface(iface: Option<std::net::Ipv4Addr>) -> Vec<String> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+
+    let sock = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)) {
+        Ok(s) => s,
+        Err(_) => return vec![],
     };
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = sock.set_reuse_address(true);
+    let bind_ip = iface.unwrap_or(Ipv4Addr::UNSPECIFIED);
+    let bind: SocketAddr = SocketAddrV4::new(bind_ip, 0).into();
+    if sock.bind(&bind.into()).is_err() {
+        return vec![];
+    }
+    if let Some(ip) = iface {
+        let _ = sock.set_multicast_if_v4(&ip);
+    }
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(400)));
+    let udp: UdpSocket = sock.into();
+
     let msearch = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n";
     for _ in 0..2 {
-        let _ = sock.send_to(msearch.as_bytes(), ("239.255.255.250", 1900));
+        let _ = udp.send_to(msearch.as_bytes(), ("239.255.255.250", 1900));
     }
+    let mut found = Vec::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     let mut buf = [0u8; 2048];
     while std::time::Instant::now() < deadline {
-        if let Ok((n, _)) = sock.recv_from(&mut buf) {
+        if let Ok((n, _)) = udp.recv_from(&mut buf) {
             let resp = String::from_utf8_lossy(&buf[..n]);
             for line in resp.lines() {
                 let lower = line.to_lowercase();
