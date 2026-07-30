@@ -469,11 +469,19 @@ button.icon.big:hover {
   color: #0a0a0c;
   transform: scale(1.04);
 }
+/* An active thumb fills its glyph and gets a tinted disc — a colour change
+   alone on a thin outline glyph was too easy to miss. */
 #thumbUp.active {
   color: #6effa8;
+  background: rgba(110, 255, 168, 0.14);
 }
 #thumbDown.active {
   color: #ff8f8f;
+  background: rgba(255, 143, 143, 0.14);
+}
+#thumbUp.active svg,
+#thumbDown.active svg {
+  fill: currentColor;
 }
 
 /* ---- remote volume (network player) ---- */

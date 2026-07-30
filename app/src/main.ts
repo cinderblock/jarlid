@@ -341,6 +341,8 @@ function setArt(url: string, fallback: string) {
 function setThumbs(up: boolean, down: boolean) {
   thumbUpBtn.classList.toggle("active", !!up);
   thumbDownBtn.classList.toggle("active", !!down);
+  thumbUpBtn.setAttribute("aria-pressed", up ? "true" : "false");
+  thumbDownBtn.setAttribute("aria-pressed", down ? "true" : "false");
 }
 
 async function loadLyrics(np: NowPlaying) {

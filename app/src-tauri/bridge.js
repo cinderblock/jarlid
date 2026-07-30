@@ -168,8 +168,8 @@
       station: station0,
       art: artUrl(1080),
       artFallback: artUrl(500),
-      thumbUp: attrPressed("up"),
-      thumbDown: attrPressed("down"),
+      thumbUp: thumbPressed("up"),
+      thumbDown: thumbPressed("down"),
     };
     // Include art in the key: Pandora updates the art element slightly after the
     // title, so a title-only key would leave stale art on screen.
@@ -254,10 +254,36 @@
     attempt(0);
   }
 
-  function attrPressed(name) {
+  // Pandora's ThumbUp/ThumbDownButton render as role=checkbox with
+  // aria-checked="true|false" and an extra "ThumbXButton--active" class — they
+  // never set aria-pressed or "is-active". (Verified against their shipped
+  // c_tuner chunk; the old aria-pressed check was always false, which is why
+  // our thumbs never lit up even when the click DID register.)
+  var THUMB_ACTIVE_CLASS = { up: "ThumbUpButton--active", down: "ThumbDownButton--active" };
+  function thumbPressed(name) {
     var el = qa(name);
     if (!el) return false;
-    return el.getAttribute("aria-pressed") === "true" || el.classList.contains("is-active");
+    if (el.getAttribute("aria-checked") === "true") return true;
+    return el.classList.contains(THUMB_ACTIVE_CLASS[name]);
+  }
+
+  // Thumb buttons carry `disabled` when feedback isn't allowed (ads, shared
+  // stations mid-load); clicking then is a silent no-op, so say so in the log.
+  function clickThumb(name) {
+    var el = qa(name);
+    if (!el) {
+      LOG("thumb " + name + ": no button found");
+      return;
+    }
+    if (el.disabled) {
+      LOG("thumb " + name + ": button disabled — Pandora won't accept feedback now");
+      return;
+    }
+    el.click();
+    // Pandora renders an optimistic state immediately, then re-renders once the
+    // feedback call returns — sample both so our icon settles on the truth.
+    setTimeout(snapshot, 400);
+    setTimeout(snapshot, 1200);
   }
 
   // Pandora renders pause_button while playing and play_button while paused —
@@ -428,8 +454,8 @@
       }
       case "skip": click("skip"); break;
       case "replay": click("replay"); break;
-      case "thumbUp": click("up"); break;
-      case "thumbDown": click("down"); break;
+      case "thumbUp": clickThumb("up"); break;
+      case "thumbDown": clickThumb("down"); break;
       default:
         // "playStation:<id>" — navigate to any station in the collection
         if (name.indexOf("playStation:") === 0) {

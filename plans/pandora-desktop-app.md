@@ -404,6 +404,34 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
 - NOTE the WiiM is on a work/warehouse VLAN (Tom Sawyer Labs). If it later isn't found, re-run
   scripts/ssdp_probe.py to see which interface (if any) it answers on — could be firewall/VLAN.
 
+## Round 27 (2026-07-30): v0.6.8 — thumbs up/down "doesn't work"
+- Root cause found by reading **Pandora's own shipped bundle** (not guesswork): their
+  ThumbUp/ThumbDownButton components render `role="checkbox"` + `aria-checked="true|false"`
+  plus a `ThumbUpButton--active` / `ThumbDownButton--active` class. They NEVER set
+  `aria-pressed` or `is-active` — which is exactly what bridge `attrPressed()` was testing.
+  So `thumbUp`/`thumbDown` were hard-coded false forever: the click DID reach Pandora, our
+  button just never lit up, so it read as "nothing happens".
+- Fix: `thumbPressed()` checks aria-checked + the `--active` class. `clickThumb()` replaces the
+  blind `click()`: logs when the button is missing or `disabled` (Pandora disables feedback on
+  ads/shared stations, where a click is a silent no-op) and re-snapshots at 400ms/1200ms so the
+  icon settles after their async feedback call re-renders.
+- UI: active thumb now FILLS the glyph and gets a tinted disc (colour-only on a thin outline
+  glyph was too subtle); `aria-pressed` mirrored on our own buttons.
+- **How the bundle was read (reusable technique, cheap and definitive):** fetch
+  `https://www.pandora.com/` → the `<script src>` list → `manifest.<hash>.js` holds two pairs of
+  maps (chunk-id→name, chunk-id→hash; the FIRST pair is CSS, use the SECOND for JS) → download
+  `web-client-assets/<name>.<hash>.js` for all ~127 chunks → grep. `data-qa` constants live in
+  `web-app.js` (QATags: TUB=thumbs_up_button, TDB=thumbs_down_button); the components live in
+  `c_tuner.js`; the shared icon button is module `uwCs` in `web-commons.js` (renders
+  `<button data-qa=… disabled=!enabled aria-label=title {...ariaAttributes}>`). Sourcemaps
+  (`.js.map`) are also published if even more detail is ever needed. GOTCHA: `grep -oE` with
+  wide `.{N}` context on these single-line minified files hangs — use Python slicing instead.
+- Confirmed by the same read: `thumbs_up_button` is unique to the tuner bar (session-history
+  rows use `history_thumbs_up*` tags), so it exists on every page and `querySelector` is
+  unambiguous. Thumbs-down also triggers a skip when skips remain.
+- VERIFY (user, v0.6.8): thumb up lights green/filled and stays through the track; clicking
+  again clears it; thumbs set from Pandora's own tuner bar show up in Jarlid too.
+
 ## Round 25 (2026-07-12): v0.6.6 — lyrics vanish during long pause
 - Lyrics disappeared during a long pause, back only next song. Cause: UI lyrics reload key was
   title|artist|album; Pandora collapses the now-playing view when paused a while → album field
