@@ -523,6 +523,28 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
 - The round-28 `added`-latch bug and the image-list-free-before-swap bug were both real and are
   still fixed, but neither was what the user was seeing.
 
+## Round 30 (2026-08-02): v0.6.11 — taskbar buttons adapt to remote (WiiM) mode
+- User asked whether the taskbar controls behave when a WiiM owns playback, and whether they
+  change to only what's available. Audit answer was **transport yes, thumbs no**:
+  - play/pause, skip and replay already routed to the renderer via `upnp::command`, and the
+    play/pause glyph already tracked it (the `remote://state` listener pushes state) — fine;
+  - but thumbs stayed **visible and enabled** while `dispatch` silently `return`ed on them
+    (empty remote command). Dead buttons that looked live;
+  - the `engine://thumbs` listener had **no remote guard** (unlike the metadata listener), so the
+    idle local Pandora page's thumb state kept driving the taskbar thumb glyphs while a WiiM
+    played something else entirely;
+  - "Replay" is really *previous track* on a renderer, so the tooltip lied.
+- Fix: `State` gains a `remote` flag (packed as bit 3). In remote mode the two thumb buttons get
+  `THBF_DISABLED` and always draw the unset glyph regardless of stale local thumb state, their
+  tooltips read "(Pandora only)", and Replay's reads "Previous track". Transport stays enabled.
+- The remote listener now pushes on the *transition* in both directions, so the buttons grey out
+  the moment the renderer takes over and come back when it stops — previously entering remote
+  mode wouldn't repaint until the next 5s local tick (and leaving it relied on the same).
+- Covered by `remote_mode_disables_pandora_only_buttons` (asserts flags, glyph slots and tooltips
+  for both modes) since a live WiiM can't be driven from a test.
+- NOT yet verified against real hardware — the WiiM is on the warehouse VLAN. VERIFY (user): with
+  the WiiM playing, the taskbar thumbs should be greyed and play/pause/skip should drive it.
+
 ## Round 25 (2026-07-12): v0.6.6 — lyrics vanish during long pause
 - Lyrics disappeared during a long pause, back only next song. Cause: UI lyrics reload key was
   title|artist|album; Pandora collapses the now-playing view when paused a while → album field
