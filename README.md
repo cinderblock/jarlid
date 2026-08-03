@@ -12,7 +12,9 @@ current song's **album art and synced lyrics front and center**.
   version matching, a permanent on-disk cache, and per-track sync nudging (`[` / `]`, ±0.25 s).
 - **Native Windows media integration**: hardware media keys and the volume-flyout / lock-screen
   media panel (title, artist, album art, live state) via a real SMTC session — not the
-  browser's flaky MediaSession bridge.
+  browser's flaky MediaSession bridge. Plus a **taskbar thumbnail toolbar** (thumbs down ·
+  replay · play/pause · skip · thumbs up) under the taskbar hover preview, drawn with the same
+  artwork as the in-app transport and following the system light/dark theme.
 - **Transport & stations**: play/pause (Space), skip, thumbs, replay, searchable station
   picker, recently-played art gallery with per-track detail modal.
 - **Network player (UPnP/DLNA + WiiM) remote mode**: when local playback is idle and a
@@ -48,10 +50,16 @@ Two decoupled contexts inside one Tauri (Rust + WebView2) app:
 
 State flows engine → Rust events → UI. Controls flow UI → Rust → `eval` into the engine.
 
-Two more Rust-side services complete the picture: a native Windows SMTC session (`souvlaki`)
-fed by the same engine events, and a network-player watcher (`app/src-tauri/src/upnp.rs`) that
-discovers a renderer via SSDP and reads it directly — LinkPlay/WiiM native HTTP API first,
-generic DLNA AVTransport as fallback.
+Three more Rust-side services complete the picture: a native Windows SMTC session (`souvlaki`)
+fed by the same engine events; the taskbar thumbnail toolbar (`app/src-tauri/src/thumbbar.rs`) —
+a separate shell API that SMTC knows nothing about, so it registers its own buttons and
+subclasses the window to receive their clicks; and a network-player watcher
+(`app/src-tauri/src/upnp.rs`) that discovers a renderer via SSDP and reads it directly —
+LinkPlay/WiiM native HTTP API first, generic DLNA AVTransport as fallback.
+
+Both media surfaces route through one shared action dispatcher, so a press behaves identically
+whether it came from a media key or the taskbar. The toolbar's glyphs are extracted from
+`app/index.html` by `build.rs`, keeping them in lockstep with the in-app transport icons.
 
 ## Develop
 

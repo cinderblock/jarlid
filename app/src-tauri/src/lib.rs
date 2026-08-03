@@ -1,3 +1,5 @@
+#[cfg(windows)]
+mod thumbbar;
 mod upnp;
 
 use serde::{Deserialize, Serialize};
@@ -100,7 +102,12 @@ async fn fetch_lyrics(
                 q.push(("album_name", al));
             }
         }
-        if let Ok(resp) = client.get("https://lrclib.net/api/get").query(&q).send().await {
+        if let Ok(resp) = client
+            .get("https://lrclib.net/api/get")
+            .query(&q)
+            .send()
+            .await
+        {
             if resp.status().is_success() {
                 if let Ok(v) = resp.json::<serde_json::Value>().await {
                     return Ok(cache_and_return(from_lrclib(&v, "lrclib/get"), &cache_file));
@@ -170,7 +177,8 @@ fn pick_best<'a>(
     items.iter().min_by(|a, b| {
         let (sa, ga) = score(a);
         let (sb, gb) = score(b);
-        sa.cmp(&sb).then(ga.partial_cmp(&gb).unwrap_or(std::cmp::Ordering::Equal))
+        sa.cmp(&sb)
+            .then(ga.partial_cmp(&gb).unwrap_or(std::cmp::Ordering::Equal))
     })
 }
 
@@ -216,10 +224,7 @@ fn player_cmd(app: tauri::AppHandle, cmd: String) -> Result<(), String> {
 
 /// Transport command for the network (UPnP/DLNA) player shown in remote mode.
 #[tauri::command]
-async fn remote_cmd(
-    ctl: tauri::State<'_, upnp::RemoteCtl>,
-    cmd: String,
-) -> Result<(), String> {
+async fn remote_cmd(ctl: tauri::State<'_, upnp::RemoteCtl>, cmd: String) -> Result<(), String> {
     let client = upnp::device_client();
     upnp::command(&client, &ctl, &cmd).await
 }
@@ -271,55 +276,148 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     let remote_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let last_local_move = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(60)));
 
+    // Thumb state as the bridge reads it off Pandora's own buttons; it drives
+    // the taskbar glyphs (filled when set).
+    let thumb_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thumb_down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let bar: Arc<Mutex<Option<thumbbar::Thumbbar>>> = Arc::new(Mutex::new(None));
+    let push_bar: Arc<dyn Fn() + Send + Sync> = {
+        let bar = bar.clone();
+        let playing = playing_now.clone();
+        let up = thumb_up.clone();
+        let down = thumb_down.clone();
+        Arc::new(move || {
+            use std::sync::atomic::Ordering;
+            if let Some(b) = bar.lock().unwrap().as_ref() {
+                b.set_state(thumbbar::State {
+                    playing: playing.load(Ordering::Relaxed),
+                    thumb_up: up.load(Ordering::Relaxed),
+                    thumb_down: down.load(Ordering::Relaxed),
+                });
+            }
+        })
+    };
+
+    // Both media surfaces — SMTC (media keys, volume flyout) and the taskbar
+    // thumbnail toolbar — funnel through one dispatcher, so they can never
+    // drift apart on remote-vs-local routing or optimistic state.
+    #[derive(Clone, Copy)]
+    enum Action {
+        Play,
+        Pause,
+        Toggle,
+        Next,
+        Prev,
+        ThumbUp,
+        ThumbDown,
+    }
+
     let handle = app.handle().clone();
     let cb_cell = cell.clone();
     let cb_playing = playing_now.clone();
     let cb_until = optimistic_until.clone();
     let cb_remote_active = remote_active.clone();
     let cb_ctl = ctl.clone();
+    let cb_push = push_bar.clone();
+    let dispatch: Arc<dyn Fn(Action) + Send + Sync> = Arc::new(move |action| {
+        use std::sync::atomic::Ordering;
+        let cur = cb_playing.load(Ordering::Relaxed);
+        // (engine command, network-player command, expected playing state).
+        // An empty remote command means the action has no remote equivalent.
+        let (engine_c, remote_c, desired): (&str, &str, Option<bool>) = match action {
+            Action::Play => ("play", "play", Some(true)),
+            Action::Pause => ("pause", "pause", Some(false)),
+            Action::Toggle => ("toggle", if cur { "pause" } else { "play" }, Some(!cur)),
+            Action::Next => ("skip", "skip", None),
+            Action::Prev => ("replay", "prev", None),
+            Action::ThumbUp => ("thumbUp", "", None),
+            Action::ThumbDown => ("thumbDown", "", None),
+        };
+        if cb_remote_active.load(Ordering::Relaxed) {
+            if remote_c.is_empty() {
+                return; // thumbs mean nothing to a DLNA/WiiM renderer
+            }
+            let ctl2 = cb_ctl.clone();
+            let rc = remote_c.to_string();
+            tauri::async_runtime::spawn(async move {
+                let client = upnp::device_client();
+                let _ = upnp::command(&client, &ctl2, &rc).await;
+            });
+        } else {
+            let _ = engine_cmd(&handle, engine_c);
+        }
+        if let Some(p) = desired {
+            cb_playing.store(p, Ordering::Relaxed);
+            *cb_until.lock().unwrap() = Instant::now() + Duration::from_secs(2);
+            // Tell the UI immediately — its icon otherwise waits ~2s for
+            // motion-derived confirmation.
+            let _ = handle.emit("player://optimistic", serde_json::json!({ "playing": p }));
+            if let Some(c) = cb_cell.lock().unwrap().as_mut() {
+                let state = if p {
+                    MediaPlayback::Playing { progress: None }
+                } else {
+                    MediaPlayback::Paused { progress: None }
+                };
+                let _ = c.set_playback(state);
+            }
+            cb_push();
+        }
+    });
+
+    let smtc_dispatch = dispatch.clone();
     controls
         .attach(move |event: MediaControlEvent| {
-            use std::sync::atomic::Ordering;
-            let cur = cb_playing.load(Ordering::Relaxed);
-            let (engine_c, remote_c, desired): (&str, &str, Option<bool>) = match event {
-                MediaControlEvent::Play => ("play", "play", Some(true)),
-                MediaControlEvent::Pause => ("pause", "pause", Some(false)),
-                MediaControlEvent::Toggle => {
-                    ("toggle", if cur { "pause" } else { "play" }, Some(!cur))
-                }
-                MediaControlEvent::Next => ("skip", "skip", None),
-                MediaControlEvent::Previous => ("replay", "prev", None),
-                MediaControlEvent::Stop => ("pause", "pause", Some(false)),
+            smtc_dispatch(match event {
+                MediaControlEvent::Play => Action::Play,
+                MediaControlEvent::Pause => Action::Pause,
+                MediaControlEvent::Toggle => Action::Toggle,
+                MediaControlEvent::Next => Action::Next,
+                MediaControlEvent::Previous => Action::Prev,
+                MediaControlEvent::Stop => Action::Pause,
                 _ => return,
-            };
-            if cb_remote_active.load(Ordering::Relaxed) {
-                let ctl2 = cb_ctl.clone();
-                let rc = remote_c.to_string();
-                tauri::async_runtime::spawn(async move {
-                    let client = upnp::device_client();
-                    let _ = upnp::command(&client, &ctl2, &rc).await;
-                });
-            } else {
-                let _ = engine_cmd(&handle, engine_c);
-            }
-            if let Some(p) = desired {
-                cb_playing.store(p, Ordering::Relaxed);
-                *cb_until.lock().unwrap() = Instant::now() + Duration::from_secs(2);
-                // Tell the UI immediately — its icon otherwise waits ~2s for
-                // motion-derived confirmation.
-                let _ = handle.emit("player://optimistic", serde_json::json!({ "playing": p }));
-                if let Some(c) = cb_cell.lock().unwrap().as_mut() {
-                    let state = if p {
-                        MediaPlayback::Playing { progress: None }
-                    } else {
-                        MediaPlayback::Paused { progress: None }
-                    };
-                    let _ = c.set_playback(state);
-                }
-            }
+            })
         })
         .map_err(|e| format!("SMTC attach: {e:?}"))?;
     *cell.lock().unwrap() = Some(controls);
+
+    // Taskbar thumbnail toolbar — the transport row under the taskbar hover
+    // preview. A separate shell API from SMTC (see thumbbar.rs); losing it
+    // should never take the rest of the media integration down with it.
+    {
+        let bar_dispatch = dispatch.clone();
+        match thumbbar::install(main.hwnd()?.0 as isize, move |button| {
+            bar_dispatch(match button {
+                thumbbar::Button::ThumbDown => Action::ThumbDown,
+                thumbbar::Button::Replay => Action::Prev,
+                thumbbar::Button::PlayPause => Action::Toggle,
+                thumbbar::Button::Skip => Action::Next,
+                thumbbar::Button::ThumbUp => Action::ThumbUp,
+            })
+        }) {
+            Ok(installed) => {
+                *bar.lock().unwrap() = Some(installed);
+                push_bar();
+            }
+            Err(e) => eprintln!("[thumbbar] setup failed: {e}"),
+        }
+    }
+
+    // Thumb state from the bridge → taskbar glyphs.
+    {
+        let up = thumb_up.clone();
+        let down = thumb_down.clone();
+        let push = push_bar.clone();
+        app.listen_any("engine://thumbs", move |event| {
+            use std::sync::atomic::Ordering;
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
+                return;
+            };
+            let b = |k: &str| v.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
+            up.store(b("thumbUp"), Ordering::Relaxed);
+            down.store(b("thumbDown"), Ordering::Relaxed);
+            push();
+        });
+    }
 
     // Track metadata from the bridge (local mode only).
     let c_meta = cell.clone();
@@ -351,6 +449,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     let p_until = optimistic_until.clone();
     let p_remote_active = remote_active.clone();
     let p_local_move = last_local_move.clone();
+    let p_push = push_bar.clone();
     let motion = Arc::new(Mutex::new((f64::MIN, Instant::now(), Instant::now())));
     app.listen_any("engine://playhead", move |event| {
         use std::sync::atomic::Ordering;
@@ -381,6 +480,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         // Update SMTC on state change, or every 5s to keep progress fresh.
         if new_playing != was_playing || now.duration_since(*last_sent) > Duration::from_secs(5) {
             p_now.store(new_playing, Ordering::Relaxed);
+            p_push();
             *last_sent = now;
             let progress = Some(MediaPosition(Duration::from_secs_f64(pos.max(0.0))));
             let state = if new_playing {
@@ -401,6 +501,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     let r_active = remote_active.clone();
     let r_local_move = last_local_move.clone();
     let r_until = optimistic_until.clone();
+    let r_push = push_bar.clone();
     let r_last_meta = Arc::new(Mutex::new(String::new()));
     let r_last_sent = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(60)));
     app.listen_any("remote://state", move |event| {
@@ -465,6 +566,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         }
         if send {
             r_now.store(playing, Ordering::Relaxed);
+            r_push();
             let pos = v.get("position").and_then(|x| x.as_f64()).unwrap_or(0.0);
             let progress = Some(MediaPosition(Duration::from_secs_f64(pos.max(0.0))));
             let state = if playing {
