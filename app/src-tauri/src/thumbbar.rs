@@ -33,7 +33,7 @@ use windows::Win32::UI::Controls::{
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::Shell::{
     DefSubclassProc, ITaskbarList3, RemoveWindowSubclass, SetWindowSubclass, TaskbarList,
-    THBF_ENABLED, THB_BITMAP, THB_FLAGS, THB_TOOLTIP, THUMBBUTTON,
+    THBF_DISABLED, THBF_ENABLED, THB_BITMAP, THB_FLAGS, THB_TOOLTIP, THUMBBUTTON,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CreateIconIndirect, DestroyIcon, KillTimer, PostMessageW,
@@ -85,11 +85,17 @@ pub struct State {
     pub playing: bool,
     pub thumb_up: bool,
     pub thumb_down: bool,
+    /// A network player (WiiM/DLNA) is the active source, so only the transport
+    /// actions it understands are meaningful — thumbs are Pandora-only.
+    pub remote: bool,
 }
 
 impl State {
     fn pack(self) -> usize {
-        (self.playing as usize) | (self.thumb_up as usize) << 1 | (self.thumb_down as usize) << 2
+        (self.playing as usize)
+            | (self.thumb_up as usize) << 1
+            | (self.thumb_down as usize) << 2
+            | (self.remote as usize) << 3
     }
 
     fn unpack(bits: usize) -> State {
@@ -97,6 +103,7 @@ impl State {
             playing: bits & 1 != 0,
             thumb_up: bits & 2 != 0,
             thumb_down: bits & 4 != 0,
+            remote: bits & 8 != 0,
         }
     }
 }
@@ -448,26 +455,37 @@ const SLOTS: &[(&str, bool)] = &[
 ];
 
 fn describe(state: State) -> [THUMBBUTTON; 5] {
+    // While a network player owns playback we can only drive its transport, and
+    // the thumb state we hold belongs to the (idle) Pandora page — so thumbs are
+    // greyed out and drawn unset rather than left looking live but inert. The
+    // left button is also a genuine previous-track there, not Pandora's replay.
+    let remote = state.remote;
     let spec = |button: Button| -> (u32, &'static str) {
         match button {
-            Button::ThumbDown if state.thumb_down => (slot::THUMB_DOWN_ON, "Thumbs down (set)"),
+            Button::ThumbDown if state.thumb_down && !remote => {
+                (slot::THUMB_DOWN_ON, "Thumbs down (set)")
+            }
+            Button::ThumbDown if remote => (slot::THUMB_DOWN, "Thumbs down (Pandora only)"),
             Button::ThumbDown => (slot::THUMB_DOWN, "Thumbs down"),
+            Button::Replay if remote => (slot::REPLAY, "Previous track"),
             Button::Replay => (slot::REPLAY, "Replay"),
             Button::PlayPause if state.playing => (slot::PAUSE, "Pause"),
             Button::PlayPause => (slot::PLAY, "Play"),
             Button::Skip => (slot::SKIP, "Skip"),
-            Button::ThumbUp if state.thumb_up => (slot::THUMB_UP_ON, "Thumbs up (set)"),
+            Button::ThumbUp if state.thumb_up && !remote => (slot::THUMB_UP_ON, "Thumbs up (set)"),
+            Button::ThumbUp if remote => (slot::THUMB_UP, "Thumbs up (Pandora only)"),
             Button::ThumbUp => (slot::THUMB_UP, "Thumbs up"),
         }
     };
 
     Button::ALL.map(|button| {
         let (bitmap, tip) = spec(button);
+        let inert = remote && matches!(button, Button::ThumbUp | Button::ThumbDown);
         let mut thumb = THUMBBUTTON {
             dwMask: THB_BITMAP | THB_TOOLTIP | THB_FLAGS,
             iId: button as u32,
             iBitmap: bitmap,
-            dwFlags: THBF_ENABLED,
+            dwFlags: if inert { THBF_DISABLED } else { THBF_ENABLED },
             ..Default::default()
         };
         for (dst, ch) in thumb.szTip.iter_mut().zip(tip.encode_utf16()) {
@@ -655,6 +673,47 @@ fn render_pixmap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tip(button: &THUMBBUTTON) -> String {
+        let end = button.szTip.iter().position(|c| *c == 0).unwrap_or(0);
+        String::from_utf16_lossy(&button.szTip[..end])
+    }
+
+    /// A network player can only be driven for transport, so the Pandora-only
+    /// buttons must go inert rather than sit there looking clickable.
+    #[test]
+    fn remote_mode_disables_pandora_only_buttons() {
+        let local = describe(State {
+            playing: true,
+            thumb_up: true,
+            ..Default::default()
+        });
+        assert_eq!(local[4].dwFlags, THBF_ENABLED);
+        assert_eq!(local[4].iBitmap, slot::THUMB_UP_ON);
+        assert_eq!(tip(&local[1]), "Replay");
+
+        let remote = describe(State {
+            playing: true,
+            thumb_up: true,
+            remote: true,
+            ..Default::default()
+        });
+        for i in [0, 4] {
+            assert_eq!(
+                remote[i].dwFlags, THBF_DISABLED,
+                "thumb {i} should be inert"
+            );
+        }
+        // A stale local thumb must not read as "set" against a remote track.
+        assert_eq!(remote[4].iBitmap, slot::THUMB_UP);
+        // Replay is a real previous-track on a renderer.
+        assert_eq!(tip(&remote[1]), "Previous track");
+        // Transport stays live.
+        for i in [1, 2, 3] {
+            assert_eq!(remote[i].dwFlags, THBF_ENABLED, "transport {i} stays live");
+        }
+        assert_eq!(remote[2].iBitmap, slot::PAUSE);
+    }
 
     /// Renders every glyph as ASCII art so the shapes can be eyeballed without
     /// launching the app — a blank or clipped icon is obvious here.

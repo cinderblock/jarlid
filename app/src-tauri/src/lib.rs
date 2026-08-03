@@ -286,6 +286,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         let playing = playing_now.clone();
         let up = thumb_up.clone();
         let down = thumb_down.clone();
+        let remote = remote_active.clone();
         Arc::new(move || {
             use std::sync::atomic::Ordering;
             if let Some(b) = bar.lock().unwrap().as_ref() {
@@ -293,6 +294,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
                     playing: playing.load(Ordering::Relaxed),
                     thumb_up: up.load(Ordering::Relaxed),
                     thumb_down: down.load(Ordering::Relaxed),
+                    remote: remote.load(Ordering::Relaxed),
                 });
             }
         })
@@ -518,8 +520,12 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         if !active {
             if was_active {
                 r_last_meta.lock().unwrap().clear();
+                r_push(); // back to local: the Pandora-only buttons live again
             }
             return;
+        }
+        if !was_active {
+            r_push(); // renderer took over: grey out what it can't do
         }
 
         let artist = s("artist");
