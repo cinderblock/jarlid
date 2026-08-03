@@ -477,6 +477,51 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
   markdown reformats every file repo-wide. Only `cargo fmt` applies here.
 - VERIFY (user, v0.6.9): hover the Jarlid taskbar button — five buttons appear under the preview;
   play/pause glyph tracks playback; thumbs fill in when set.
+- **v0.6.9 FAILED first user test: "icons load, interactions don't, and they don't change with
+  thumb state."** Icons loading proved registration + the HICON/imagelist path were fine, so the
+  fault was after registration.
+- ROOT CAUSE (glyphs never updating): the `TaskbarButtonCreated` handler did
+  `added = false; ensure_buttons(...)`, and `ensure_buttons` then assigned the result of a SECOND
+  `ThumbBarAddButtons` back to `added`. That call is **once-per-window and always fails**, so
+  `added` latched to false forever and every later `update_buttons` bailed out on `!added`.
+  The broadcast is not an edge case: Tauri shows the window before `setup()` runs, so the message
+  is already queued and gets dispatched moments after `install` succeeds. **Lesson: a failed
+  re-add must never clear `added`** — `ensure_buttons` now takes a `force` flag and only ever ORs
+  success in.
+- Also fixed while in there: `build_images` freed the displaced HIMAGELIST *before* the shell was
+  handed the replacement (would have yanked bitmaps out from under a live toolbar on a theme/DPI
+  change). It now returns the old list for the caller to `discard()` after `ThumbBarSetImageList`.
+- Diagnostics added: `[thumbbar] add attempt: ok=…`, `[thumbbar] click id=…`, and a debug-only
+  log of any other `WM_COMMAND`, so "does the shell's click even reach us" is answerable from the
+  dev console instead of by guesswork.
+
+## Round 29 (2026-08-02): v0.6.10 — the buttons did nothing because the app was ELEVATED
+- **THE ACTUAL ROOT CAUSE of "icons load, interactions don't": UIPI.** Explorer runs at *medium*
+  integrity. Jarlid was being launched from an **elevated** shell, so its window was *high*
+  integrity, and Windows silently drops window messages sent from lower to higher integrity.
+  Everything one-directional still worked, which is exactly why it was so confusing:
+  - registering the toolbar is an **outbound COM** call → fine, so the icons drew perfectly;
+  - state updates are our own **same-process `PostMessage`** → fine, so thumbs/play state did
+    reach the toolbar (the log proved `update ok`);
+  - the button press is an **inbound `WM_COMMAND` from explorer** → **blocked**. Nothing arrived,
+    not even a stray `WM_COMMAND`.
+  `TaskbarButtonCreated` never arriving in any dev run was the same thing, and was the clue that
+  should have been followed sooner.
+- FIX: `ChangeWindowMessageFilterEx(hwnd, WM_COMMAND, MSGFLT_ALLOW, …)` alongside the existing
+  allowance for the `TaskbarButtonCreated` broadcast. Harmless when not elevated. CONFIRMED by
+  the user: `[thumbbar] click id=3 / id=5 / id=2` now logged, music pauses, buttons work.
+- **Diagnostic lesson (the expensive one): check the integrity level before debugging a Win32
+  message that "never arrives."** Three rounds went into theorising about `ThumbBarAddButtons`
+  semantics when a one-line elevation check would have found it. Symptom signature to remember:
+  *outbound calls to the shell succeed, inbound notifications never come.*
+- Process lesson: don't hand the user a build to test that was launched from an elevated shell —
+  it does not reproduce how they actually run the app, and it invented this entire bug. Launch
+  test installs non-elevated (`explorer.exe <path>` de-elevates from an admin shell).
+- Harness lesson: `bun run tauri dev` started as a harness background task gets torn down between
+  turns, killing the app mid-test. Use `Start-Process … -RedirectStandardError <file>` so the app
+  survives and the log persists at `%TEMP%\jarlid-dev.err.log`.
+- The round-28 `added`-latch bug and the image-list-free-before-swap bug were both real and are
+  still fixed, but neither was what the user was seeing.
 
 ## Round 25 (2026-07-12): v0.6.6 — lyrics vanish during long pause
 - Lyrics disappeared during a long pause, back only next song. Cause: UI lyrics reload key was
