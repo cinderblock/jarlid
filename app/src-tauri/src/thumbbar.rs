@@ -140,9 +140,16 @@ pub fn install(hwnd: isize, on_click: impl Fn(Button) + 'static) -> Result<Thumb
         if taskbar_created == 0 {
             return Err("RegisterWindowMessageW(TaskbarButtonCreated) failed".into());
         }
-        // Elevated processes drop broadcasts from the (unelevated) shell unless
-        // the message is explicitly allowed through.
-        let _ = ChangeWindowMessageFilterEx(window, taskbar_created, MSGFLT_ALLOW, None);
+        // UIPI blocks window messages sent from a lower-integrity process to a
+        // higher-integrity window. Explorer runs at medium integrity, so if
+        // Jarlid is running elevated the shell can still *draw* our toolbar
+        // (that goes out over COM) but every button press it sends back is
+        // silently dropped — buttons that look perfect and do nothing. Both the
+        // click notification and the taskbar-button broadcast have to be
+        // allowed through explicitly. Harmless when not elevated.
+        for message in [taskbar_created, WM_COMMAND] {
+            let _ = ChangeWindowMessageFilterEx(window, message, MSGFLT_ALLOW, None);
+        }
 
         let ctx = Box::into_raw(Box::new(Ctx {
             on_click: Box::new(on_click),
@@ -158,7 +165,7 @@ pub fn install(hwnd: isize, on_click: impl Fn(Button) + 'static) -> Result<Thumb
         // The taskbar button usually exists by now (Tauri shows the window
         // before `setup` runs), in which case this succeeds immediately. If it
         // doesn't, TaskbarButtonCreated and the retry timer both cover us.
-        ensure_buttons(&*ctx, window);
+        ensure_buttons(&*ctx, window, false);
         if !(*ctx).inner.borrow().added {
             SetTimer(Some(window), TIMER_ID, 500, None);
         }
@@ -207,16 +214,26 @@ unsafe extern "system" fn subclass_proc(
 
     match msg {
         m if m == ctx.taskbar_created => {
-            // Explorer restarted (or the button was only just created): the old
-            // toolbar is gone with it, so allow a fresh add.
-            ctx.inner.borrow_mut().added = false;
-            ensure_buttons(ctx, hwnd);
+            // Either explorer restarted (our toolbar died with the old taskbar
+            // button and must be rebuilt) or this is just the startup broadcast
+            // arriving after `install` already built it. We cannot tell the two
+            // apart, so always re-attempt — `ensure_buttons` is careful never to
+            // treat the resulting failure as "we have no toolbar".
+            eprintln!("[thumbbar] TaskbarButtonCreated");
+            ensure_buttons(ctx, hwnd, true);
         }
-        WM_COMMAND if (wparam.0 >> 16) as u16 == THBN_CLICKED => {
-            if let Some(button) = Button::from_id(wparam.0 as u16) {
-                (ctx.on_click)(button);
+        WM_COMMAND => {
+            let notify = (wparam.0 >> 16) as u16;
+            let id = wparam.0 as u16;
+            if notify == THBN_CLICKED {
+                eprintln!("[thumbbar] click id={id}");
+                if let Some(button) = Button::from_id(id) {
+                    (ctx.on_click)(button);
+                }
+                return LRESULT(0);
             }
-            return LRESULT(0);
+            #[cfg(debug_assertions)]
+            eprintln!("[thumbbar] other WM_COMMAND notify=0x{notify:04x} id={id}");
         }
         WM_TIMER if wparam.0 == TIMER_ID => {
             let mut inner = ctx.inner.borrow_mut();
@@ -227,7 +244,7 @@ unsafe extern "system" fn subclass_proc(
             if done || give_up {
                 let _ = KillTimer(Some(hwnd), TIMER_ID);
             } else {
-                ensure_buttons(ctx, hwnd);
+                ensure_buttons(ctx, hwnd, false);
                 if ctx.inner.borrow().added {
                     let _ = KillTimer(Some(hwnd), TIMER_ID);
                 }
@@ -242,6 +259,8 @@ unsafe extern "system" fn subclass_proc(
                 inner.state = state;
                 changed
             };
+            #[cfg(debug_assertions)]
+            eprintln!("[thumbbar] state {state:?} changed={changed}");
             if changed {
                 update_buttons(ctx, hwnd);
             }
@@ -317,38 +336,53 @@ fn release(ctx: &Ctx) {
     ctx.inner.borrow_mut().busy = false;
 }
 
-/// Create the toolbar, if the taskbar button exists yet. Safe to call repeatedly.
-unsafe fn ensure_buttons(ctx: &Ctx, hwnd: HWND) {
-    if ctx.inner.borrow().added {
+/// Create the toolbar, if the taskbar button exists yet. Safe to call
+/// repeatedly. `force` re-attempts even when we believe a toolbar already
+/// exists, for the case where explorer restarted underneath us.
+unsafe fn ensure_buttons(ctx: &Ctx, hwnd: HWND, force: bool) {
+    if !force && ctx.inner.borrow().added {
         return;
     }
     let Some(taskbar) = claim(ctx) else { return };
 
-    let (images, buttons) = {
+    let (images, stale, buttons) = {
         let mut inner = ctx.inner.borrow_mut();
-        build_images(&mut inner, hwnd);
-        (inner.images, describe(inner.state))
+        let stale = build_images(&mut inner, hwnd);
+        (inner.images, stale, describe(inner.state))
     };
     if let Some(images) = images {
         let _ = taskbar.ThumbBarSetImageList(hwnd, images);
     }
-    let added = taskbar.ThumbBarAddButtons(hwnd, &buttons).is_ok();
+    discard(stale);
+    let ok = taskbar.ThumbBarAddButtons(hwnd, &buttons).is_ok();
 
     let mut inner = ctx.inner.borrow_mut();
-    inner.added = added;
+    // NEVER clear `added` on failure. ThumbBarAddButtons is once-per-window, so
+    // the TaskbarButtonCreated broadcast that lands during normal startup —
+    // after `install` has already added the buttons — is *expected* to fail
+    // here. Recording that as "no toolbar" is what previously froze the buttons
+    // on their first glyphs: every later update bailed out on `!added`.
+    inner.added |= ok;
     inner.busy = false;
-    if added {
-        eprintln!("[thumbbar] {} buttons registered", buttons.len());
-    }
+    eprintln!(
+        "[thumbbar] add attempt: ok={ok}, have toolbar={}",
+        inner.added
+    );
 }
 
 unsafe fn update_buttons(ctx: &Ctx, hwnd: HWND) {
     if !ctx.inner.borrow().added {
+        eprintln!("[thumbbar] update skipped: no toolbar");
         return;
     }
-    let Some(taskbar) = claim(ctx) else { return };
+    let Some(taskbar) = claim(ctx) else {
+        eprintln!("[thumbbar] update skipped: shell busy");
+        return;
+    };
     let buttons = describe(ctx.inner.borrow().state);
-    let _ = taskbar.ThumbBarUpdateButtons(hwnd, &buttons);
+    if let Err(e) = taskbar.ThumbBarUpdateButtons(hwnd, &buttons) {
+        eprintln!("[thumbbar] update failed: {e}");
+    }
     release(ctx);
 }
 
@@ -357,18 +391,28 @@ unsafe fn update_buttons(ctx: &Ctx, hwnd: HWND) {
 unsafe fn refresh_images(ctx: &Ctx, hwnd: HWND) {
     let Some(taskbar) = claim(ctx) else { return };
 
-    let (images, buttons, added) = {
+    let (images, stale, buttons, added) = {
         let mut inner = ctx.inner.borrow_mut();
-        build_images(&mut inner, hwnd);
-        (inner.images, describe(inner.state), inner.added)
+        let stale = build_images(&mut inner, hwnd);
+        (inner.images, stale, describe(inner.state), inner.added)
     };
     if let Some(images) = images {
         let _ = taskbar.ThumbBarSetImageList(hwnd, images);
     }
+    // Only now that the shell has the replacement is the old list safe to free.
+    discard(stale);
     if added {
-        let _ = taskbar.ThumbBarUpdateButtons(hwnd, &buttons);
+        if let Err(e) = taskbar.ThumbBarUpdateButtons(hwnd, &buttons) {
+            eprintln!("[thumbbar] update failed: {e}");
+        }
     }
     release(ctx);
+}
+
+unsafe fn discard(list: Option<HIMAGELIST>) {
+    if let Some(list) = list {
+        let _ = ImageList_Destroy(Some(list));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +482,12 @@ fn describe(state: State) -> [THUMBBUTTON; 5] {
 // ---------------------------------------------------------------------------
 
 /// Rebuild `inner.images` if the DPI or theme moved (or there is no list yet).
-unsafe fn build_images(inner: &mut Inner, hwnd: HWND) {
+///
+/// Returns the list it displaced, if any. The caller must hold onto that until
+/// the shell has been handed the replacement — freeing it first would pull the
+/// bitmaps out from under a toolbar that is still pointing at them.
+#[must_use]
+unsafe fn build_images(inner: &mut Inner, hwnd: HWND) -> Option<HIMAGELIST> {
     let dpi = match GetDpiForWindow(hwnd) {
         0 => 96,
         dpi => dpi,
@@ -446,13 +495,13 @@ unsafe fn build_images(inner: &mut Inner, hwnd: HWND) {
     let px = GetSystemMetricsForDpi(SM_CXSMICON, dpi).max(16) as u32;
     let light = light_theme();
     if inner.images.is_some() && inner.icon_px == px && inner.light_theme == light {
-        return;
+        return None;
     }
 
     let height = GetSystemMetricsForDpi(SM_CYSMICON, dpi).max(16) as u32;
     let images = ImageList_Create(px as i32, height as i32, ILC_COLOR32, SLOTS.len() as i32, 0);
     if images.is_invalid() {
-        return;
+        return None;
     }
 
     // The thumbnail flyout paints on the taskbar's backdrop, and the shell does
@@ -462,17 +511,15 @@ unsafe fn build_images(inner: &mut Inner, hwnd: HWND) {
     for (id, filled) in SLOTS {
         let Some(icon) = render_icon(id, *filled, px, height, colour) else {
             let _ = ImageList_Destroy(Some(images));
-            return;
+            return None;
         };
         ImageList_ReplaceIcon(images, -1, icon);
         let _ = DestroyIcon(icon);
     }
 
-    if let Some(old) = inner.images.replace(images) {
-        let _ = ImageList_Destroy(Some(old));
-    }
     inner.icon_px = px;
     inner.light_theme = light;
+    inner.images.replace(images)
 }
 
 /// `SystemUsesLightTheme` — the taskbar (and therefore the thumbnail flyout)
