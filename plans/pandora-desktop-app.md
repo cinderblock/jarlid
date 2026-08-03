@@ -432,6 +432,52 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
 - VERIFY (user, v0.6.8): thumb up lights green/filled and stays through the track; clicking
   again clears it; thumbs set from Pandora's own tuner bar show up in Jarlid too.
 
+## Round 28 (2026-08-02): v0.6.9 — taskbar thumbnail toolbar
+- User: "the windows taskbar level play-pause media controls don't exist… media keys work, but I
+  want the taskbar hover buttons."
+- **Key insight: these are a different OS surface from SMTC, not a broken SMTC.** `souvlaki` owns
+  media keys / volume flyout / lock screen; none of those APIs know anything about the row of
+  buttons under the taskbar hover preview. That row is `ITaskbarList3::ThumbBarAddButtons`, and
+  its presses come back as `WM_COMMAND` with `THBN_CLICKED` in the high word — which also means
+  subclassing Tauri's window, since Tauri exposes no window-proc hook.
+- New `app/src-tauri/src/thumbbar.rs` (Windows-only). Buttons, left to right (user's choice):
+  thumbs down / replay / play-pause / skip / thumbs up.
+- `lib.rs`: the SMTC button callback was refactored into a shared `Action` dispatcher that BOTH
+  surfaces call, so remote-vs-local routing, the 2s optimistic grace and the `player://optimistic`
+  UI hint can never drift between them. Thumbs are engine-only (empty remote command → ignored
+  while a DLNA/WiiM renderer owns playback, where a thumb means nothing).
+- Glyphs come from `app/index.html` **at build time**: `build.rs` extracts the inner markup of the
+  transport `<svg>`s by element id (`thumbDown`/`replay`/`play-icon`/`pause-icon`/`skip`/`thumbUp`)
+  into `$OUT_DIR/glyphs.rs`, and a missing id is a hard build error. So the taskbar can't silently
+  keep showing old artwork after a UI icon redesign. Rendered with `resvg` (added with
+  `default-features = false` → 18 crates, no font stack). `windows` 0.61 unified with Tauri's.
+- State-driven: play/pause swaps glyph + tooltip; an active thumb switches to the filled variant
+  (same fill-when-active rule as the in-app buttons, fed by the existing `engine://thumbs` event).
+- Icons are re-rendered on `WM_DPICHANGED` and on `WM_SETTINGCHANGE`/`ImmersiveColorSet` — the
+  shell does NOT tint thumbbar bitmaps, so a white glyph is invisible on a light taskbar. Colour
+  follows `SystemUsesLightTheme` (the taskbar key, not the app-mode one).
+- **Gotcha worth remembering: `ITaskbarList3` calls pump messages.** It's a cross-apartment call
+  into explorer, so the window proc can re-enter mid-call. First draft held a `RefCell` borrow
+  across `ThumbBarAddButtons` → a re-entrant `WM_TIMER` would have panicked, and could have added
+  the buttons twice. Fixed with a `busy` claim/release guard and by never holding a borrow across
+  a shell call.
+- Other traps handled: `ThumbBarAddButtons` may only be called ONCE per window (afterwards it's
+  `ThumbBarUpdateButtons`); it fails until the taskbar button exists, so setup tries immediately,
+  then on the registered `TaskbarButtonCreated` broadcast, then on a 500ms timer (<=20s) — and
+  re-adds if explorer restarts. `ChangeWindowMessageFilterEx` lets the broadcast through if the
+  app is ever elevated.
+- Verifying the artwork without hovering a taskbar: `cargo test --lib thumbbar -- --nocapture`
+  prints every glyph as ASCII art at 32px. Cheap, and catches blank/clipped icons instantly.
+- Verifying the CLICK path without hovering: PostMessage `WM_COMMAND` with
+  wparam `(0x1800 << 16) | id` straight at the window. Confirmed 2026-08-02 — id 3 froze the
+  playhead at 110.02s, a second one resumed it (110.6 -> 135.6). No panics.
+- Note on tooltips: the global "never use `title=`" rule is about HTML. `THUMBBUTTON::szTip` is
+  the only label a thumbbar button has, and is what screen readers announce, so it is used here.
+- GOTCHA (process hygiene): this repo has NO prettier config — running `bunx prettier` on the
+  markdown reformats every file repo-wide. Only `cargo fmt` applies here.
+- VERIFY (user, v0.6.9): hover the Jarlid taskbar button — five buttons appear under the preview;
+  play/pause glyph tracks playback; thumbs fill in when set.
+
 ## Round 25 (2026-07-12): v0.6.6 — lyrics vanish during long pause
 - Lyrics disappeared during a long pause, back only next song. Cause: UI lyrics reload key was
   title|artist|album; Pandora collapses the now-playing view when paused a while → album field
