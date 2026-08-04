@@ -73,6 +73,14 @@ Requirements: Rust, Bun, and the WebView2 runtime (all already present on the de
 First launch: log in to Pandora once in the engine window; the session persists (WebView2 user
 data keyed to app id `com.camer.pandora-desktop`).
 
+`scripts/stress-window-move.ps1` is a regression test for the window-state saver deadlock fixed
+in v0.6.12 — it hammers the window with moves timed to collide with the debounced state save.
+Worth running against a release build after touching window-state or event-loop code:
+
+```sh
+pwsh scripts/stress-window-move.ps1 -Exe app/src-tauri/target/release/jarlid.exe
+```
+
 ## Install
 
 Grab `Jarlid_<version>_x64-setup.exe` from the
