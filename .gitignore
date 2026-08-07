@@ -10,3 +10,8 @@ Thumbs.db
 node_modules/
 dist/
 target/
+
+# Secrets — real credentials for the protocol probe. `.env.example` is deliberately NOT matched
+# here, so it stays tracked as the template.
+.env
+.env.local
