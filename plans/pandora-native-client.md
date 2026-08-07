@@ -34,6 +34,7 @@ via environment variables so it never enters a file or a transcript.
 3. **Audio decode: Windows Media Foundation.** Decodes HE-AAC (incl. SBR/PS) natively with no
    extra shipped dependency; the app is already Windows-only and already uses `windows-rs` for
    SMTC and the thumbbar. Symphonia is rejected — no SBR/PS, would decode dull and half-bandwidth.
+   ✅ **Confirmed empirically 2026-08-07** — the stream really is HE-AAC with SBR (see findings).
 
 **Note for the user, recorded so it is not re-explained:** PerimeterX (now HUMAN Security, after
 merging with White Ops in 2022) is a commercial bot-detection service, same category as Cloudflare
@@ -248,6 +249,49 @@ sample rate, no high band, audibly dull. Options:
 - 2026-08-07 Deviated from pydora on one detail deliberately: pydora extracts `syncTime` with a
   hardcoded `[4:-2]` slice, which assumes a fixed padding length. We skip the 4 junk bytes and then
   take ASCII digits, which is robust to padding changes. Covered by a unit test.
+
+### 2026-08-07 Audio decision CLOSED — HE-AAC confirmed, Symphonia definitively ruled out
+
+`cargo run --bin audio-probe` runs the whole chain on the **anonymous** tier (no account touched):
+anonymous login → search → createStation → getFragment → real signed audio URL → Range-fetch the
+container → parse the AudioSpecificConfig out of `moov/…/stsd/mp4a/esds`.
+
+Result on a real Pandora stream (Pink Floyd station, `audioEncoding: "aacplus"`):
+
+```
+codec:        HE-AAC (AAC-LC + SBR)
+output rate:  44100 Hz
+channels:     2
+core rate:    22050 Hz (SBR doubles it to 44100)
+boxes: ftyp moov mvhd trak tkhd edts elst mdia mdhd hdlr minf smhd dinf dref stbl
+       stsd mp4a esds btrt stts stsc stsz stco sgpd sbgp udta meta hdlr ilst free mdat
+```
+
+- **SBR is required.** Audio Object Type 5. Symphonia would decode the core layer only — 22050 Hz
+  instead of 44100 Hz, no high band, audibly dull. **Windows Media Foundation confirmed.**
+- **No DRM, proven structurally**: not one of `pssh` `sinf` `schm` `tenc` `enca` `encv` appears
+  anywhere in the box tree. Plain progressive MP4/AAC, Range requests honoured (`206`).
+- **No XOR `key` field** on this tier — the obfuscation path stays dormant. Paid tier still
+  `[UNCONFIRMED]`; the credentialed probe checks it.
+- The whole flow works with **a plain HTTP client, no browser, no bot-detection trouble** —
+  strong evidence the REST surface is fully reachable natively once we hold a token.
+
+**API corrections found the hard way** (the 2021 public docs are wrong here):
+- `station/createStation` wants **`pandoraId`** (e.g. `AR:105740`). The documented `stationCode`
+  field is rejected with `GENERIC`; `musicId` with `INVALID_REQUEST`.
+- `search/fullSearch` **ignores the `types` filter** — it returns composers/genres/tracks mixed in
+  regardless, so filter client-side on `type == "artist"` or you'll seed a station with a composer.
+- Audio hosts vary per request (`t1-4.p-cdn.us`, `audio-usc-mp1-t1-1-v4v6.pandora.com`) — don't
+  pin a hostname.
+- `moov` was at the front here, but the probe falls back to fetching the file tail, since
+  non-streaming-optimised MP4s put it last. Keep that fallback.
+
+**Two parser bugs worth remembering** (both fixed, both would have silently produced wrong answers):
+1. The box walker bailed entirely when a box ran past a truncated download, so a 32 KiB fetch
+   reported only `ftyp` and hid the whole tree.
+2. `box_types` recursed into *non-container* boxes, parsing raw media and table data as box names.
+   That risked a **false positive on the DRM check** — random bytes can spell `sinf`. Recursion is
+   now restricted to a known container list with correct per-box header offsets.
 - Jarlid **already** calls the REST API in one place: `bridge.js refreshStationList()` POSTs
   `/api/v1/station/getStations` with `X-CsrfToken` lifted from the session (sibling plan line 356).
   That is a working, in-production proof that REST + a session token works for this account.
