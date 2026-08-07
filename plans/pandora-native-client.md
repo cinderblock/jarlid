@@ -242,8 +242,11 @@ sample rate, no high band, audibly dull. Options:
 3. [ ] **Measure REST audio bitrate on the paid tier** — the last open question. Needs Jarlid
    closed (it holds the account's one stream). Run `cargo run --bin probe -- --rest-only`.
    If REST yields >64 kbps, that alone justifies the whole pivot on sound quality.
-4. [ ] Flesh out the `pandora` crate: typed models for stations, fragments, transport actions
-   (`action/*`), feedback, search. Login over tuner, everything else over REST.
+4. [x] **Typed client built and verified read-only** — `pandora::Client` (tuner login → REST),
+   `models::{Station, Track, Art}`, paginated `stations()`, `fragment()`, `search()`, and silent
+   re-login on token expiry. `cargo run --example list-stations` returns 88 stations with 0
+   missing names or ids. Write paths (thumbs, tired, trackStarted) are implemented but
+   **deliberately unexecuted** — see below.
 5. [ ] Player: prefetch next track, handle `STREAM_VIOLATION` gracefully, expose playback
    position for lyric sync.
 6. [ ] Define a `PandoraEngine` trait; implement `NativeEngine`; keep `WebviewEngine` until parity.
@@ -381,6 +384,28 @@ Media Foundation's own scheme handlers open Pandora's signed HTTPS URL directly 
 progressively — first audio 4.5 ms after opening, so it is not buffering the whole file. **The
 "implement a custom IMFByteStream" work item is deleted.** Playback can start ~170 ms after a
 track URL is in hand, with no temp file and nothing touching disk.
+
+### 2026-08-07 Typed client — design notes
+
+- **Every model field is `#[serde(default)]` on purpose.** This is an undocumented API we don't
+  control. A field Pandora renames should degrade one value, never fail the whole response and
+  take the user's music with it. Real-world justification from the live run: 3 of 88 stations have
+  no art at all, and only 72 of 88 carry `dominantColor` — a strict model would have thrown.
+- `dominantColor` (hex RGB sampled from station art) is a free gift for UI theming — the original
+  goal of art-driven visuals, without us analysing images ourselves.
+- `TrackKind` exists because fragments interleave `ArtistMessage` and ad items with real music.
+  Treating those as songs is how a player ends up showing "Now playing: (untitled)" and looking up
+  lyrics for an advert.
+- Auth expiry (code 1001) triggers a silent re-login rather than bouncing the user to a sign-in
+  screen mid-song.
+- Station art is available at **1080px**, which is ample for a full-window hero image.
+
+**⚠️ Write paths are implemented but UNVERIFIED and deliberately never executed.**
+`thumb_up` / `thumb_down` / `tired_of_track` / `report_track_started` mutate the real account —
+thumbs permanently shape a station's behaviour. The endpoint *names* come from the shipping web
+bundle, but the request *bodies* are inferred and the field names are likely wrong (`trackToken`
+vs `pandoraId` is the obvious suspect). **Verify each against a throwaway station before trusting
+it.** Do not assume they work because they compile.
 
 **Two parser bugs worth remembering** (both fixed, both would have silently produced wrong answers):
 1. The box walker bailed entirely when a box ran past a truncated download, so a 32 KiB fetch

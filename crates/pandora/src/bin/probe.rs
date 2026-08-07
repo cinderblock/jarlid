@@ -17,41 +17,6 @@
 use pandora::{rest, tuner};
 use serde_json::{json, Value};
 
-/// Load `.env` / `.env.local` into the environment, walking up from the working directory.
-///
-/// Exists because `wenv` exports into *its* shell session, which a separately-launched process
-/// does not inherit. Nearest file wins, but empty values never override a real one, so a stale
-/// half-filled `.env` in a subdirectory can't shadow the real one at the repo root.
-fn load_dotenv() {
-    let Ok(start) = std::env::current_dir() else {
-        return;
-    };
-
-    for directory in start.ancestors() {
-        for name in [".env.local", ".env"] {
-            let Ok(contents) = std::fs::read_to_string(directory.join(name)) else {
-                continue;
-            };
-            for line in contents.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                let Some((key, value)) = line.split_once('=') else {
-                    continue;
-                };
-                let key = key.trim();
-                let value = value.trim().trim_matches(['"', '\'']);
-                if value.is_empty() || std::env::var_os(key).is_some_and(|v| !v.is_empty()) {
-                    continue;
-                }
-                // SAFETY: single-threaded startup, before any threads are spawned.
-                unsafe { std::env::set_var(key, value) };
-            }
-        }
-    }
-}
-
 /// Show enough of a token to correlate across calls, never enough to use.
 fn redact(token: &str) -> String {
     let head: String = token.chars().take(6).collect();
@@ -64,8 +29,6 @@ fn heading(text: &str) {
 
 #[tokio::main]
 async fn main() {
-    load_dotenv();
-
     // Step 1 needs no account, so run it first: it independently proves the tuner API is alive
     // and that our Blowfish codec round-trips against the real server (syncTime decrypts).
     heading("1. tuner auth.partnerLogin");
@@ -81,10 +44,7 @@ async fn main() {
         }
     };
 
-    let (Ok(username), Ok(password)) = (
-        std::env::var("PANDORA_USERNAME"),
-        std::env::var("PANDORA_PASSWORD"),
-    ) else {
+    let Some((username, password)) = pandora::demo::credentials() else {
         println!("\nStopping here: no credentials in the environment, so the account-specific");
         println!("steps are skipped. The protocol and our crypto are confirmed working.");
         println!("To run the rest:");

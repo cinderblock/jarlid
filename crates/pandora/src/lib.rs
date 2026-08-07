@@ -9,11 +9,16 @@
 //!
 //! See `plans/pandora-native-client.md` for the protocol research this is built on.
 
+pub mod client;
 pub mod crypto;
 pub mod demo;
+pub mod models;
 pub mod mp4;
 pub mod rest;
 pub mod tuner;
+
+pub use client::Client;
+pub use models::{Art, Station, Track, TrackKind};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
