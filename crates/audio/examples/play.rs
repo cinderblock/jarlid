@@ -60,20 +60,27 @@ async fn main() {
         started.elapsed()
     );
 
-    // Exercise pause/resume too — a player that can't pause isn't a player.
+    // The pause test is opt-in: during a listening check an unexplained gap just sounds like a
+    // fault. Pass `pause` as the third argument to exercise it.
+    let test_pause = std::env::args().any(|a| a == "pause");
     let mut paused_once = false;
+
     while player.position() < Duration::from_secs(seconds) && !player.is_finished() {
         std::thread::sleep(Duration::from_millis(500));
+        // `drift` must stay ~0. If it climbs, decoded samples are being lost — the track races
+        // ahead of real time and the stereo channels can swap. Watch it, don't just listen.
         println!(
-            "  position {:>5.1}s   buffered {:>4.1}s{}",
+            "  position {:>5.1}s   buffered {:>4.1}s   decoded {:>5.1}s   drift {:>5.2}s{}",
             player.position().as_secs_f64(),
             player.buffered().as_secs_f64(),
+            player.decoded().as_secs_f64(),
+            player.drift().as_secs_f64(),
             if player.is_paused() { "   [paused]" } else { "" }
         );
 
-        if !paused_once && player.position() > Duration::from_secs(2) {
+        if test_pause && !paused_once && player.position() > Duration::from_secs(2) {
             paused_once = true;
-            println!("  -- pausing for 1s --");
+            println!("  -- pausing for 1s (deliberate) --");
             player.set_paused(true);
             std::thread::sleep(Duration::from_secs(1));
             player.set_paused(false);

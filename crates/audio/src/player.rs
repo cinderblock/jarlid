@@ -28,6 +28,10 @@ const TARGET_BUFFER: Duration = Duration::from_secs(5);
 
 struct Shared {
     frames_played: AtomicU64,
+    /// Every sample ever handed to the queue. Exists as a correctness invariant:
+    /// `decoded == position + buffered`. If decoding outruns that sum, samples are being lost —
+    /// which is precisely the bug that once made a 169 s track play out in 15 s.
+    total_decoded: AtomicU64,
     /// Samples currently in the queue. Maintained by both sides so the UI can show buffer health
     /// without touching the queue itself.
     queued: AtomicU64,
@@ -76,6 +80,7 @@ impl Player {
 
         let shared = Arc::new(Shared {
             frames_played: AtomicU64::new(0),
+            total_decoded: AtomicU64::new(0),
             queued: AtomicU64::new(0),
             decoder_finished: AtomicBool::new(false),
             paused: AtomicBool::new(false),
@@ -83,38 +88,61 @@ impl Player {
             volume: AtomicU64::new(1024),
         });
 
-        // Decode thread: keep the queue topped up, backing off when it is full so a track is
-        // streamed rather than pulled wholly into memory.
+        // Decode thread: keep the queue topped up, backing off when full so a track is streamed
+        // rather than pulled wholly into memory.
+        //
+        // CRITICAL: decoded samples are never discarded. An earlier version dropped whatever did
+        // not fit before fetching the next chunk, which both lost audio and — when the dropped
+        // count was odd — permanently shifted left/right interleaving, garbling everything after
+        // it. Anything that doesn't fit stays in `pending` until there is room.
         let decode_shared = Arc::clone(&shared);
-        std::thread::spawn(move || loop {
-            if decode_shared.stopped.load(Ordering::Relaxed) {
-                return;
-            }
+        std::thread::spawn(move || {
+            let mut pending: Vec<i16> = Vec::new();
+            let mut cursor = 0usize;
 
-            if producer.slots() < 4096 {
-                std::thread::sleep(Duration::from_millis(20));
-                continue;
-            }
+            loop {
+                if decode_shared.stopped.load(Ordering::Relaxed) {
+                    return;
+                }
 
-            match decoder.next_chunk() {
-                Ok(Some(chunk)) => {
+                // Drain whatever is left over before decoding anything new.
+                if cursor < pending.len() {
                     let mut pushed = 0u64;
-                    for pair in chunk.chunks_exact(2) {
-                        let sample = i16::from_le_bytes([pair[0], pair[1]]);
-                        // The queue can fill mid-chunk; drop the remainder rather than spin, the
-                        // decoder will be asked again shortly.
-                        if producer.push(sample).is_err() {
+                    while cursor < pending.len() {
+                        if producer.push(pending[cursor]).is_err() {
                             break;
                         }
+                        cursor += 1;
                         pushed += 1;
                     }
-                    decode_shared.queued.fetch_add(pushed, Ordering::Relaxed);
+                    if pushed > 0 {
+                        decode_shared.queued.fetch_add(pushed, Ordering::Relaxed);
+                        decode_shared.total_decoded.fetch_add(pushed, Ordering::Relaxed);
+                    }
+                    if cursor < pending.len() {
+                        // Still full: wait for the callback to consume, then resume mid-buffer.
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    continue;
                 }
-                // End of track, or an unrecoverable decode error: stop producing and let the
-                // queue drain so the ending isn't clipped.
-                Ok(None) | Err(_) => {
-                    decode_shared.decoder_finished.store(true, Ordering::Relaxed);
-                    return;
+
+                pending.clear();
+                cursor = 0;
+
+                match decoder.next_chunk() {
+                    Ok(Some(chunk)) => {
+                        pending.extend(
+                            chunk
+                                .chunks_exact(2)
+                                .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
+                        );
+                    }
+                    // End of track, or an unrecoverable decode error: stop producing and let the
+                    // queue drain so the ending isn't clipped.
+                    Ok(None) | Err(_) => {
+                        decode_shared.decoder_finished.store(true, Ordering::Relaxed);
+                        return;
+                    }
                 }
             }
         });
@@ -232,6 +260,25 @@ impl Player {
         let samples = self.shared.queued.load(Ordering::Relaxed);
         let frames = samples / self.format.channels.max(1) as u64;
         Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
+    }
+
+    /// Total audio handed to the queue since playback began.
+    ///
+    /// Invariant: `decoded() ~= position() + buffered()`. A growing gap means decoded samples are
+    /// being dropped, which sounds like the track playing too fast and, if an odd number is lost,
+    /// permanently swaps the stereo channels. See [`Player::drift`].
+    pub fn decoded(&self) -> Duration {
+        let samples = self.shared.total_decoded.load(Ordering::Relaxed);
+        let frames = samples / self.format.channels.max(1) as u64;
+        Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
+    }
+
+    /// How far `decoded()` has run ahead of what has been played plus what is still queued.
+    ///
+    /// Should stay at essentially zero. Anything that grows over time is lost audio.
+    pub fn drift(&self) -> Duration {
+        self.decoded()
+            .saturating_sub(self.position() + self.buffered())
     }
 
     pub fn format(&self) -> Format {
