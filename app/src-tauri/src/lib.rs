@@ -1,9 +1,10 @@
+mod native;
 #[cfg(windows)]
 mod thumbbar;
 mod upnp;
 
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Listener, Manager};
 
 #[derive(Serialize, Deserialize, Default)]
 struct Lyrics {
@@ -204,22 +205,32 @@ fn from_lrclib(v: &serde_json::Value, source: &str) -> Lyrics {
     }
 }
 
-/// Drive the Pandora engine webview by calling the injected bridge.
-fn engine_cmd(app: &tauri::AppHandle, cmd: &str) -> Result<(), String> {
-    let engine = app
-        .get_webview_window("engine")
-        .ok_or_else(|| "engine window not found".to_string())?;
-    let arg = serde_json::to_string(cmd).unwrap_or_else(|_| "\"\"".into());
-    let js = format!(
-        "window.__PANDORA_BRIDGE__ && window.__PANDORA_BRIDGE__.cmd({});",
-        arg
-    );
-    engine.eval(&js).map_err(|e| e.to_string())
+/// Fire-and-forget transport for callers that aren't async (media keys, taskbar toolbar).
+///
+/// Previously `eval`'d into the injected bridge script; now drives the native engine. Errors are
+/// logged rather than returned because these callers are OS callbacks with nowhere to report to.
+fn engine_cmd(app: &tauri::AppHandle, cmd: &str) {
+    let app = app.clone();
+    let cmd = cmd.to_string();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<native::NativeEngine>();
+        if let Err(e) = native::native_cmd(app.clone(), state, cmd.clone()).await {
+            eprintln!("[native] command {cmd:?} failed: {e}");
+        }
+    });
 }
 
+/// Transport, routed to the native engine.
+///
+/// The name is kept from the webview era so the UI, media keys and taskbar toolbar keep working
+/// unchanged — this used to `eval` into an injected bridge script; now it drives our own player.
 #[tauri::command]
-fn player_cmd(app: tauri::AppHandle, cmd: String) -> Result<(), String> {
-    engine_cmd(&app, &cmd)
+async fn player_cmd(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, native::NativeEngine>,
+    cmd: String,
+) -> Result<(), String> {
+    native::native_cmd(app, state, cmd).await
 }
 
 /// Transport command for the network (UPnP/DLNA) player shown in remote mode.
@@ -344,7 +355,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
                 let _ = upnp::command(&client, &ctl2, &rc).await;
             });
         } else {
-            let _ = engine_cmd(&handle, engine_c);
+            engine_cmd(&handle, engine_c);
         }
         if let Some(p) = desired {
             cb_playing.store(p, Ordering::Relaxed);
@@ -612,33 +623,17 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Toggle the engine window's visibility. Returns the new visibility.
+/// Retained so the UI's existing globe button and Ctrl+Shift+E keep resolving, but there is no
+/// longer a Pandora webview to reveal. Always reports "hidden".
+///
+/// TODO: remove these along with the affordances in `app/src/main.ts` — they are meaningless now.
 #[tauri::command]
-fn toggle_engine(app: tauri::AppHandle) -> Result<bool, String> {
-    let w = app
-        .get_webview_window("engine")
-        .ok_or_else(|| "engine window not found".to_string())?;
-    let visible = w.is_visible().unwrap_or(false);
-    if visible {
-        let _ = w.hide();
-    } else {
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
-    Ok(!visible)
+fn toggle_engine() -> Result<bool, String> {
+    Ok(false)
 }
 
-/// Show or hide the raw Pandora engine window (used for login / debugging).
 #[tauri::command]
-fn show_engine(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("engine") {
-        if visible {
-            let _ = w.show();
-            let _ = w.set_focus();
-        } else {
-            let _ = w.hide();
-        }
-    }
+fn show_engine(_visible: bool) -> Result<(), String> {
     Ok(())
 }
 
@@ -672,6 +667,13 @@ pub fn run() {
             check_update,
             fetch_lyrics,
             install_update,
+            native::native_cmd,
+            native::native_is_signed_in,
+            native::native_play_station,
+            native::native_sign_in,
+            native::native_sign_out,
+            native::native_stations,
+            native::native_volume,
             player_cmd,
             remote_cmd,
             remote_presets,
@@ -679,44 +681,16 @@ pub fn run() {
             toggle_engine
         ])
         .setup(|app| {
-            let bridge = include_str!("../bridge.js");
-            let engine = WebviewWindowBuilder::new(
-                app,
-                "engine",
-                WebviewUrl::External("https://www.pandora.com".parse().unwrap()),
-            )
-            .title("Pandora Engine")
-            .inner_size(1000.0, 720.0)
-            .initialization_script(bridge)
-            // Hidden engine (intended design). Shown only when a login is needed.
-            .visible(false)
-            .build()?;
+            // The native engine: speaks Pandora's protocol directly and plays audio itself.
+            // It emits the same `engine://` events the webview bridge did, so the UI, SMTC
+            // session, thumb toolbar and lyrics sync need no changes.
+            app.manage(native::NativeEngine::default());
+            native::init(&app.handle().clone());
 
-            // The engine is a background window: closing it would destroy the
-            // WebView2 and stop playback. Intercept close and just hide it instead.
-            let engine_for_close = engine.clone();
-            engine.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = engine_for_close.hide();
-                }
-            });
-
-            // Show the engine window only when Pandora needs a login.
-            let h1 = app.handle().clone();
-            app.listen_any("engine://needs-login", move |_| {
-                if let Some(w) = h1.get_webview_window("engine") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            });
-            // Re-hide the raw window once a track is playing (e.g. after a login).
-            let h2 = app.handle().clone();
-            app.listen_any("engine://nowplaying", move |_| {
-                if let Some(w) = h2.get_webview_window("engine") {
-                    let _ = w.hide();
-                }
-            });
+            // The engine webview is gone. Pandora's site is no longer loaded, scraped or
+            // driven — `native::init` above speaks the protocol directly and plays the audio
+            // itself. `engine://needs-login` now means "ask for credentials in our own UI"
+            // rather than "reveal the Pandora page".
 
             // Update check (release builds): notify the UI when a newer GitHub
             // release exists; the banner's button runs install_update.
