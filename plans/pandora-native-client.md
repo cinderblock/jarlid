@@ -246,8 +246,10 @@ sample rate, no high band, audibly dull. Options:
    re-login on token expiry. `cargo run --example list-stations` returns 88 stations with 0
    missing names or ids. Write paths (thumbs, tired, trackStarted) are implemented but
    **deliberately unexecuted** — see below.
-5. [ ] Player: prefetch next track, handle `STREAM_VIOLATION` gracefully, expose playback
-   position for lyric sync.
+5. [x] **Player built — music plays through the speakers.** `audio::Player` with a decode thread,
+   ring buffer, cpal output, pause and volume. Position is honest (see below).
+   Remaining for this step: prefetch the *next* track for gapless transitions, and sequence a
+   whole station rather than one track.
 6. [ ] Define a `PandoraEngine` trait; implement `NativeEngine`; keep `WebviewEngine` until parity.
 7. [ ] Wire existing UI/SMTC/thumbbar/lyrics to the native engine (they consume events, not DOM).
 8. [ ] Send the telemetry endpoints (`trackStarted`, `event/*`, `audioReceiptURL`) so our traffic
@@ -433,6 +435,38 @@ tracks initially rendered with **no artwork at all** (`art: 0px`). The URL encod
 rewrites them to offer 130/500/640/1080. **Verified live: the synthesised 1080px URL resolves
 (HTTP 206)** — not assumed. Unrecognised URL shapes degrade to the original rather than
 fabricating 404s.
+
+### 🔊 2026-08-07 IT PLAYS — `cargo run --example play`
+
+```
+station:  QuickMix
+encoding: mp3 · 153 s
+output: 48000 Hz, 2 ch (started in 242.808ms)
+  position   2.5s   buffered  5.0s
+  -- pausing for 1s --
+  position   3.0s   buffered  5.0s
+played 8.4s
+=> Music played through the speakers. Native client is audible.
+```
+
+Three details that prove the hard parts are right, rather than merely appearing to work:
+
+1. **`output: 48000 Hz`.** The device runs at 48 kHz; Pandora's audio is 44.1 kHz. `Decoder::open_at`
+   requests the device's format so **Media Foundation inserts a resampler**. Ignoring this would
+   have played everything ~9% sharp — subtly wrong in a way that's easy to ship and unpleasant to
+   listen to. No resampling crate needed.
+2. **Pause is real.** Across the pause, 1.5 s of wall-clock elapsed but position advanced only
+   0.5 s. Position is computed from **frames delivered to the device**, not frames decoded —
+   decoding runs ~5 s ahead, so tracking decode progress would run synced lyrics early. This is
+   the correct clock for lyric sync.
+3. **`buffered` holds at ~5 s.** The decode thread backs off when the buffer is full, so a track
+   is streamed rather than pulled wholly into memory.
+
+Architecture: decode thread → `Mutex<VecDeque<i16>>` ring buffer → cpal callback. The callback
+never allocates or blocks (`try_lock`, fixed-point volume) because an audio-thread stall is an
+audible click. Unfilled output is explicitly zeroed — otherwise the device replays stale memory as
+a buzz. `Drop` signals the decode thread to exit so it stops pulling from the network when the
+caller moves on.
 
 ### ⚠️ 2026-08-07 Pandora enforces ONE concurrent stream per account (`STREAM_VIOLATION`)
 

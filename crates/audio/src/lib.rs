@@ -9,9 +9,13 @@
 
 #[cfg(windows)]
 mod media_foundation;
+#[cfg(windows)]
+mod player;
 
 #[cfg(windows)]
 pub use media_foundation::Decoder;
+#[cfg(windows)]
+pub use player::Player;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -42,8 +42,19 @@ pub struct Decoder {
 const FIRST_AUDIO_STREAM: u32 = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
 
 impl Decoder {
-    /// Open a local file (or any URL Media Foundation's scheme handlers accept).
+    /// Open a local file (or any URL Media Foundation's scheme handlers accept), decoding to
+    /// whatever PCM format the source happens to be.
     pub fn open(path: &str) -> Result<Self> {
+        Self::open_at(path, None)
+    }
+
+    /// Open, decoding to a specific PCM format.
+    ///
+    /// Requesting a sample rate makes Media Foundation insert a **resampler** into the pipeline.
+    /// That matters: Pandora's audio is 44.1 kHz but Windows output devices commonly run at
+    /// 48 kHz, and feeding one to the other unconverted plays everything sharp. Letting MF handle
+    /// it costs no extra dependency and no resampling code of our own.
+    pub fn open_at(path: &str, desired: Option<Format>) -> Result<Self> {
         ensure_initialized()?;
 
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
@@ -59,6 +70,20 @@ impl Decoder {
             let target = MFCreateMediaType()?;
             target.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
             target.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_PCM)?;
+
+            if let Some(format) = desired {
+                target.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, format.sample_rate)?;
+                target.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, format.channels as u32)?;
+                target.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, format.bits_per_sample as u32)?;
+                // Block alignment and byte rate must agree with the above or MF rejects the type.
+                let block = format.frame_size() as u32;
+                target.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, block)?;
+                target.SetUINT32(
+                    &MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+                    block * format.sample_rate,
+                )?;
+            }
+
             reader
                 .SetCurrentMediaType(FIRST_AUDIO_STREAM, None, &target)
                 .map_err(|_| Error::NoAudioStream)?;

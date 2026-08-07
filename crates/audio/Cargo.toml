@@ -8,6 +8,10 @@ license = "MIT"
 
 [dependencies]
 thiserror = "2"
+cpal = "0.16"
+# Lock-free single-producer/single-consumer queue. The audio callback must never block or wait on
+# a lock: a stalled callback outputs silence, which is audible as a click.
+rtrb = "0.3"
 
 [target."cfg(windows)".dependencies]
 windows = { version = "0.61", features = [
