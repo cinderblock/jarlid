@@ -9,3 +9,4 @@ Thumbs.db
 # Dependencies / build output (also covered by app/.gitignore & src-tauri/.gitignore)
 node_modules/
 dist/
+target/
