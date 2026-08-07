@@ -1,0 +1,24 @@
+[package]
+name = "audio"
+version = "0.1.0"
+edition = "2021"
+description = "HE-AAC decoding for the native Pandora client, via Windows Media Foundation"
+authors = ["Cameron Tacklind <cameron@tacklind.com>"]
+license = "MIT"
+
+[dependencies]
+thiserror = "2"
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }
+
+# The decode probe lives in examples/ rather than src/bin/ so that fetching a real stream to test
+# against does not drag reqwest, tokio and the protocol crate into the library's own dependencies.
+[dev-dependencies]
+pandora = { path = "../pandora" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -10,6 +10,7 @@
 //! See `plans/pandora-native-client.md` for the protocol research this is built on.
 
 pub mod crypto;
+pub mod demo;
 pub mod mp4;
 pub mod rest;
 pub mod tuner;

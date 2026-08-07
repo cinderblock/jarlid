@@ -286,6 +286,34 @@ boxes: ftyp moov mvhd trak tkhd edts elst mdia mdhd hdlr minf smhd dinf dref stb
 - `moov` was at the front here, but the probe falls back to fetching the file tail, since
   non-streaming-optimised MP4s put it last. Keep that fallback.
 
+### 2026-08-07 Audio path CONFIRMED end to end — Media Foundation decodes it correctly
+
+`cargo run --example decode-probe` (in `crates/audio`) fetches a real anonymous-tier stream,
+downloads it, and decodes it through Media Foundation:
+
+```
+track:    Breathe (In the Air) (2023 Remaster) — Pink Floyd
+encoding: aacplus
+negotiated output: 44100 Hz, 2 ch, 16-bit PCM
+decoded 29933568 bytes = 169.7 s of audio
+RMS 4496, peak 30347 (of 32767)
+OK — real audio, not silence.
+OK — 44100 Hz output: SBR WAS applied.
+OK — decoded 102% of the reported length.
+```
+
+- **44100 Hz out from a 22050 Hz core proves SBR was applied.** This is the empirical confirmation
+  that Media Foundation does the job Symphonia cannot — not an assertion from documentation.
+- RMS 4496 / peak 30347 confirms real audio rather than silence, which is how a subtly
+  misconfigured decode usually presents (correct format, empty buffers).
+- 102% of the reported length is expected: decoder priming/padding, not dropped audio.
+- `MFCreateSourceReaderFromURL` does demux + decode in one object; asking for `MFAudioFormat_PCM`
+  output makes MF insert the AAC decoder itself. No codec code of our own.
+
+**Note for the real player:** the probe writes a temp file because MF wants a URL/path. Production
+playback should implement a custom `IMFByteStream` fed from the network so nothing touches disk and
+playback can start before the download completes.
+
 **Two parser bugs worth remembering** (both fixed, both would have silently produced wrong answers):
 1. The box walker bailed entirely when a box ran past a truncated download, so a 32 KiB fetch
    reported only `ftyp` and hid the whole tree.
