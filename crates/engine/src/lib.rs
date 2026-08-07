@@ -7,6 +7,7 @@
 //! is not `Send` on Windows. Everything here is async and talks to it by message.
 
 mod audio_thread;
+pub mod credentials;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +27,12 @@ pub enum Error {
 
     #[error("no station selected")]
     NoStation,
+
+    #[error(transparent)]
+    Credentials(#[from] credentials::Error),
+
+    #[error("not signed in")]
+    NotSignedIn,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -78,6 +85,26 @@ impl Engine {
         };
 
         Ok((engine, receiver))
+    }
+
+    /// Start using credentials saved in the Windows Credential Manager.
+    ///
+    /// Returns [`Error::NotSignedIn`] when nothing is stored, which the app should treat as
+    /// "show the login form" rather than as a failure.
+    pub async fn start_from_saved() -> Result<(Self, mpsc::UnboundedReceiver<Event>)> {
+        let saved = credentials::load()?.ok_or(Error::NotSignedIn)?;
+        Self::start(&saved.username, &saved.password).await
+    }
+
+    /// Verify credentials by logging in, and only save them if they actually work — so a typo
+    /// can't be persisted and then fail mysteriously on every later launch.
+    pub async fn sign_in(
+        username: &str,
+        password: &str,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<Event>)> {
+        let started = Self::start(username, password).await?;
+        credentials::store(username, password)?;
+        Ok(started)
     }
 
     pub async fn stations(&self) -> Result<Vec<Station>> {

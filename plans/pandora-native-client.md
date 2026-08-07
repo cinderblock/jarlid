@@ -44,6 +44,15 @@ login) is no longer needed, and option D was never worth it.
 2. **Scope: swap the engine, keep Jarlid.** The webview engine is one replaceable module.
    Lyrics sync/cache, SMTC, taskbar thumb toolbar, UPnP/WiiM remote, auto-update and window state
    are all protocol-agnostic and stay.
+
+2a. **Cutover (decided 2026-08-07): replace the webview engine OUTRIGHT.** No dual-engine
+   abstraction, no fallback setting. Delete `bridge.js` and the engine webview once the native
+   engine reaches parity. Simpler codebase and a real memory/CPU reduction; accepted risk is no
+   instant fallback if the tuner API breaks.
+
+2b. **Credentials (decided 2026-08-07): Windows Credential Manager** via the `keyring` crate —
+   encrypted per-user by the OS. Requires a small in-app login form on first run. The `.env` path
+   stays for probes/examples only and must never be how the shipped app reads credentials.
 3. **Audio decode: Windows Media Foundation.** Decodes HE-AAC (incl. SBR/PS) natively with no
    extra shipped dependency; the app is already Windows-only and already uses `windows-rs` for
    SMTC and the thumbbar. Symphonia is rejected — no SBR/PS, would decode dull and half-bandwidth.
