@@ -250,7 +250,10 @@ sample rate, no high band, audibly dull. Options:
    ring buffer, cpal output, pause and volume. Position is honest (see below).
    Remaining for this step: prefetch the *next* track for gapless transitions, and sequence a
    whole station rather than one track.
-6. [ ] Define a `PandoraEngine` trait; implement `NativeEngine`; keep `WebviewEngine` until parity.
+6. [~] **`crates/engine` built** — `Engine` sequences a station: queue refill, auto-advance,
+   skip, pause, volume, thumbs, and an `Event` stream for a UI to subscribe to. Verified playing
+   continuously with drift 0.00s. Still to do: swap it into the Tauri app in place of the engine
+   webview.
 7. [ ] Wire existing UI/SMTC/thumbbar/lyrics to the native engine (they consume events, not DOM).
 8. [ ] Send the telemetry endpoints (`trackStarted`, `event/*`, `audioReceiptURL`) so our traffic
    looks like a real client.
@@ -467,6 +470,40 @@ never allocates or blocks (`try_lock`, fixed-point volume) because an audio-thre
 audible click. Unfilled output is explicitly zeroed — otherwise the device replays stale memory as
 a buzz. `Drop` signals the decode thread to exit so it stops pulling from the network when the
 caller moves on.
+
+### 🐛 2026-08-07 Two audio bugs, both found by ear, both now caught by a metric
+
+Worth keeping because each was invisible to "does it compile / does it run", and the second was
+introduced by the fix for the first.
+
+**Bug 1 — scratchy.** The audio callback shared a `Mutex<VecDeque<i16>>` with the decode thread and
+used `try_lock`. Whenever the decode thread held the lock, the callback gave up and emitted a whole
+period of silence (~10 ms at 48 kHz), continuously. The decode thread even did its byte→sample
+conversion *inside* the lock, making collisions frequent.
+→ **An audio callback must never contend for a lock.** Replaced with an `rtrb` SPSC lock-free
+queue plus atomics. Buffer occupancy went from oscillating 5.0–5.5 s to a steady 5.0 s.
+
+**Bug 2 — "multiple tracks at once, too fast"; a 169 s track played out in ~15 s.** The ring-buffer
+rewrite pushed what fit on a full queue, then `break`, then fetched the *next* chunk — permanently
+discarding the remainder. Since the queue sits full by design, most of every chunk was dropped
+(~11× ratio). And an *odd* number of dropped samples shifts L/R interleaving by one and never
+recovers, which is why it sounded like overlapping tracks. The `slots() < 4096` guard only checked
+*before* decoding; a chunk can exceed the space left.
+→ Decoded samples are **never** discarded; leftovers stay in `pending` until there is room.
+
+**The guard that now makes this class of bug visible:**
+
+```
+decoded() == position() + buffered()
+```
+
+exposed as `Player::drift()`. Measured 0.00 s across a 20 s run and a 2-minute radio run. The
+examples print it every tick. **Do not remove it** — both bugs above were caught by a human
+listening, which does not scale and should not have been necessary.
+
+**Process lesson:** the examples had a deliberate 1 s pause and a deliberate mid-run skip, both
+unannounced. During listening tests the user twice reported them as faults. Interactive checks must
+not contain unannounced control tests — both are now opt-in (`pause`, `skip` arguments).
 
 ### ⚠️ 2026-08-07 Pandora enforces ONE concurrent stream per account (`STREAM_VIOLATION`)
 

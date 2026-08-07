@@ -1,0 +1,16 @@
+[package]
+name = "engine"
+version = "0.1.0"
+edition = "2021"
+description = "Native Pandora playback engine: protocol + audio, sequenced into a radio"
+authors = ["Cameron Tacklind <cameron@tacklind.com>"]
+license = "MIT"
+
+[dependencies]
+pandora = { path = "../pandora" }
+audio = { path = "../audio" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
