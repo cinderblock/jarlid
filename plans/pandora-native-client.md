@@ -239,9 +239,8 @@ sample rate, no high band, audibly dull. Options:
    Option A confirmed, no browser needed.
 2. [x] **Spike — audio.** HE-AAC confirmed (SBR required); Media Foundation decodes it to
    44.1 kHz stereo PCM, and streams the HTTPS URL directly with no temp file.
-3. [ ] **Measure REST audio bitrate on the paid tier** — the last open question. Needs Jarlid
-   closed (it holds the account's one stream). Run `cargo run --bin probe -- --rest-only`.
-   If REST yields >64 kbps, that alone justifies the whole pivot on sound quality.
+3. [x] **Audio quality measured.** 128 kbps MP3 via tuner `additionalAudioUrl` — double the
+   64 kbps default. REST playback turned out to be refused on a tuner token entirely.
 4. [x] **Typed client built and verified read-only** — `pandora::Client` (tuner login → REST),
    `models::{Station, Track, Art}`, paginated `stations()`, `fragment()`, `search()`, and silent
    re-login on token expiry. `cargo run --example list-stations` returns 88 stations with 0
@@ -355,6 +354,85 @@ playback can start before the download completes.
 - **No XOR `key` on the paid tier either** — the obfuscation path stays dormant, so the decode
   pipeline needs no un-masking step. (Anonymous *and* paid both checked now.)
 - `pandoraBrandingType: "p1"` with `isSubscriber: true` confirms an active paid subscription.
+
+### ⚠️ 2026-08-07 CORRECTION — REST gives metadata, but NOT audio, on a tuner token
+
+An earlier entry said "Option A confirmed: fully native, rich REST surface". That was **too
+broad**. Refined by `cargo run --example stream-diagnose`, with Jarlid closed and nothing else
+streaming:
+
+```
+TEST 1  REST getFragment, first call of a fresh session   FAILED: STREAM_VIOLATION
+TEST 2  tuner station.getPlaylist, same session           OK — 4 items
+TEST 4  anonymous REST session, same endpoint             OK
+```
+
+REST playback is refused on the *first* playback call of a fresh tuner session, while tuner
+playback on that very session works, and an anonymous *web* session works fine. So **playback is
+tied to session type**: a tuner/device token buys REST metadata but not REST audio.
+
+**Final division of labour** (each settled by measurement, not preference):
+
+| Purpose | API | Why |
+|---|---|---|
+| Login | tuner | No PerimeterX wall; REST `auth/login` 403s any non-browser |
+| Station list | REST | Richer — 1080px art and `dominantColor`, absent from the tuner list |
+| **Audio** | tuner | REST playback refused; tuner also yields *better* audio (below) |
+| Feedback / stations | tuner | Verified end to end |
+
+Still true and still the headline: **no browser anywhere.**
+
+### 🔊 2026-08-07 Audio quality — 128 kbps MP3 is this account's ceiling
+
+`cargo run --example tuner-quality`. Bitrate **measured** (total bytes × 8 ÷ duration), never read
+off a label:
+
+```
+HTTP_192_MP3             NOT AVAILABLE (field absent)
+HTTP_128_MP3             AVAILABLE — measured 127 kbps   <- 2x the default
+HTTP_64_AACPLUS_ADTS     AVAILABLE — measured 64 kbps
+audioUrlMap high/medium  measured 64 kbps  (the default)
+```
+
+- The default `audioUrlMap` caps at 64 kbps, but `additionalAudioUrl: "HTTP_128_MP3"` yields
+  **128 kbps MP3 — double the bitrate.** `BEST_AUDIO` in `client.rs`.
+- `HTTP_192_MP3` is **not served** to this subscription, despite Pandora advertising up to
+  192 kbps. Whether a genuine *web* session would get it is **[UNCONFIRMED]** and would require
+  the browser-token path we just eliminated. Open question, deliberately not chased.
+
+⚠️ **Trap: never request multiple specs in one call.** Pandora **drops** unavailable specs from the
+returned array instead of leaving empty slots, so the array silently stops lining up with the
+request order. Asking for `192,128,64,32` returned three URLs and made every reading look exactly
+one step low — 192 appeared to be 128, 128 appeared to be 64. **Request one spec per call.**
+
+MP3 needs no SBR, so this incidentally re-opens Symphonia as a portable option. Not switching:
+Media Foundation already handles both formats with zero shipped dependencies.
+
+### ✅ 2026-08-07 Write paths VERIFIED (throwaway station, created and deleted)
+
+User authorised one disposable station. `cargo run --example verify-writes` created it, exercised
+every write path, and deleted it:
+
+```
+✅ station.createStation      ✅ station.renameStation
+✅ station.addFeedback (up)   ✅ station.deleteFeedback
+✅ station.addFeedback (down) ✅ user.sleepSong
+✅ station.deleteStation
+```
+
+**The previously-guessed REST shapes were wrong**, as suspected — the working endpoints are
+tuner-side and key off `trackToken`/`stationToken`, not `pandoraId`. `client.rs` now uses the
+verified calls. `station.deleteFeedback` needs the `feedbackId` from the add response, which is
+how the real client undoes a mis-tap.
+
+### 2026-08-07 Track art — the tuner API needs a size-list synthesised
+
+The tuner API returns a single `albumArtUrl` string, not REST's array of sizes, so tuner-sourced
+tracks initially rendered with **no artwork at all** (`art: 0px`). The URL encodes its dimensions
+(`…_500W_500H.jpg`) and the CDN serves other sizes from the same path, so `art_sizes_from_url`
+rewrites them to offer 130/500/640/1080. **Verified live: the synthesised 1080px URL resolves
+(HTTP 206)** — not assumed. Unrecognised URL shapes degrade to the original rather than
+fabricating 404s.
 
 ### ⚠️ 2026-08-07 Pandora enforces ONE concurrent stream per account (`STREAM_VIOLATION`)
 

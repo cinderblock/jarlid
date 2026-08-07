@@ -100,6 +100,8 @@ impl TrackKind {
 #[serde(rename_all = "camelCase", default)]
 pub struct Track {
     pub pandora_id: String,
+    /// The tuner API's per-track handle. Feedback endpoints key off this, not `pandora_id`.
+    pub track_token: String,
     pub song_title: String,
     pub artist_name: String,
     pub album_title: String,
