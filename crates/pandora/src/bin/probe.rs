@@ -17,6 +17,41 @@
 use pandora::{rest, tuner};
 use serde_json::{json, Value};
 
+/// Load `.env` / `.env.local` into the environment, walking up from the working directory.
+///
+/// Exists because `wenv` exports into *its* shell session, which a separately-launched process
+/// does not inherit. Nearest file wins, but empty values never override a real one, so a stale
+/// half-filled `.env` in a subdirectory can't shadow the real one at the repo root.
+fn load_dotenv() {
+    let Ok(start) = std::env::current_dir() else {
+        return;
+    };
+
+    for directory in start.ancestors() {
+        for name in [".env.local", ".env"] {
+            let Ok(contents) = std::fs::read_to_string(directory.join(name)) else {
+                continue;
+            };
+            for line in contents.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let Some((key, value)) = line.split_once('=') else {
+                    continue;
+                };
+                let key = key.trim();
+                let value = value.trim().trim_matches(['"', '\'']);
+                if value.is_empty() || std::env::var_os(key).is_some_and(|v| !v.is_empty()) {
+                    continue;
+                }
+                // SAFETY: single-threaded startup, before any threads are spawned.
+                unsafe { std::env::set_var(key, value) };
+            }
+        }
+    }
+}
+
 /// Show enough of a token to correlate across calls, never enough to use.
 fn redact(token: &str) -> String {
     let head: String = token.chars().take(6).collect();
@@ -29,6 +64,8 @@ fn heading(text: &str) {
 
 #[tokio::main]
 async fn main() {
+    load_dotenv();
+
     // Step 1 needs no account, so run it first: it independently proves the tuner API is alive
     // and that our Blowfish codec round-trips against the real server (syncTime decrypts).
     heading("1. tuner auth.partnerLogin");
@@ -103,8 +140,15 @@ async fn main() {
         }
     };
 
+    // Pandora allows only one concurrent stream per account. Requesting a tuner playlist and then
+    // a REST fragment counts as two, and the second fails with STREAM_VIOLATION — so the probe
+    // can exercise one path or the other, never both in a single run.
+    let rest_only = std::env::args().any(|a| a == "--rest-only");
+
     heading("5. tuner station.getPlaylist — audio quality + XOR key check");
-    if let Some(token_value) = station
+    if rest_only {
+        println!("SKIPPED (--rest-only) so step 7 doesn't trip STREAM_VIOLATION.");
+    } else if let Some(token_value) = station
         .as_ref()
         .and_then(|s| s.get("stationToken"))
         .and_then(Value::as_str)
@@ -181,6 +225,70 @@ async fn main() {
             }
         }
         Err(e) => println!("Could not reach the REST API at all: {e}"),
+    }
+
+    heading("7. audio quality via REST (tuner caps at 64 kbps — does REST do better?)");
+    match rest::Client::connect().await {
+        Ok(client) => {
+            let client = client.with_auth_token(&token);
+            let stations = client
+                .call("v1/station/getStations", json!({"pageSize": 5}))
+                .await
+                .unwrap_or(Value::Null);
+
+            match pandora::demo::find_key(&stations, "stationId").and_then(Value::as_str) {
+                Some(station_id) => {
+                    let fragment = client
+                        .call(
+                            "v1/playlist/getFragment",
+                            json!({
+                                "stationId": station_id,
+                                "isStationStart": true,
+                                "fragmentRequestReason": "Normal",
+                                "audioFormat": "aacplus",
+                            }),
+                        )
+                        .await;
+
+                    match fragment {
+                        Ok(fragment) => {
+                            let tracks = pandora::demo::find_key(&fragment, "tracks")
+                                .and_then(Value::as_array)
+                                .cloned()
+                                .unwrap_or_default();
+                            println!("OK — {} items.", tracks.len());
+                            for track in tracks.iter().take(3) {
+                                let Some(title) =
+                                    track.get("songTitle").and_then(Value::as_str)
+                                else {
+                                    continue;
+                                };
+                                println!(
+                                    "  - {title}: encoding={} bitrate={} host={}",
+                                    track
+                                        .get("audioEncoding")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("?"),
+                                    track.get("bitrate").map(|b| b.to_string()).unwrap_or("?".into()),
+                                    track
+                                        .get("audioURL")
+                                        .and_then(Value::as_str)
+                                        .and_then(|u| u.split('/').nth(2))
+                                        .unwrap_or("?")
+                                );
+                            }
+                            println!(
+                                "  XOR `key` present anywhere in fragment: {}",
+                                pandora::demo::find_key(&fragment, "key").is_some()
+                            );
+                        }
+                        Err(e) => println!("getFragment FAILED: {e}"),
+                    }
+                }
+                None => println!("No stationId in the REST station list."),
+            }
+        }
+        Err(e) => println!("Could not reach REST: {e}"),
     }
 
     heading("done");

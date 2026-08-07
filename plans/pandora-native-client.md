@@ -17,17 +17,30 @@ overlooked.
 
 ## Status
 
-**Protocol crate scaffolded and validated against the live tuner API. Blocked on the user running
-the credentialed probe** (step 1 of the plan) — it needs their Pandora password, which is supplied
-via environment variables so it never enters a file or a transcript.
+**Architecture unblocked — option A CONFIRMED. The client can be fully native with no browser.**
+Protocol, audio decode, streaming and auth are all proven. One measurement outstanding (REST audio
+bitrate for the paid tier), blocked only by Jarlid holding the account's single stream.
+
+### 🎉 2026-08-07 THE BIG QUESTION IS ANSWERED
+
+A `userAuthToken` obtained from the **tuner** API **is accepted** by the modern web REST API as
+`X-AuthToken`. The 2021 claim was right, and it still holds in 2026.
+
+```
+=== 6. THE BIG ONE — tuner token against the web REST API ===
+*** ACCEPTED *** — REST returned 5 stations.
+```
+
+**Consequence: no browser anywhere in the client.** Log in over the tuner API (Blowfish, no bot
+wall), then use the rich 135-endpoint REST surface with that token. Option C (one-time browser
+login) is no longer needed, and option D was never worth it.
 
 ## Decisions (locked 2026-08-06/07)
 
-1. **Auth path: tuner login, then test REST token reuse** (option A, falling back to C).
-   Blowfish `auth.userLogin` on `tuner.pandora.com` — verified alive, no bot wall. Then test the
-   `[STALE 2021]` claim that the resulting `userAuthToken` is accepted as REST `X-AuthToken`.
-   If it is: fully browser-free with the rich modern API. If not: fall back to option C, a
-   one-time browser login whose token we lift.
+1. **Auth path: tuner login, then REST for everything else** (option A).
+   ✅ **CONFIRMED 2026-08-07** — the tuner `userAuthToken` IS accepted as REST `X-AuthToken`.
+   Fully browser-free. Tuner is used for **login only**; all other calls (including audio, which
+   the tuner API caps at 64 kbps) go over REST. Options C and D are dead.
 2. **Scope: swap the engine, keep Jarlid.** The webview engine is one replaceable module.
    Lyrics sync/cache, SMTC, taskbar thumb toolbar, UPnP/WiiM remote, auto-update and window state
    are all protocol-agnostic and stay.
@@ -222,20 +235,24 @@ sample rate, no high band, audibly dull. Options:
 
 ## Plan / steps (draft — sequence assumes decisions above)
 
-1. **Spike (gates everything):** Rust probe that does tuner `auth.userLogin` with the real paid
-   account, then tries that token as REST `X-AuthToken` against `station/getStations`.
-   Result determines option A vs C. Document the outcome here either way.
-2. Spike: fetch one `audioURL` and decode it through the chosen audio stack; confirm full-bandwidth
-   HE-AAC output. Check whether a paid fragment carries a `key` field (XOR).
-3. Extract a `pandora` Rust crate: auth, station list, playlist fragments, transport actions,
-   feedback, search. Typed structs, no scraping.
-4. Native playback: prefetch-next, gapless-ish, position reporting for lyric sync.
-5. Define `PandoraEngine` trait; implement `NativeEngine`; keep `WebviewEngine` until parity.
-6. Wire existing UI/SMTC/thumbbar/lyrics to the native engine (they consume events, not DOM).
-7. Send the telemetry endpoints (`trackStarted`, `event/*`, `audioReceiptURL`) so traffic looks
-   like a real client.
-8. Delete the engine webview and `bridge.js`. Update README (the "Why this approach" section
-   currently argues *for* the wrapper and will be wrong).
+1. [x] **Spike — auth path.** Tuner `auth.userLogin` works; its token IS accepted by REST.
+   Option A confirmed, no browser needed.
+2. [x] **Spike — audio.** HE-AAC confirmed (SBR required); Media Foundation decodes it to
+   44.1 kHz stereo PCM, and streams the HTTPS URL directly with no temp file.
+3. [ ] **Measure REST audio bitrate on the paid tier** — the last open question. Needs Jarlid
+   closed (it holds the account's one stream). Run `cargo run --bin probe -- --rest-only`.
+   If REST yields >64 kbps, that alone justifies the whole pivot on sound quality.
+4. [ ] Flesh out the `pandora` crate: typed models for stations, fragments, transport actions
+   (`action/*`), feedback, search. Login over tuner, everything else over REST.
+5. [ ] Player: prefetch next track, handle `STREAM_VIOLATION` gracefully, expose playback
+   position for lyric sync.
+6. [ ] Define a `PandoraEngine` trait; implement `NativeEngine`; keep `WebviewEngine` until parity.
+7. [ ] Wire existing UI/SMTC/thumbbar/lyrics to the native engine (they consume events, not DOM).
+8. [ ] Send the telemetry endpoints (`trackStarted`, `event/*`, `audioReceiptURL`) so our traffic
+   looks like a real client.
+9. [ ] Delete the engine webview and `bridge.js`. Rewrite the README — its "Why this approach"
+   section currently argues *for* the wrapper and is now wrong, as is the DRM sentence in the
+   disclaimer.
 
 ## Findings / gotchas (running log — add negative results here!)
 
@@ -313,6 +330,57 @@ OK — decoded 102% of the reported length.
 **Note for the real player:** the probe writes a temp file because MF wants a URL/path. Production
 playback should implement a custom `IMFByteStream` fed from the network so nothing touches disk and
 playback can start before the download completes.
+
+### 2026-08-07 Credentialed probe results (paid account)
+
+```
+2. tuner auth.userLogin          OK — userAuthToken, 46 chars
+3. account tier                  isSubscriber: true, pandoraBrandingType: "p1",
+                                 canPurchase: false, canSubscribe: false
+4. tuner user.getStationList     OK — 89 stations
+5. tuner station.getPlaylist     lowQuality 32 kbps aacplus
+                                 mediumQuality 64 kbps aacplus
+                                 highQuality 64 kbps aacplus
+                                 XOR `key` present: false
+6. tuner token on REST           *** ACCEPTED ***
+```
+
+- ⚠️ **The tuner API caps audio at 64 kbps even for a paid subscriber.** Pandora advertises up to
+  192 kbps on paid web tiers, so **audio must come from the REST `playlist/getFragment`, not the
+  tuner `station.getPlaylist`.** Use tuner for *login only*; do everything else over REST. This is
+  the single most important architectural consequence of the probe.
+- **No XOR `key` on the paid tier either** — the obfuscation path stays dormant, so the decode
+  pipeline needs no un-masking step. (Anonymous *and* paid both checked now.)
+- `pandoraBrandingType: "p1"` with `isSubscriber: true` confirms an active paid subscription.
+
+### ⚠️ 2026-08-07 Pandora enforces ONE concurrent stream per account (`STREAM_VIOLATION`)
+
+REST `playlist/getFragment` fails with `STREAM_VIOLATION` while another client is streaming on the
+same account. Confirmed cause: **Jarlid was running** (the existing webview app, PID 15024) and
+holding the stream. Not a bug in our code — the identical request succeeds on the anonymous tier.
+
+Consequences for the build:
+- The native client and the webview engine **cannot run at the same time**. Plan the cutover
+  accordingly, and don't leave both installed and auto-starting.
+- Requesting a tuner playlist and then a REST fragment in one session **also** trips it — they
+  count as two streams. The probe gained a `--rest-only` flag for exactly this reason.
+- `STREAM_VIOLATION` must be handled gracefully in the real client with a clear message
+  ("Pandora is playing on another device"), not surfaced as a generic failure.
+
+### 2026-08-07 Streaming gap CLOSED — no custom `IMFByteStream` needed
+
+`cargo run --example stream-probe` (in `crates/audio`):
+
+```
+opening the HTTPS URL directly with Media Foundation
+OPENED in 170.65ms — 44100 Hz, 2 ch, 16-bit
+first PCM chunk: 8192 bytes after 4.54ms
+```
+
+Media Foundation's own scheme handlers open Pandora's signed HTTPS URL directly and stream it
+progressively — first audio 4.5 ms after opening, so it is not buffering the whole file. **The
+"implement a custom IMFByteStream" work item is deleted.** Playback can start ~170 ms after a
+track URL is in hand, with no temp file and nothing touching disk.
 
 **Two parser bugs worth remembering** (both fixed, both would have silently produced wrong answers):
 1. The box walker bailed entirely when a box ran past a truncated download, so a 32 KiB fetch
