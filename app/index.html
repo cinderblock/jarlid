@@ -63,8 +63,22 @@
           <div id="station-wrap">
             <button id="station"></button>
             <div id="station-panel" hidden>
-              <input id="station-search" type="text" placeholder="Search stations…" spellcheck="false" />
+              <div id="station-head">
+                <input id="station-search" type="text" placeholder="Search stations…" spellcheck="false" />
+                <button id="station-select-toggle" class="sp-icon" aria-pressed="false" aria-label="Select stations to export">
+                  <svg viewBox="0 0 24 24"><path d="M3 5h10M3 12h10M3 19h10"/><path d="m16 11 2.5 2.5L23 9"/></svg>
+                </button>
+              </div>
+              <div id="station-selectall" hidden>
+                <label class="sp-check"><input id="station-all" type="checkbox" /><span>Select all</span></label>
+                <span id="station-selcount"></span>
+              </div>
               <div id="station-list"></div>
+              <div id="station-export" hidden>
+                <button id="station-export-btn" disabled>Export preferences…</button>
+                <button id="station-export-cancel" hidden>Cancel</button>
+                <div id="station-export-status"></div>
+              </div>
             </div>
           </div>
           <h1 id="title"><span id="title-inner">—</span></h1>

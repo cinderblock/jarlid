@@ -1,3 +1,4 @@
+mod export;
 mod native;
 #[cfg(windows)]
 mod thumbbar;
@@ -647,12 +648,15 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Save dialog for the station-preferences export (driven from Rust).
+        .plugin(tauri_plugin_dialog::init())
+        .manage(export::ExportCtl::default())
         // Remember main-window position/size across launches.
-        .plugin(
-            tauri_plugin_window_state::Builder::default().build(),
-        )
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             check_update,
+            export::cancel_export,
+            export::export_stations,
             fetch_lyrics,
             install_update,
             native::native_cmd,

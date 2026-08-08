@@ -117,6 +117,15 @@ impl Engine {
         Ok(self.state.lock().await.client.tuner_stations().await?)
     }
 
+    /// A station's seeds and full thumb history, for export.
+    ///
+    /// Holds the client lock for one call, same as every other method here; callers are expected
+    /// to walk stations one at a time rather than concurrently, which is also what keeps the
+    /// request rate polite.
+    pub async fn station_details(&self, token: &str) -> Result<serde_json::Value> {
+        Ok(self.state.lock().await.client.station_details(token).await?)
+    }
+
     /// Switch station and begin playing it.
     pub async fn play_station(&self, name: &str, token: &str) -> Result<()> {
         {

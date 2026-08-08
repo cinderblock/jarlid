@@ -214,6 +214,22 @@ impl Client {
         self.tuner_call("music.search", json!({"searchText": query})).await
     }
 
+    /// Everything a station knows about the listener's taste: its seeds and every thumb.
+    ///
+    /// `includeExtendedAttributes` is what makes this worth having — without it the response is
+    /// just the station header. With it, `music.songs`/`music.artists` (the seeds) and
+    /// `feedback.thumbsUp`/`feedback.thumbsDown` arrive in **one** call, already carrying display
+    /// names. The REST API has no equivalent: there, seeds and each thumb polarity are separate
+    /// paginated endpoints, and seeds come back as bare ids needing a second lookup to name them.
+    /// Six-ish requests per station there, one here — which matters when walking a collection.
+    ///
+    /// Note a QuickMix station returns neither `music` nor `feedback`: it is a shuffle *over*
+    /// other stations and has no seeds or thumbs of its own.
+    pub async fn station_details(&mut self, station_token: &str) -> Result<Value> {
+        let body = json!({"stationToken": station_token, "includeExtendedAttributes": true});
+        self.tuner_call("station.getStation", body).await
+    }
+
     // ---------------------------------------------------------------------------------------
     // Write paths — all VERIFIED 2026-08-07 against a throwaway station that was then deleted.
     // ---------------------------------------------------------------------------------------

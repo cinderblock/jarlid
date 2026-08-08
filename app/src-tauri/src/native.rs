@@ -57,6 +57,11 @@ impl NativeEngine {
             .clone()
             .ok_or_else(|| "not signed in".to_string())
     }
+
+    /// The running engine, for code outside this module (the export walk).
+    pub async fn engine(&self) -> Result<Arc<Engine>, String> {
+        self.get().await
+    }
 }
 
 /// Start the engine from saved credentials at launch, or ask the UI for a login.
@@ -86,10 +91,16 @@ async fn attach(
     let engine = Arc::new(started);
     *app.state::<NativeEngine>().0.lock().await = Some(Arc::clone(&engine));
 
-    // Station list, in the shape the UI's picker already expects.
+    // Station list for the picker. The tokens go with it: switching station and
+    // exporting one both need the token, and emitting names alone left the
+    // picker unable to do either.
     if let Ok(stations) = engine.tuner_stations().await {
         let names: Vec<&String> = stations.iter().map(|(name, _)| name).collect();
-        let _ = app.emit("engine://stations", json!({ "stations": names }));
+        let tokens: Vec<&String> = stations.iter().map(|(_, token)| token).collect();
+        let _ = app.emit(
+            "engine://stations",
+            json!({ "stations": names, "tokens": tokens }),
+        );
     }
 
     // Engine events -> the `engine://` events the rest of the app already listens for.
@@ -196,7 +207,11 @@ async fn attach(
                 }),
             Err(_) => Some((name, token)),
         },
-        None => engine.tuner_stations().await.ok().and_then(|s| s.first().cloned()),
+        None => engine
+            .tuner_stations()
+            .await
+            .ok()
+            .and_then(|s| s.first().cloned()),
     };
 
     if let Some((name, token)) = resume {
