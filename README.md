@@ -27,6 +27,13 @@ anywhere in it.
   the output device's rate, streamed with a lock-free ring buffer. Playback position is measured
   from frames actually delivered to the device, which is what keeps synced lyrics honest — decoding
   runs several seconds ahead of what you hear.
+- **Export your station preferences**: select any or all of your stations in the picker and save
+  their thumbs up/down, seed artists & songs, and per-station settings to a single versioned JSON
+  file. Your listening history lives only in your Pandora account and has no official export;
+  this gives you a copy you own. The walk is deliberately serial and paced, and stops rather than
+  retrying if Pandora pushes back. Re-importing is not built yet — and note Pandora can only apply
+  a thumb to a track it has just served you, so thumbs will only ever be restorable
+  opportunistically; seeds and stations restore cleanly.
 - **Auto-updates**: checks GitHub Releases (startup + every 4 h) and installs signed updates
   with one click from an in-app banner.
 - Full station collection searchable in the picker; Cover-Flow-style recently-played gallery;
@@ -124,6 +131,10 @@ releases are built by `.github/workflows/release.yml` on version tags).
 ## Status
 
 Daily-driver ready. Remaining ideas are tracked in `plans/pandora-desktop-app.md`.
+
+Station-preferences export is newly built. Its API layer is verified against a live account
+(`cargo run -p engine --example dump-station-shape`), but the end-to-end flow in the app —
+select, export, save — has not been exercised yet. See `plans/station-prefs-export.md`.
 
 ## Disclaimer
 
