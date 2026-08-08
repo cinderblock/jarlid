@@ -39,7 +39,6 @@ async fn main() {
     let track = tracks.first().expect("a track");
     println!("track:    {}", track.describe());
     println!("album:    {}", track.album_title);
-    println!("encoding: {}", track.audio_encoding);
     println!("length:   {} s", track.track_length);
     // The tuner API gives one art URL; we synthesise the other sizes by rewriting its dimensions.
     // That is an assumption about Pandora's CDN, so verify it actually resolves.

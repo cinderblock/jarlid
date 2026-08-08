@@ -17,12 +17,21 @@ use serde_json::{json, Value};
 use crate::models::{Mode, Station, Track, TunerStation};
 use crate::{json::find_key, rest, tuner, Error, Result};
 
-/// Stream spec for the best audio this account can get: 128 kbps MP3, measured.
+/// Audio streams we want, best first.
 ///
-/// `HTTP_192_MP3` is advertised by Pandora but is **not** served to this subscription. When this
-/// stream is absent from a response, [`Client::playlist`] falls back to the best entry in
-/// `audioUrlMap` (64 kbps HE-AAC) rather than to another named spec.
-pub const BEST_AUDIO: &str = "HTTP_128_MP3";
+/// `additionalAudioUrl` is a **preference list, not a positional map**: Pandora returns the
+/// subset it will grant, in the order asked, so element `[0]` is always the best stream on offer.
+/// Proven by asking twice (`cargo run --example spec-order`) — a descending request came back
+/// `[128, 64]` and an ascending one `[64, 128]`, so the order follows the request rather than
+/// being sorted by quality.
+///
+/// This matters: a single hardcoded spec pins the account to whatever was available the day it
+/// was written. Asking for 192 first costs nothing when it is not granted (it is simply absent
+/// from the response) and upgrades automatically if it ever is.
+///
+/// ⚠️ The corollary is the trap: because unavailable specs are *omitted* rather than left empty,
+/// index N of the response is not spec N of the request. Never index into it by position.
+pub const AUDIO_PREFERENCE: &str = "HTTP_192_MP3,HTTP_128_MP3,HTTP_64_AACPLUS_ADTS";
 
 pub struct Client {
     tuner: tuner::Session,
@@ -145,7 +154,7 @@ impl Client {
                 json!({
                     "stationToken": station_token,
                     "includeTrackLength": true,
-                    "additionalAudioUrl": BEST_AUDIO,
+                    "additionalAudioUrl": AUDIO_PREFERENCE,
                 }),
             )
             .await?;
@@ -168,14 +177,15 @@ impl Client {
                 track.album_title = string_at(&item, "albumName");
                 track.track_token = string_at(&item, "trackToken");
 
-                // Prefer the 128 kbps stream; fall back to the standard 64 kbps aacplus.
+                // Best granted stream, falling back to the standard map if none were granted.
+                //
+                // `audio_encoding` is left as Pandora reported it rather than guessed at: it
+                // describes the `audioUrlMap` stream, and with a preference list we cannot tell
+                // which spec was granted without measuring. Nothing depends on the label — the
+                // decoder sniffs the container — so an honest stale value beats a confident
+                // wrong one.
                 track.audio_url = additional_audio_url(&item)
                     .unwrap_or_else(|| audio_url_map_best(&item).unwrap_or_default());
-                track.audio_encoding = if additional_audio_url(&item).is_some() {
-                    "mp3".into()
-                } else {
-                    "aacplus".into()
-                };
 
                 // The tuner API returns a single `albumArtUrl` string rather than REST's array of
                 // sizes, so synthesise the array — otherwise every tuner-sourced track renders
@@ -342,9 +352,11 @@ fn string_at(value: &Value, key: &str) -> String {
         .to_string()
 }
 
-/// The `additionalAudioUrl` we asked for. Pandora returns a bare string for a single spec, or an
-/// array — and **drops** unavailable specs rather than returning empty slots, which is why we only
-/// ever request one at a time.
+/// The best granted `additionalAudioUrl`.
+///
+/// Pandora returns a bare string for a single spec, or an array for several. Unavailable specs
+/// are omitted rather than blanked, and the rest keep the requested order — so with
+/// [`AUDIO_PREFERENCE`] listed best-first, element `[0]` is the best stream on offer.
 fn additional_audio_url(item: &Value) -> Option<String> {
     match item.get("additionalAudioUrl")? {
         Value::String(url) if !url.is_empty() => Some(url.clone()),
