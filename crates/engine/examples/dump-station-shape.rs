@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut client = pandora::Client::login(&saved.username, &saved.password).await?;
-    let stations = client.tuner_stations().await?;
+    let stations = client.station_list().await?;
     println!("stations in collection: {}", stations.len());
 
     // Look for the RICHEST station, not merely the first usable one. Two traps:
@@ -86,12 +86,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut details = Value::Null;
     let mut best_score = -1i64;
-    for (index, (_, token)) in stations.iter().enumerate().take(14) {
-        let candidate = client.station_details(token).await?;
-        let quick_mix = candidate
-            .get("isQuickMix")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+    for (index, station) in stations.iter().enumerate().take(14) {
+        // The list now carries `isQuickMix`, so a shuffle station can be skipped without
+        // spending a request to discover it has no seeds or thumbs.
+        if station.is_quick_mix {
+            println!("  station #{index}: quickMix — skipped (no seeds or thumbs of its own)");
+            continue;
+        }
+        let candidate = client.station_details(&station.station_token).await?;
+        let quick_mix = station.is_quick_mix;
         let up = len(&candidate, ["feedback", "thumbsUp"]);
         let down = len(&candidate, ["feedback", "thumbsDown"]);
         let artists = len(&candidate, ["music", "artists"]);

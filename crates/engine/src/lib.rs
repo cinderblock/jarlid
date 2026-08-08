@@ -120,10 +120,21 @@ impl Engine {
         Ok(self.state.lock().await.client.stations().await?)
     }
 
-    /// Station name/token pairs. The tuner token is what playback needs; the REST station list
-    /// does not carry it.
-    pub async fn tuner_stations(&self) -> Result<Vec<(String, String)>> {
-        Ok(self.state.lock().await.client.tuner_stations().await?)
+    /// Every station, with the playback token and Pandora's special-station flags.
+    ///
+    /// One call, one type. This was briefly two methods over the same `user.getStationList`
+    /// response — one projecting name/token tuples, one parsing the full struct — which parsed
+    /// the same payload twice and made every call site pick a lossy or non-lossy variant.
+    pub async fn station_list(&self) -> Result<Vec<pandora::TunerStation>> {
+        let mut state = self.state.lock().await;
+        let stations = state.client.station_list().await?;
+        // Cache the id→name map while we have it, so a QuickMix track can name its source
+        // station without an extra round trip.
+        state.station_names = stations
+            .iter()
+            .map(|s| (s.station_id.clone(), s.station_name.clone()))
+            .collect();
+        Ok(stations)
     }
 
     /// A station's seeds and full thumb history, for export.
@@ -133,20 +144,6 @@ impl Engine {
     /// request rate polite.
     pub async fn station_details(&self, token: &str) -> Result<serde_json::Value> {
         Ok(self.state.lock().await.client.station_details(token).await?)
-    }
-
-    /// The tuner station list with Pandora's special-station flags, for a picker that wants to
-    /// treat QuickMix and Thumbprint differently from ordinary stations.
-    pub async fn tuner_station_details(&self) -> Result<Vec<pandora::TunerStation>> {
-        let mut state = self.state.lock().await;
-        let stations = state.client.tuner_station_details().await?;
-        // Cache the id→name map so QuickMix tracks can name their source station without an
-        // extra round trip per track.
-        state.station_names = stations
-            .iter()
-            .map(|s| (s.station_id.clone(), s.station_name.clone()))
-            .collect();
-        Ok(stations)
     }
 
     /// Which station produced the current track.
@@ -165,7 +162,7 @@ impl Engine {
         // Populate the map lazily — the first QuickMix track usually arrives before anything has
         // asked for the station list.
         if state.station_names.is_empty() {
-            if let Ok(stations) = state.client.tuner_station_details().await {
+            if let Ok(stations) = state.client.station_list().await {
                 state.station_names = stations
                     .iter()
                     .map(|s| (s.station_id.clone(), s.station_name.clone()))

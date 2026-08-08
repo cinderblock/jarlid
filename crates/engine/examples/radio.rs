@@ -27,18 +27,18 @@ async fn main() {
         }
     };
 
-    let stations = engine.tuner_stations().await.expect("stations");
-    let (name, token) = match &wanted {
+    let stations = engine.station_list().await.expect("stations");
+    let station = match &wanted {
         Some(want) => stations
             .iter()
-            .find(|(name, _)| name.to_lowercase().contains(&want.to_lowercase()))
+            .find(|s| s.station_name.to_lowercase().contains(&want.to_lowercase()))
             .unwrap_or_else(|| {
                 eprintln!("no station matching {want:?}; using the first");
                 &stations[0]
-            })
-            .clone(),
-        None => stations.first().expect("a station").clone(),
+            }),
+        None => stations.first().expect("a station"),
     };
+    let (name, token) = (station.station_name.clone(), station.station_token.clone());
 
     engine.set_volume(volume);
     if let Err(e) = engine.play_station(&name, &token).await {

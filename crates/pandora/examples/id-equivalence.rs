@@ -19,7 +19,7 @@ async fn main() {
     let mut client = pandora::Client::login(&username, &password).await.expect("login");
 
     let rest = client.stations().await.expect("rest stations");
-    let tuner = client.tuner_stations().await.expect("tuner stations");
+    let tuner = client.station_list().await.expect("tuner stations");
 
     println!("REST stations:  {}", rest.len());
     println!("tuner stations: {}\n", tuner.len());
@@ -27,8 +27,8 @@ async fn main() {
     // Duplicate names would silently collapse in a map and make a false "mismatch", so check
     // for them explicitly before drawing any conclusion from the comparison.
     let mut counts: HashMap<&str, usize> = HashMap::new();
-    for (name, _) in &tuner {
-        *counts.entry(name.as_str()).or_default() += 1;
+    for station in &tuner {
+        *counts.entry(station.station_name.as_str()).or_default() += 1;
     }
     let dupes: Vec<(&&str, &usize)> = counts.iter().filter(|(_, n)| **n > 1).collect();
     if dupes.is_empty() {
@@ -37,8 +37,8 @@ async fn main() {
         println!("DUPLICATE tuner station names:");
         for (name, n) in &dupes {
             println!("  {name} x{n}");
-            for (sn, token) in tuner.iter().filter(|(sn, _)| sn == **name) {
-                println!("      {sn} -> {token}");
+            for s in tuner.iter().filter(|s| s.station_name == **name) {
+                println!("      {} -> {}", s.station_name, s.station_token);
             }
         }
     }
@@ -46,7 +46,7 @@ async fn main() {
 
     let by_name: HashMap<&str, &str> = tuner
         .iter()
-        .map(|(name, token)| (name.as_str(), token.as_str()))
+        .map(|s| (s.station_name.as_str(), s.station_token.as_str()))
         .collect();
 
     let mut matched = 0;

@@ -16,18 +16,21 @@ async fn main() {
 
     let (engine, _events) = engine::Engine::start(&username, &password).await.expect("start");
 
-    let stations = engine.tuner_stations().await.expect("stations");
-    let duplicates: Vec<&(String, String)> = stations
+    let stations = engine.station_list().await.expect("stations");
+    let duplicates: Vec<&pandora::TunerStation> = stations
         .iter()
-        .filter(|(name, _)| name.contains("Sandstorm"))
+        .filter(|s| s.station_name.contains("Sandstorm"))
         .collect();
 
     println!("stations named like \"Sandstorm\": {}", duplicates.len());
-    for (name, token) in &duplicates {
-        println!("  {name} -> {token}");
+    for s in &duplicates {
+        println!("  {} -> {}", s.station_name, s.station_token);
     }
 
-    let Some((name, token)) = duplicates.first().map(|(n, t)| (n.clone(), t.clone())) else {
+    let Some((name, token)) = duplicates
+        .first()
+        .map(|s| (s.station_name.clone(), s.station_token.clone()))
+    else {
         eprintln!("\nnone found; can't exercise the ambiguous case.");
         std::process::exit(1);
     };

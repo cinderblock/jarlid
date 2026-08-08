@@ -196,19 +196,6 @@ impl Client {
 
     /// The tuner station list — needed because [`Self::playlist`] takes a `stationToken`, which
     /// the REST list does not provide.
-    pub async fn tuner_stations(&mut self) -> Result<Vec<(String, String)>> {
-        let list = self.tuner_call("user.getStationList", json!({})).await?;
-        Ok(list
-            .get("stations")
-            .and_then(Value::as_array)
-            .map(|stations| {
-                stations
-                    .iter()
-                    .map(|s| (string_at(s, "stationName"), string_at(s, "stationToken")))
-                    .collect()
-            })
-            .unwrap_or_default())
-    }
 
     /// The Modes available for a station ("My Station", "Crowd Faves", "Discovery", "Deep
     /// Cuts", …), in Pandora's own order.
@@ -249,14 +236,14 @@ impl Client {
         Ok(())
     }
 
-    /// The tuner station list with Pandora's special-station flags (`isQuickMix`,
-    /// `isThumbprint`, `isGenreStation`) and both ids.
+    /// Every station, with Pandora's special-station flags (`isQuickMix`, `isThumbprint`,
+    /// `isGenreStation`) and both ids.
     ///
-    /// Richer than [`Self::tuner_stations`], which exists for callers that only need name+token.
-    ///
-    /// Named for the tuner list specifically to avoid colliding with [`Self::station_details`],
-    /// which is a different thing entirely (one station's seeds and thumb history, for export).
-    pub async fn tuner_station_details(&mut self) -> Result<Vec<TunerStation>> {
+    /// Not to be confused with [`Self::station_details`], which is a different call entirely:
+    /// this is `user.getStationList` (all stations, summary), that is `station.getStation` (one
+    /// station, seeds and every thumb). Merging them would turn listing a collection into N+1
+    /// requests.
+    pub async fn station_list(&mut self) -> Result<Vec<TunerStation>> {
         let list = self.tuner_call("user.getStationList", json!({})).await?;
         Ok(list
             .get("stations")

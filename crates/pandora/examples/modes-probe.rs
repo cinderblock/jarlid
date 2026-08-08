@@ -35,11 +35,11 @@ async fn main() {
     let station = rest_stations.first().expect("a station");
     println!("station: {} (id {})", station.name, station.station_id);
 
-    let tuner_stations = client.tuner_stations().await.expect("tuner stations");
+    let tuner_stations = client.station_list().await.expect("tuner stations");
     let tuner_token = tuner_stations
         .iter()
-        .find(|(name, _)| *name == station.name)
-        .map(|(_, token)| token.clone());
+        .find(|s| s.station_name == station.name)
+        .map(|s| s.station_token.clone());
     println!("matching tuner token: {}", tuner_token.as_deref().unwrap_or("NOT FOUND"));
 
     heading("1. list available modes");

@@ -94,9 +94,9 @@ async fn attach(
     // Station list for the picker. The tokens go with it: switching station and
     // exporting one both need the token, and emitting names alone left the
     // picker unable to do either.
-    if let Ok(stations) = engine.tuner_stations().await {
-        let names: Vec<&String> = stations.iter().map(|(name, _)| name).collect();
-        let tokens: Vec<&String> = stations.iter().map(|(_, token)| token).collect();
+    if let Ok(stations) = engine.station_list().await {
+        let names: Vec<&String> = stations.iter().map(|s| &s.station_name).collect();
+        let tokens: Vec<&String> = stations.iter().map(|s| &s.station_token).collect();
         let _ = app.emit(
             "engine://stations",
             json!({ "stations": names, "tokens": tokens }),
@@ -206,22 +206,25 @@ async fn attach(
     let resume = match load_last_station(app) {
         // Confirm the saved station still exists — it may have been deleted elsewhere, and
         // playing a dead token just fails confusingly.
-        Some((name, token)) => match engine.tuner_stations().await {
+        Some((name, token)) => match engine.station_list().await {
             Ok(stations) => stations
                 .iter()
-                .find(|(_, t)| *t == token)
-                .cloned()
+                .find(|s| s.station_token == token)
+                .map(|s| (s.station_name.clone(), s.station_token.clone()))
                 .or_else(|| {
                     eprintln!("[native] saved station {name:?} no longer exists; using the first");
-                    stations.first().cloned()
+                    stations
+                        .first()
+                        .map(|s| (s.station_name.clone(), s.station_token.clone()))
                 }),
+            // Can't confirm it still exists, but a saved token is better than nothing.
             Err(_) => Some((name, token)),
         },
-        None => engine
-            .tuner_stations()
-            .await
-            .ok()
-            .and_then(|s| s.first().cloned()),
+        None => engine.station_list().await.ok().and_then(|stations| {
+            stations
+                .first()
+                .map(|s| (s.station_name.clone(), s.station_token.clone()))
+        }),
     };
 
     if let Some((name, token)) = resume {
@@ -263,11 +266,11 @@ pub async fn native_is_signed_in() -> Result<bool, String> {
 #[tauri::command]
 pub async fn native_stations(
     state: tauri::State<'_, NativeEngine>,
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<Vec<pandora::TunerStation>, String> {
     state
         .get()
         .await?
-        .tuner_stations()
+        .station_list()
         .await
         .map_err(|e| e.to_string())
 }

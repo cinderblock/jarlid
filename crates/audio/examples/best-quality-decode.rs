@@ -19,8 +19,9 @@ async fn main() {
         .await
         .expect("login");
 
-    let stations = client.tuner_stations().await.expect("stations");
-    let (name, token) = stations.first().expect("a station").clone();
+    let stations = client.station_list().await.expect("stations");
+    let station = stations.first().expect("a station");
+    let (name, token) = (station.station_name.clone(), station.station_token.clone());
     println!("station: {name}");
 
     let tracks = match client.playlist(&token).await {
