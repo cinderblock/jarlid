@@ -38,6 +38,7 @@ socket2 = "0.5"
 # The native Pandora client: protocol, audio and playback. Replaces the engine webview.
 engine = { path = "../../crates/engine" }
 pandora = { path = "../../crates/pandora" }
+tauri-plugin-single-instance = "2.4.3"
 
 [target."cfg(windows)".dependencies]
 resvg = { version = "0.45", default-features = false }

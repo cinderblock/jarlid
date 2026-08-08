@@ -211,6 +211,18 @@ fn from_lrclib(v: &serde_json::Value, source: &str) -> Lyrics {
 /// Previously `eval`'d into the injected bridge script; now drives the native engine. Errors are
 /// logged rather than returned because these callers are OS callbacks with nowhere to report to.
 fn engine_cmd(app: &tauri::AppHandle, cmd: &str) {
+    // These callers are OS callbacks with nowhere to report to, so an unknown command would fail
+    // completely silently — which is how the play/pause media key ended up doing nothing for a
+    // release. Fail loudly in dev, and still log in release.
+    debug_assert!(
+        native::is_known_command(cmd),
+        "media/taskbar dispatcher sent {cmd:?}, which native_cmd does not handle — \
+         add an arm and list it in native::COMMANDS"
+    );
+    if !native::is_known_command(cmd) {
+        eprintln!("[native] dispatcher sent unhandled command {cmd:?}");
+    }
+
     let app = app.clone();
     let cmd = cmd.to_string();
     tauri::async_runtime::spawn(async move {
@@ -645,6 +657,20 @@ pub fn run() {
     );
 
     tauri::Builder::default()
+        // MUST be registered first, per the plugin's contract.
+        //
+        // A second copy is not merely untidy now that Jarlid owns playback itself: both instances
+        // grab the audio device and both register their own SMTC session, so a media key or
+        // taskbar press lands on whichever one Windows picked while the other keeps playing —
+        // which reads as "play/pause is broken". Pandora also permits only one stream per
+        // account, so the loser gets STREAM_VIOLATION. Focus the running copy instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())

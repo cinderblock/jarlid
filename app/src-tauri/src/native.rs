@@ -320,6 +320,40 @@ pub async fn native_play_station(
 }
 
 /// Transport, matching the command vocabulary the UI and media keys already use.
+/// Callers use several spellings: the UI sends "playpause", the media-key/taskbar dispatcher
+/// sends camelCase ("thumbDown") and its own verbs ("toggle"). Normalise rather than making
+/// every caller agree.
+pub fn normalize_command(cmd: &str) -> String {
+    cmd.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Every command [`native_cmd`] understands, normalised.
+///
+/// Exists so the dispatchers can be checked against the handler in a test. A command that only
+/// one side knows about fails *silently* — `engine_cmd` is called from OS callbacks with nowhere
+/// to report to, so it can only log. That is exactly how the play/pause media key ended up doing
+/// nothing: the dispatcher sent "toggle" and the handler only knew "playpause".
+pub const COMMANDS: &[&str] = &[
+    "play",
+    "pause",
+    "playpause",
+    "toggle",
+    "skip",
+    "next",
+    "prev",
+    "previous",
+    "replay",
+    "thumbup",
+    "thumbdown",
+];
+
+pub fn is_known_command(cmd: &str) -> bool {
+    COMMANDS.contains(&normalize_command(cmd).as_str())
+}
+
 #[tauri::command]
 pub async fn native_cmd(
     app: AppHandle,
@@ -328,18 +362,19 @@ pub async fn native_cmd(
 ) -> Result<(), String> {
     let engine = state.get().await?;
 
-    // Callers use several spellings: the UI sends "playpause", the media-key/taskbar dispatcher
-    // sends camelCase ("thumbDown"). Normalise rather than making every caller agree.
-    let normalized: String = cmd
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
-        .collect();
+    let normalized = normalize_command(&cmd);
 
     match normalized.as_str() {
         "play" => engine.set_paused(false),
         "pause" => engine.set_paused(true),
-        "playpause" => engine.toggle_pause(),
+        // "toggle" is what the media-key and taskbar dispatcher sends (Action::Toggle); the UI
+        // sends "playpause". Both must work — omitting "toggle" made the play/pause media key
+        // and the taskbar play/pause button silently do nothing, since engine_cmd only logs the
+        // resulting "unknown command" and has no way to report it.
+        "playpause" | "toggle" => engine.toggle_pause(),
+        // Pandora radio has no previous-track; the media Previous key restarts the song, which is
+        // what the transport's replay button does too.
+        "prev" | "previous" => engine.replay().await.map_err(|e| e.to_string())?,
         "skip" | "next" => engine.skip().await.map_err(|e| e.to_string())?,
         // Thumbs are optimistic so the button responds instantly, but they reconcile: on failure
         // we roll the UI back immediately, and the next time Pandora serves the track its real
@@ -385,4 +420,44 @@ pub async fn native_volume(
 ) -> Result<(), String> {
     state.get().await?.set_volume(volume);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exact strings `setup_media_controls`' dispatcher sends for each `Action`, plus the
+    /// taskbar toolbar's buttons, which route through the same actions.
+    ///
+    /// If someone adds an Action and forgets the handler arm, this fails instead of the feature
+    /// quietly doing nothing.
+    #[test]
+    fn every_dispatched_command_is_handled() {
+        for cmd in [
+            "play",      // Action::Play
+            "pause",     // Action::Pause
+            "toggle",    // Action::Toggle  <- media play/pause key, taskbar play/pause
+            "skip",      // Action::Next
+            "replay",    // Action::Prev
+            "thumbUp",   // Action::ThumbUp   (camelCase on purpose)
+            "thumbDown", // Action::ThumbDown (camelCase on purpose)
+            "playpause", // the UI's spelling
+        ] {
+            assert!(is_known_command(cmd), "no handler arm for {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn normalizes_case_and_punctuation() {
+        assert_eq!(normalize_command("thumbDown"), "thumbdown");
+        assert_eq!(normalize_command("play-pause"), "playpause");
+        assert_eq!(normalize_command("PLAY"), "play");
+    }
+
+    /// A genuinely unknown command must stay unknown, or the test above proves nothing.
+    #[test]
+    fn rejects_unknown_commands() {
+        assert!(!is_known_command("frobnicate"));
+        assert!(!is_known_command(""));
+    }
 }
