@@ -103,6 +103,14 @@ Windows Credential Manager, encrypted for your user.
 plain `cargo build --release` produces a binary that tries to load the dev server and fails with
 `ERR_CONNECTION_REFUSED`.
 
+`scripts/stress-window-move.ps1` is a regression test for the window-state saver deadlock fixed
+in v0.6.12 — it hammers the window with moves timed to collide with the debounced state save.
+Worth running against a release build after touching window-state or event-loop code:
+
+```sh
+pwsh scripts/stress-window-move.ps1 -Exe app/src-tauri/target/release/jarlid.exe
+```
+
 ## Install
 
 Grab `Jarlid_<version>_x64-setup.exe` from the

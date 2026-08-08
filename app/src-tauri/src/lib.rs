@@ -297,6 +297,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         let playing = playing_now.clone();
         let up = thumb_up.clone();
         let down = thumb_down.clone();
+        let remote = remote_active.clone();
         Arc::new(move || {
             use std::sync::atomic::Ordering;
             if let Some(b) = bar.lock().unwrap().as_ref() {
@@ -304,6 +305,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
                     playing: playing.load(Ordering::Relaxed),
                     thumb_up: up.load(Ordering::Relaxed),
                     thumb_down: down.load(Ordering::Relaxed),
+                    remote: remote.load(Ordering::Relaxed),
                 });
             }
         })
@@ -529,8 +531,12 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         if !active {
             if was_active {
                 r_last_meta.lock().unwrap().clear();
+                r_push(); // back to local: the Pandora-only buttons live again
             }
             return;
+        }
+        if !was_active {
+            r_push(); // renderer took over: grey out what it can't do
         }
 
         let artist = s("artist");
@@ -757,7 +763,21 @@ pub fn run() {
                         }
                     };
                     if due {
-                        let _ = saver_handle.save_window_state(StateFlags::all());
+                        // MUST be marshalled onto the main thread. `save_window_state`
+                        // holds the plugin's state-cache mutex across `is_maximized()`,
+                        // `outer_position()` etc.; called from any other thread each of
+                        // those blocks on a round-trip to the event loop, which may
+                        // itself be inside the plugin's own Moved/Resized handler
+                        // waiting for that same mutex — a deadlock that freezes the
+                        // whole app (diagnosed from a hang dump on v0.6.11).
+                        // On the main thread tauri-runtime-wry's `send_user_message`
+                        // short-circuits, so the getters resolve inline and the cache
+                        // is only ever locked from one thread. `run_on_main_thread`
+                        // itself only enqueues, so this loop never blocks.
+                        let save_handle = saver_handle.clone();
+                        let _ = saver_handle.run_on_main_thread(move || {
+                            let _ = save_handle.save_window_state(StateFlags::all());
+                        });
                     }
                 });
 

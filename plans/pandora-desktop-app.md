@@ -523,6 +523,28 @@ baseline, needs no approval. **Web-wrapper build continues regardless.**
 - The round-28 `added`-latch bug and the image-list-free-before-swap bug were both real and are
   still fixed, but neither was what the user was seeing.
 
+## Round 30 (2026-08-02): v0.6.11 — taskbar buttons adapt to remote (WiiM) mode
+- User asked whether the taskbar controls behave when a WiiM owns playback, and whether they
+  change to only what's available. Audit answer was **transport yes, thumbs no**:
+  - play/pause, skip and replay already routed to the renderer via `upnp::command`, and the
+    play/pause glyph already tracked it (the `remote://state` listener pushes state) — fine;
+  - but thumbs stayed **visible and enabled** while `dispatch` silently `return`ed on them
+    (empty remote command). Dead buttons that looked live;
+  - the `engine://thumbs` listener had **no remote guard** (unlike the metadata listener), so the
+    idle local Pandora page's thumb state kept driving the taskbar thumb glyphs while a WiiM
+    played something else entirely;
+  - "Replay" is really *previous track* on a renderer, so the tooltip lied.
+- Fix: `State` gains a `remote` flag (packed as bit 3). In remote mode the two thumb buttons get
+  `THBF_DISABLED` and always draw the unset glyph regardless of stale local thumb state, their
+  tooltips read "(Pandora only)", and Replay's reads "Previous track". Transport stays enabled.
+- The remote listener now pushes on the *transition* in both directions, so the buttons grey out
+  the moment the renderer takes over and come back when it stops — previously entering remote
+  mode wouldn't repaint until the next 5s local tick (and leaving it relied on the same).
+- Covered by `remote_mode_disables_pandora_only_buttons` (asserts flags, glyph slots and tooltips
+  for both modes) since a live WiiM can't be driven from a test.
+- NOT yet verified against real hardware — the WiiM is on the warehouse VLAN. VERIFY (user): with
+  the WiiM playing, the taskbar thumbs should be greyed and play/pause/skip should drive it.
+
 ## Round 25 (2026-07-12): v0.6.6 — lyrics vanish during long pause
 - Lyrics disappeared during a long pause, back only next song. Cause: UI lyrics reload key was
   title|artist|album; Pandora collapses the now-playing view when paused a while → album field
@@ -595,7 +617,71 @@ avoiding the crash — candidates in likely order: `--use-angle=gl`, `--use-angl
 `--disable-gpu-sandbox`, `--use-angle=swiftshader` (software = ~= disable-gpu, last resort).
 Also: engine window DevTools showed nothing (even network) during/pre-load; recheck once loaded.
 
+## HANG (not a crash): window-state saver deadlocks the event loop (2026-08-04, v0.6.11)
+
+**Symptom:** app "crashed" — window still on screen, completely unresponsive, music stopped.
+Nothing in the Windows Application event log, no crash dialog. `jarlid.exe` still alive.
+
+**Diagnosis method** (repeat this, it worked): `Get-Process` showed `Responding: False` with all 26
+threads in `Wait` and flat CPU — so a hang, not a crash and not a spin. WebView2 children (browser,
+GPU, network, storage, 2 renderers, audio) were all alive and idle, so the fault was in our process.
+`procdump -ma <pid>` (non-destructive, leaves the process running) then `cdb -z dump -y <path to
+target\release>` with the matching `jarlid.pdb` gave fully symbolised stacks. **The release PDB in
+`app/src-tauri/target/release/` matches the installed exe — keep it, it is what makes this readable.**
+
+**Root cause — a two-thread deadlock over `tauri-plugin-window-state`'s cache mutex:**
+
+- *Saver thread* (`lib.rs`, the `std::thread::spawn` debounce loop added in round 18/v0.5.1) calls
+  `AppHandleExt::save_window_state`. That takes `WindowStateCache.0.lock()`
+  (plugin `lib.rs:127`) and **holds it** while calling `window.update_state(...)`, which does
+  `is_maximized()` / `is_minimized()` / `inner_size()` / `outer_position()` — each a blocking
+  round-trip to the main event-loop thread. Stack: `save_window_state` → `update_state` →
+  `is_maximized` → `mpmc::Receiver::recv` (blocked).
+- *Main thread* meanwhile dispatches `WM_WINDOWPOSCHANGED` (user moving/resizing the window) into
+  the plugin's own `on_window_event` `Moved`/`Resized` arm (plugin `lib.rs:463`/`491`), which does
+  `cache.lock()` — held by the saver thread. Stack: `GetMessageW` → `_fnINLPWINDOWPOS` → subclass
+  chain → `wry ... parent_subclass_proc` → `Window::on_window_event::{{closure}}` →
+  `Mutex::lock_contended` (blocked).
+
+Saver waits on the main thread; main thread waits on the saver's lock. Permanent — the message pump
+never returns, so the window freezes and playback stops. This is an upstream bug in
+tauri-plugin-window-state 2.4.1 (lock held across a blocking main-thread round-trip); our 500ms/800ms
+debounced saver is what makes it fire, because it saves *precisely while the window is being moved*.
+It is a genuine race — debouncing only changes the odds, it cannot close it.
+
+**CORRECTION — an earlier version of this section was wrong.** It claimed that moving the save onto
+the main thread would self-deadlock, on the grounds that `getter!`
+(`tauri-runtime-wry-2.10.1/src/lib.rs:196`) is an unconditional `send_user_message` + `rx.recv()`.
+Reading only `getter!` was the mistake: `send_user_message` (**same file, line 238**) begins with
+`if current_thread().id() == context.main_thread_id { handle_user_message(...); }` — a main-thread
+fast path that services the message inline, so `rx.recv()` finds the reply already waiting and
+returns immediately. There is no self-deadlock. The tell was in the plugin itself: its own
+`CloseRequested` arm (plugin `lib.rs:449`) and `RunEvent::Exit` handler both call `update_state` /
+`save_window_state` from the main thread while holding the cache lock, and have always worked.
+**Lesson: when a macro delegates, read the callee before concluding anything about blocking.**
+
+**FIX APPLIED (v0.6.12):** the debounced saver thread no longer calls `save_window_state` directly;
+it marshals it with `saver_handle.run_on_main_thread(...)` (`lib.rs`, `run_on_main_thread` is
+enqueue-only, so the loop never blocks). Two things follow, and together they make the deadlock
+structurally impossible rather than merely unlikely:
+- On the main thread the geometry getters resolve inline (fast path above) — no round-trip to wait on.
+- The plugin's cache mutex is now only ever locked from the main thread — every other locker
+  (`Moved`/`Resized`/`CloseRequested` handlers, `RunEvent::Exit`) already lives there. A lock taken
+  from exactly one thread cannot participate in a cycle.
+
+This also keeps the round-18 crash-safety property (position survives a hard kill), so no trade-off
+was needed. Vendoring/forking the plugin was considered and rejected as unnecessary once the
+main-thread fast path was understood.
+
+**Upstream:** still unfixed on `plugins-workspace@v2` as of 2026-08-04 (verified against the branch
+source). `save_window_state` is public API on `AppHandle`, which is `Send`, so it looks callable from
+any thread but deadlocks off the main thread. Worth reporting — distinct from #3241/#3240, which are
+the macOS `decorated:false` hang.
+
 ## Things not to do
+- Do NOT call `tauri-plugin-window-state`'s `save_window_state` (or anything else that holds its
+  cache mutex across window getters) from a background thread — deadlocks the event loop. Always
+  wrap it in `run_on_main_thread`, which is correct and non-blocking (see HANG section above).
 - Do NOT set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--autoplay-policy=... — crashes the renderer.
 - Do NOT use the reverse-engineered partner API (pianobar/Pithos style) — ban risk + fragile.
 - Do NOT touch infrastructure (Cloudflare/DNS/servers) — out of scope, needs per-change auth.
