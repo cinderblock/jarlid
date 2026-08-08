@@ -1095,9 +1095,52 @@ listen("engine://needs-login", () => {
   loginHint.hidden = false;
 });
 
-// Surface engine failures instead of leaving the UI silently stuck.
-listen<{ message: string }>("engine://error", (e) => {
-  const error = $("login-error");
-  error.textContent = e.payload.message;
-  error.hidden = false;
+// ---- toast --------------------------------------------------------------
+// Engine problems used to be written into #login-error, which lives inside the sign-in card and
+// is hidden the moment you are signed in — so a failure during playback went nowhere at all.
+const toast = $("toast");
+const toastMsg = $("toast-msg");
+const toastAction = $<HTMLButtonElement>("toast-action");
+let toastTimer: number | undefined;
+
+function showToast(
+  message: string,
+  action?: { label: string; run: () => void },
+  autoHideMs = 8000
+) {
+  toastMsg.textContent = message;
+  toastAction.hidden = !action;
+  if (action) {
+    toastAction.textContent = action.label;
+    toastAction.onclick = () => {
+      hideToast();
+      action.run();
+    };
+  }
+  toast.hidden = false;
+  window.clearTimeout(toastTimer);
+  // Sticky when there is something to do about it; a toast that vanishes before you can click
+  // its button is worse than none.
+  if (!action) toastTimer = window.setTimeout(hideToast, autoHideMs);
+}
+
+function hideToast() {
+  toast.hidden = true;
+  window.clearTimeout(toastTimer);
+}
+$("toast-close").addEventListener("click", hideToast);
+
+listen<{ message: string }>("engine://error", (e) => showToast(e.payload.message));
+
+// Another device holds the account's single stream. Recoverable, and the engine keeps retrying
+// on its own — so say so, and offer to claim it now rather than waiting.
+listen<{ message: string }>("engine://stream-taken", (e) => {
+  showToast(e.payload.message, {
+    label: "Play here",
+    run: () => {
+      invoke("native_take_over")
+        .then(() => showToast("Playing here now.", undefined, 3000))
+        .catch(() => showToast("Could not take over — the other device still has it."));
+    },
+  });
 });

@@ -153,9 +153,14 @@ async fn attach(
                         );
                     }
                     Event::StreamTaken => {
+                        // Its own event, not a generic error: this one is recoverable and has an
+                        // obvious action, so the UI offers to claim the stream instead of just
+                        // reporting a failure.
                         let _ = app.emit(
-                            "engine://error",
-                            json!({ "message": "Pandora is playing on another device." }),
+                            "engine://stream-taken",
+                            json!({
+                                "message": "Pandora is playing on another device.",
+                            }),
                         );
                     }
                     Event::Error(message) => {
@@ -279,6 +284,19 @@ pub async fn native_stations(
 ///
 /// Returns an empty list rather than an error when nothing is playing yet, so the UI can call
 /// this freely without special-casing startup.
+/// Claim the account's single stream for this device, then resume.
+#[tauri::command]
+pub async fn native_take_over(
+    state: tauri::State<'_, NativeEngine>,
+) -> Result<(), String> {
+    state
+        .get()
+        .await?
+        .take_over()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn native_modes(
     state: tauri::State<'_, NativeEngine>,

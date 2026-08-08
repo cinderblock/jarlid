@@ -692,6 +692,7 @@ pub fn run() {
             native::native_sign_out,
             native::native_stations,
             native::native_modes,
+            native::native_take_over,
             native::native_set_mode,
             native::native_volume,
             player_cmd,

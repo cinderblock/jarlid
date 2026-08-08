@@ -35,6 +35,17 @@ pub enum Error {
     NotSignedIn,
 }
 
+impl Error {
+    /// Another device holds the account's single permitted stream.
+    ///
+    /// Delegates to the protocol error so callers don't have to reach through the variant. This
+    /// one is recoverable — the engine keeps retrying — so it should never be reported the way a
+    /// genuine failure is.
+    pub fn is_stream_violation(&self) -> bool {
+        matches!(self, Error::Pandora(e) if e.is_stream_violation())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// What the engine is doing, for a UI to render.
@@ -302,18 +313,50 @@ impl Engine {
     /// Kept as an explicit call rather than a hidden background task so a host app can own its
     /// own loop and interleave its own work.
     pub async fn run(&self) {
+        // How long to wait before trying again after a failed advance. Long enough not to hammer
+        // Pandora while another device holds the stream, short enough that playback resumes on
+        // its own once that device stops.
+        const RETRY: Duration = Duration::from_secs(10);
+        let mut retry_at: Option<tokio::time::Instant> = None;
+
         loop {
             tokio::time::sleep(Duration::from_millis(200)).await;
 
+            let due = retry_at.is_some_and(|at| tokio::time::Instant::now() >= at);
+
             // A track that failed to open must be skipped, or the radio stalls forever on it.
-            if self.audio.track_ended() || self.audio.failed() {
-                let _ = self.events.send(Event::TrackEnded);
-                if let Err(e) = self.advance().await {
-                    let _ = self.events.send(Event::Error(e.to_string()));
-                    return;
+            if due || self.audio.track_ended() || self.audio.failed() {
+                if !due {
+                    let _ = self.events.send(Event::TrackEnded);
+                }
+
+                match self.advance().await {
+                    Ok(()) => retry_at = None,
+                    Err(e) => {
+                        // Do NOT give up. This used to `return`, so a single STREAM_VIOLATION
+                        // killed auto-advance for the rest of the session — the radio stayed dead
+                        // even after the other device stopped playing. `advance` already emitted
+                        // the specific event, so just schedule another attempt.
+                        if !e.is_stream_violation() {
+                            let _ = self.events.send(Event::Error(e.to_string()));
+                        }
+                        retry_at = Some(tokio::time::Instant::now() + RETRY);
+                    }
                 }
             }
         }
+    }
+
+    /// Claim the account's single stream for this device.
+    ///
+    /// Pandora exposes no explicit "take over" call; a client claims the stream simply by asking
+    /// for a playlist and being the most recent to do so. So this is a retry — but a retry is
+    /// exactly what the native app's takeover amounts to.
+    ///
+    /// Whether the other device is actively evicted or merely loses the next request is not
+    /// something we can observe from here.
+    pub async fn take_over(&self) -> Result<()> {
+        self.advance().await
     }
 
     pub async fn skip(&self) -> Result<()> {
