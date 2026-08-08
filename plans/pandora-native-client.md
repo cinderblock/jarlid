@@ -17,9 +17,25 @@ overlooked.
 
 ## Status
 
-**Architecture unblocked — option A CONFIRMED. The client can be fully native with no browser.**
-Protocol, audio decode, streaming and auth are all proven. One measurement outstanding (REST audio
-bitrate for the paid tier), blocked only by Jarlid holding the account's single stream.
+**SHIPPED. v1.1.0 released 2026-08-08** — built, signed and published by CI from the version tag.
+
+Jarlid is a native Pandora client: tuner-API login, 128 kbit/s MP3 decoded and played by us,
+its own transport, station Modes, and no browser anywhere. The engine webview, `bridge.js` and
+the remote-page IPC capability are all deleted.
+
+| Release | What |
+|---|---|
+| v1.0.0 | The native client itself; webview engine removed |
+| v1.1.0 | Station Modes, QuickMix source station, station-preferences export, media-key fix, single-instance guard |
+
+**Outstanding, and both belong to the user, not the code:**
+1. Modes and the media-key fix have only been verified by the agent, not by the user in daily use.
+2. The Jarlid blog post carries an AI-drafted technical section that must be rewritten in
+   Cameron's voice before it publishes (per the blog's `CLAUDE.md`).
+
+Nice-to-have, deliberately not built: dedicated buttons for special stations (QuickMix /
+Thumbprint). The flags are plumbed through the model; only the placement is undecided, and that
+is a visual call.
 
 ### 🎉 2026-08-07 THE BIG QUESTION IS ANSWERED
 
