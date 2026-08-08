@@ -153,10 +153,6 @@ impl AudioThread {
         Duration::from_millis(self.published.drift_ms.load(Ordering::Relaxed))
     }
 
-    pub fn is_playing(&self) -> bool {
-        self.published.playing.load(Ordering::Relaxed)
-    }
-
     pub fn is_paused(&self) -> bool {
         self.published.paused.load(Ordering::Relaxed)
     }

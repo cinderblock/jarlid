@@ -623,45 +623,27 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Retained so the UI's existing globe button and Ctrl+Shift+E keep resolving, but there is no
-/// longer a Pandora webview to reveal. Always reports "hidden".
-///
-/// TODO: remove these along with the affordances in `app/src/main.ts` — they are meaningless now.
-#[tauri::command]
-fn toggle_engine() -> Result<bool, String> {
-    Ok(false)
-}
-
-#[tauri::command]
-fn show_engine(_visible: bool) -> Result<(), String> {
-    Ok(())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // pandora.com crashed WebView2's renderer (STATUS_ACCESS_VIOLATION) with default
-    // GPU settings. Full --disable-gpu fixed it but forced software rendering; the
-    // D3D11 ANGLE backend keeps hardware acceleration while avoiding the default
-    // (D3D11on12/GL mix) path that crashed. If STATUS_ACCESS_VIOLATION ever returns,
-    // fall back to "--disable-gpu --disable-gpu-compositing".
-    // autoplay-policy lets the UI start audio in the hidden engine without an
-    // in-page gesture; HardwareMediaKeyHandling is off so media keys reach our
-    // native SMTC session instead of the webview.
+    // HardwareMediaKeyHandling is off so media keys reach our native SMTC session rather than
+    // being swallowed by WebView2.
+    //
+    // The ANGLE/D3D11 backend was needed because pandora.com crashed WebView2's renderer
+    // (STATUS_ACCESS_VIOLATION) under the default D3D11on12/GL path. We no longer load that page,
+    // so this may well be unnecessary — but it costs nothing, still keeps hardware acceleration,
+    // and dropping it is a graphics-stack gamble with no upside. Left deliberately.
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--use-angle=d3d11 --autoplay-policy=no-user-gesture-required --disable-features=HardwareMediaKeyHandling",
+        "--use-angle=d3d11 --disable-features=HardwareMediaKeyHandling",
     );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        // Remember main-window position/size across launches. The engine window
-        // is excluded — it's a hidden background window with managed visibility.
+        // Remember main-window position/size across launches.
         .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_denylist(&["engine"])
-                .build(),
+            tauri_plugin_window_state::Builder::default().build(),
         )
         .invoke_handler(tauri::generate_handler![
             check_update,
@@ -676,9 +658,7 @@ pub fn run() {
             native::native_volume,
             player_cmd,
             remote_cmd,
-            remote_presets,
-            show_engine,
-            toggle_engine
+            remote_presets
         ])
         .setup(|app| {
             // The native engine: speaks Pandora's protocol directly and plays audio itself.
@@ -731,30 +711,10 @@ pub fn run() {
                 eprintln!("[smtc] setup failed: {e}");
             }
 
-            // Watchdog: the bridge emits engine://heartbeat every 5s. If the engine
-            // page wedges (renderer crash, stuck navigation), heartbeats stop and we
-            // reload pandora.com automatically instead of requiring a manual refresh.
-            {
-                use std::sync::{Arc, Mutex};
-                use std::time::{Duration, Instant};
-                let last_beat = Arc::new(Mutex::new(Instant::now()));
-                let beat = last_beat.clone();
-                app.listen_any("engine://heartbeat", move |_| {
-                    *beat.lock().unwrap() = Instant::now();
-                });
-                let handle = app.handle().clone();
-                std::thread::spawn(move || loop {
-                    std::thread::sleep(Duration::from_secs(10));
-                    let silent = last_beat.lock().unwrap().elapsed();
-                    if silent > Duration::from_secs(30) {
-                        eprintln!("[watchdog] engine silent for {silent:?} — reloading");
-                        if let Some(w) = handle.get_webview_window("engine") {
-                            let _ = w.navigate("https://www.pandora.com".parse().unwrap());
-                        }
-                        *last_beat.lock().unwrap() = Instant::now();
-                    }
-                });
-            }
+            // (The engine-heartbeat watchdog lived here. It reloaded pandora.com when the
+            // scraped page wedged — a failure mode that no longer exists now that playback is
+            // native. Recovery for the native engine is a token refresh, which `Client` already
+            // does inline.)
 
             // Dev-only: trace playhead events so the engine→host pipeline is
             // observable in the dev log (every ~5s).

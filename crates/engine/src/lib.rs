@@ -192,6 +192,21 @@ impl Engine {
         self.advance().await
     }
 
+    /// Restart the current track from the beginning.
+    ///
+    /// No seek required and no extra request to Pandora: the signed audio URL is still valid, so
+    /// re-opening it starts a fresh decode from byte zero.
+    pub async fn replay(&self) -> Result<()> {
+        let Some(track) = self.state.lock().await.current.clone() else {
+            return Err(Error::NoStation);
+        };
+        self.audio.stop();
+        self.audio.play(&track.audio_url);
+        // Re-announce so the UI resets its progress bar and re-syncs lyrics to zero.
+        let _ = self.events.send(Event::TrackStarted(Box::new(track)));
+        Ok(())
+    }
+
     pub fn set_paused(&self, paused: bool) {
         self.audio.set_paused(paused);
         let _ = self.events.send(Event::Paused(paused));

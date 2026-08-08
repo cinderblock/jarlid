@@ -66,7 +66,9 @@ const SAMPLE_RATES: [u32; 13] = [
 fn children(data: &[u8]) -> impl Iterator<Item = (&str, &[u8])> {
     let mut offset = 0usize;
     std::iter::from_fn(move || {
-        while offset + 8 <= data.len() {
+        // Not a loop: every path below returns. Each call yields exactly one box, and the
+        // iterator resumes here on the next `next()`.
+        if offset + 8 <= data.len() {
             let size = u32::from_be_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
             let name = std::str::from_utf8(&data[offset + 4..offset + 8]).ok()?;
 

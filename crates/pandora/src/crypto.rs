@@ -29,7 +29,7 @@ impl Codec {
         let pad = BLOCK - (plaintext.len() % BLOCK);
         let mut buf = Vec::with_capacity(plaintext.len() + pad);
         buf.extend_from_slice(plaintext);
-        buf.extend(std::iter::repeat(pad as u8).take(pad));
+        buf.extend(std::iter::repeat_n(pad as u8, pad));
 
         for chunk in buf.chunks_mut(BLOCK) {
             let block = GenericArray::from_mut_slice(chunk);

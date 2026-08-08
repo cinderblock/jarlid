@@ -19,6 +19,32 @@ use tokio::sync::Mutex;
 /// be smooth without flooding the event bus.
 const PLAYHEAD_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Where the last-played station is remembered, so launching resumes what you were listening to
+/// rather than whatever happens to sort first.
+fn last_station_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_config_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("last-station.json"))
+}
+
+fn save_last_station(app: &AppHandle, name: &str, token: &str) {
+    let Some(path) = last_station_path(app) else {
+        return;
+    };
+    let blob = json!({ "name": name, "token": token });
+    if let Ok(text) = serde_json::to_string(&blob) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+fn load_last_station(app: &AppHandle) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(last_station_path(app)?).ok()?;
+    let blob: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let name = blob.get("name")?.as_str()?.to_string();
+    let token = blob.get("token")?.as_str()?.to_string();
+    Some((name, token))
+}
+
 /// Managed app state. `None` until sign-in succeeds.
 #[derive(Clone, Default)]
 pub struct NativeEngine(Arc<Mutex<Option<Arc<Engine>>>>);
@@ -91,18 +117,18 @@ async fn attach(
                                 "station": station,
                                 "art": art(1080),
                                 "artFallback": art(500),
-                                // A freshly-served track carries no feedback yet. The UI's
-                                // NowPlaying type expects these, and omitting them would leave
-                                // the thumb buttons showing the previous track's state.
-                                "thumbUp": false,
+                                // Pandora's own recorded feedback, not a guess. This is what
+                                // reconciles an optimistic thumb: if the click didn't register,
+                                // the next play of that track shows the truth.
+                                "thumbUp": track.is_thumbed_up(),
+                                // Thumbed-down tracks are simply not served, so a track we're
+                                // playing is never thumbed down.
                                 "thumbDown": false,
                             }),
                         );
-                        // A new track carries no feedback yet; clear the taskbar glyphs so they
-                        // don't show the previous track's thumbs.
                         let _ = app.emit(
                             "engine://thumbs",
-                            json!({ "thumbUp": false, "thumbDown": false }),
+                            json!({ "thumbUp": track.is_thumbed_up(), "thumbDown": false }),
                         );
                     }
                     Event::StreamTaken => {
@@ -154,12 +180,30 @@ async fn attach(
         tauri::async_runtime::spawn(async move { engine.run().await });
     }
 
-    // Start playing the first station so the app comes up with music, as the webview did.
-    if let Ok(stations) = engine.tuner_stations().await {
-        if let Some((name, token)) = stations.first() {
-            if let Err(e) = engine.play_station(name, token).await {
-                eprintln!("[native] could not start playback: {e}");
-            }
+    // Resume the station you were last listening to. Falling back to the first station only
+    // happens on a genuinely fresh install.
+    let resume = match load_last_station(app) {
+        // Confirm the saved station still exists — it may have been deleted elsewhere, and
+        // playing a dead token just fails confusingly.
+        Some((name, token)) => match engine.tuner_stations().await {
+            Ok(stations) => stations
+                .iter()
+                .find(|(_, t)| *t == token)
+                .cloned()
+                .or_else(|| {
+                    eprintln!("[native] saved station {name:?} no longer exists; using the first");
+                    stations.first().cloned()
+                }),
+            Err(_) => Some((name, token)),
+        },
+        None => engine.tuner_stations().await.ok().and_then(|s| s.first().cloned()),
+    };
+
+    if let Some((name, token)) = resume {
+        if let Err(e) = engine.play_station(&name, &token).await {
+            eprintln!("[native] could not start playback: {e}");
+        } else {
+            save_last_station(app, &name, &token);
         }
     }
 }
@@ -205,6 +249,7 @@ pub async fn native_stations(
 
 #[tauri::command]
 pub async fn native_play_station(
+    app: AppHandle,
     state: tauri::State<'_, NativeEngine>,
     name: String,
     token: String,
@@ -214,7 +259,11 @@ pub async fn native_play_station(
         .await?
         .play_station(&name, &token)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Only remember it once playback actually started, so a failed switch doesn't become the
+    // station we resume into next launch.
+    save_last_station(&app, &name, &token);
+    Ok(())
 }
 
 /// Transport, matching the command vocabulary the UI and media keys already use.
@@ -239,25 +288,38 @@ pub async fn native_cmd(
         "pause" => engine.set_paused(true),
         "playpause" => engine.toggle_pause(),
         "skip" | "next" => engine.skip().await.map_err(|e| e.to_string())?,
+        // Thumbs are optimistic so the button responds instantly, but they reconcile: on failure
+        // we roll the UI back immediately, and the next time Pandora serves the track its real
+        // `songRating` overrides whatever we assumed.
         "thumbup" => {
-            engine.thumb_up().await.map_err(|e| e.to_string())?;
             let _ = app.emit(
                 "engine://thumbs",
                 json!({ "thumbUp": true, "thumbDown": false }),
             );
+            if let Err(e) = engine.thumb_up().await {
+                let _ = app.emit(
+                    "engine://thumbs",
+                    json!({ "thumbUp": false, "thumbDown": false }),
+                );
+                return Err(e.to_string());
+            }
         }
         "thumbdown" => {
-            engine.thumb_down().await.map_err(|e| e.to_string())?;
             let _ = app.emit(
                 "engine://thumbs",
                 json!({ "thumbUp": false, "thumbDown": true }),
             );
+            if let Err(e) = engine.thumb_down().await {
+                let _ = app.emit(
+                    "engine://thumbs",
+                    json!({ "thumbUp": false, "thumbDown": false }),
+                );
+                return Err(e.to_string());
+            }
             // Pandora moves on after a thumbs down, and so should we.
             engine.skip().await.map_err(|e| e.to_string())?;
         }
-        // Pandora's own replay is a paid-tier action we haven't wired to an endpoint yet;
-        // restarting the current track locally would need a seek the player doesn't expose.
-        "replay" => return Err("replay is not implemented on the native engine yet".into()),
+        "replay" => engine.replay().await.map_err(|e| e.to_string())?,
         other => return Err(format!("unknown command {other:?}")),
     }
     Ok(())

@@ -117,6 +117,11 @@ pub struct Track {
     /// Raw `trackType`; use [`Track::kind`] rather than matching on this directly.
     pub track_type: String,
 
+    /// Pandora's own feedback for this track: 1 = thumbs up, 0 = none. Thumbed-down tracks are
+    /// simply not served, so there is no negative value. This is what lets an optimistic thumb in
+    /// the UI reconcile against reality on the next track rather than drifting.
+    pub song_rating: i32,
+
     pub album_art: Vec<Art>,
     #[serde(rename = "art")]
     pub art_alt: Vec<Art>,
@@ -153,6 +158,11 @@ impl Track {
 
     pub fn duration(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.track_length)
+    }
+
+    /// Whether Pandora already has a thumbs-up recorded for this track.
+    pub fn is_thumbed_up(&self) -> bool {
+        self.song_rating > 0
     }
 
     /// Safe for logs: identifies the track without leaking the signed audio URL.

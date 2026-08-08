@@ -2,17 +2,18 @@
 
 **Jarlid** (the lid of the jar — in the original myth, Pandora opened a *pithos*) is an
 unofficial desktop client for a **paid Pandora account**, built after Pandora discontinued their
-official desktop app. It wraps Pandora's own authenticated web player (so login, DRM, ad-free
-playback, and skips are all handled by Pandora) and overlays a redesigned UI that puts the
-current song's **album art and synced lyrics front and center**.
+official desktop app. It is a **reimplementation of Pandora's client protocol**: it speaks
+Pandora's own APIs directly, decodes and plays the audio itself, and puts the current song's
+**album art and synced lyrics front and center**. There is no browser and no embedded web player
+anywhere in it.
 
 ## Features
 
 - **Synced (karaoke-style) lyrics** from [LRCLIB](https://lrclib.net), with duration-aware
   version matching, a permanent on-disk cache, and per-track sync nudging (`[` / `]`, ±0.25 s).
 - **Native Windows media integration**: hardware media keys and the volume-flyout / lock-screen
-  media panel (title, artist, album art, live state) via a real SMTC session — not the
-  browser's flaky MediaSession bridge. Plus a **taskbar thumbnail toolbar** (thumbs down ·
+  media panel (title, artist, album art, live state) via a real SMTC session, fed from the player
+  itself rather than inferred from a page. Plus a **taskbar thumbnail toolbar** (thumbs down ·
   replay · play/pause · skip · thumbs up) under the taskbar hover preview, drawn with the same
   artwork as the in-app transport and following the system light/dark theme.
 - **Transport & stations**: play/pause (Space), skip, thumbs, replay, searchable station
@@ -22,8 +23,10 @@ current song's **album art and synced lyrics front and center**.
   synced lyrics. WiiM devices use the native LinkPlay API, so metadata works for the WiiM's own
   sources too, and Jarlid can start playback on the device from its preset list and control
   play/pause/skip.
-- **Self-healing engine**: heartbeat watchdog auto-reloads a wedged Pandora page and
-  auto-dismisses the "still listening?" prompt for all-day sessions.
+- **Native audio**: 128 kbit/s MP3 (double Pandora's 64 kbit/s default), decoded and resampled to
+  the output device's rate, streamed with a lock-free ring buffer. Playback position is measured
+  from frames actually delivered to the device, which is what keeps synced lyrics honest — decoding
+  runs several seconds ahead of what you hear.
 - **Auto-updates**: checks GitHub Releases (startup + every 4 h) and installs signed updates
   with one click from an in-app banner.
 - Full station collection searchable in the picker; Cover-Flow-style recently-played gallery;
@@ -31,24 +34,47 @@ current song's **album art and synced lyrics front and center**.
 
 ## Why this approach
 
-We deliberately wrap the real `pandora.com` web player instead of using the reverse-engineered
-"partner API" (pianobar / Pithos / pydora). That keeps the account ban-safe and durable: it's a
-normal browser session, not an impersonated official client. See `plans/pandora-desktop-app.md`
-for the full rationale, the official-API investigation, and the living task list.
+Jarlid began as a wrapper around Pandora's web player in an embedded WebView2, scraping its DOM
+for metadata and clicking its buttons to control playback. That worked, but it meant shipping a
+whole browser to play a 128 kbit/s stream, and every piece of state was inferred from obfuscated
+React markup that could change at any time.
+
+It is now a genuine client. The protocol was reverse-engineered from Pandora's own traffic and
+verified against a live account:
+
+- **No DRM to contend with.** The audio is plain MP4/AAC or MP3 over signed, expiring HTTPS URLs.
+  Not one of `pssh`/`sinf`/`schm`/`tenc` appears in the container — verified structurally, not
+  assumed.
+- **Better audio than the web player's default.** The standard stream is 64 kbit/s HE-AAC;
+  requesting `HTTP_128_MP3` yields **128 kbit/s**, measured from the file rather than read off a
+  label.
+- **Authoritative state.** Because we own the player, "paused" and playback position are facts
+  rather than inferences from DOM motion.
+
+The trade-off, stated plainly: this is against Pandora's Terms of Use, which prohibit third-party
+clients. It requires your own paid account, redistributes nothing, and circumvents no DRM — but
+it is not sanctioned. See `plans/pandora-native-client.md` for the full protocol research,
+measurements, and the living task list.
 
 ## Architecture
 
-Two decoupled contexts inside one Tauri (Rust + WebView2) app:
+A Tauri app whose only webview is our own UI. Three library crates do the real work:
 
-- **Engine webview** → `pandora.com`. Handles auth/audio/transport. A single injected script,
-  `app/src-tauri/bridge.js`, is the only code that touches Pandora's DOM: it scrapes now-playing
-  state via Pandora's stable `data-qa` hooks, sets `navigator.mediaSession` (→ Windows SMTC), and
-  exposes commands the host can call.
-- **UI window** → our own Vite app (`app/src/`). Renders the art + synced-lyrics interface and
-  transport. Lyrics come from [LRCLIB](https://lrclib.net) (free, time-synced) via a Rust command
-  (`fetch_lyrics`) that sidesteps page CSP/CORS.
+- **`crates/pandora`** — the protocol. Login over the tuner API (Blowfish-encrypted, and the only
+  endpoint not behind PerimeterX bot detection), then Pandora's modern REST API for the station
+  collection, and the tuner API for playlists, audio and feedback. Portable, no platform code.
+- **`crates/audio`** — decoding and playback. Windows Media Foundation decodes HE-AAC *with SBR*
+  (Symphonia implements neither SBR nor PS, and would silently decode at half the sample rate),
+  resampling to the output device's rate; a lock-free ring buffer feeds cpal.
+- **`crates/engine`** — the radio. Queue refill, auto-advance, transport, thumbs, and credentials
+  in the Windows Credential Manager.
 
-State flows engine → Rust events → UI. Controls flow UI → Rust → `eval` into the engine.
+`app/src-tauri/src/native.rs` drives the engine and emits the same `engine://` events the old
+bridge script did, so the UI, media integration and lyrics needed no changes when the webview was
+removed. Lyrics still come from [LRCLIB](https://lrclib.net) via a Rust command.
+
+State flows engine → Rust events → UI. Controls flow UI → Rust → engine — direct method calls
+rather than `eval`-ing JavaScript into someone else's page.
 
 Three more Rust-side services complete the picture: a native Windows SMTC session (`souvlaki`)
 fed by the same engine events; the taskbar thumbnail toolbar (`app/src-tauri/src/thumbbar.rs`) —
@@ -69,16 +95,20 @@ bun install
 bun run tauri dev
 ```
 
-Requirements: Rust, Bun, and the WebView2 runtime (all already present on the dev machine).
-First launch: log in to Pandora once in the engine window; the session persists (WebView2 user
-data keyed to app id `com.camer.pandora-desktop`).
+Requirements: Rust, Bun, and the WebView2 runtime (WebView2 renders Jarlid's own UI; it no longer
+loads pandora.com). First launch: sign in with your Pandora account — the password goes to the
+Windows Credential Manager, encrypted for your user.
+
+**Build with the Tauri CLI, not bare `cargo build`.** Only the CLI embeds the built frontend; a
+plain `cargo build --release` produces a binary that tries to load the dev server and fails with
+`ERR_CONNECTION_REFUSED`.
 
 ## Install
 
 Grab `Jarlid_<version>_x64-setup.exe` from the
 [latest release](https://github.com/cinderblock/jarlid/releases/latest) and run it. The app
-keeps itself up to date from there. First launch: log in to Pandora once in the engine window
-(reveal it with the globe button or `Ctrl+Shift+E`); the session persists across updates.
+keeps itself up to date from there. First launch: sign in with your Pandora account; the
+credentials persist across updates.
 
 To build locally instead: `cd app && bun run tauri build` (requires Rust, Bun, WebView2;
 releases are built by `.github/workflows/release.yml` on version tags).
@@ -91,9 +121,12 @@ Daily-driver ready. Remaining ideas are tracked in `plans/pandora-desktop-app.md
 
 Jarlid is an unofficial, personal project. It is not affiliated with, endorsed by, or supported
 by Pandora Media or SiriusXM; "Pandora" is used only to identify the service this client
-connects to. It does not circumvent DRM or provide any content itself — it drives
-Pandora's own authenticated web player in an embedded browser, so it requires your own valid
-(paid) Pandora account. Use it in accordance with Pandora's Terms of Service.
+connects to. It provides no content itself and requires your own valid (paid) Pandora account.
+
+It circumvents no DRM, because Pandora applies none to this audio — the streams are unencrypted
+and the only protection is a signed, expiring URL, which Jarlid uses exactly as intended rather
+than working around. It does, however, access Pandora through a client they did not write, which
+their Terms of Use prohibit. That is a real risk to your account, knowingly taken.
 
 ## License
 

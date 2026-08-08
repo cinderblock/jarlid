@@ -539,16 +539,6 @@ $("login-form").addEventListener("submit", async (e) => {
     submit.textContent = "Sign in";
   }
 });
-$("engine-btn").addEventListener("click", () =>
-  invoke("toggle_engine").catch(() => {})
-);
-// Keyboard escape hatch for the same toggle.
-window.addEventListener("keydown", (e) => {
-  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "e") {
-    invoke("toggle_engine").catch(() => {});
-  }
-});
-
 // ---- station switching (searchable picker) -------------------------------
 // With ids (full collection via Pandora's web API) selection navigates to the
 // station directly; without (rail fallback) it clicks the nth rail item.
