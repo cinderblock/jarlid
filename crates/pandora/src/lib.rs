@@ -12,6 +12,7 @@
 pub mod client;
 pub mod crypto;
 pub mod demo;
+pub mod json;
 pub mod models;
 pub mod mp4;
 pub mod rest;

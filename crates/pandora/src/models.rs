@@ -115,13 +115,6 @@ pub struct TunerStation {
     pub is_thumbprint: bool,
 }
 
-impl TunerStation {
-    /// Whether this is one of Pandora's generated stations rather than one seeded from an artist
-    /// or song. These deserve their own affordance in a picker.
-    pub fn is_special(&self) -> bool {
-        self.is_quick_mix || self.is_thumbprint
-    }
-}
 
 /// A station Mode — Pandora's per-station playlist flavours ("My Station", "Crowd Faves",
 /// "Discovery", "Deep Cuts", …).

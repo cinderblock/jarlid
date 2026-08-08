@@ -11,7 +11,7 @@
 //! Every request body carries `syncTime`; the server rejects requests whose clock has drifted, so
 //! we track the offset between our clock and theirs from the partner-login response onward.
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -244,10 +244,3 @@ impl Session {
     }
 }
 
-/// Wall-clock epoch seconds, for callers that need to compare against Pandora's clock.
-pub fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default()
-}

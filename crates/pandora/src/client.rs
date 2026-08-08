@@ -15,14 +15,14 @@
 use serde_json::{json, Value};
 
 use crate::models::{Mode, Station, Track, TunerStation};
-use crate::{demo::find_key, rest, tuner, Error, Result};
+use crate::{json::find_key, rest, tuner, Error, Result};
 
 /// Stream spec for the best audio this account can get: 128 kbps MP3, measured.
-/// `HTTP_192_MP3` is advertised by Pandora but is **not** served to this subscription.
+///
+/// `HTTP_192_MP3` is advertised by Pandora but is **not** served to this subscription. When this
+/// stream is absent from a response, [`Client::playlist`] falls back to the best entry in
+/// `audioUrlMap` (64 kbps HE-AAC) rather than to another named spec.
 pub const BEST_AUDIO: &str = "HTTP_128_MP3";
-
-/// Fallback if the preferred stream is ever withdrawn: 64 kbps HE-AAC, always present.
-pub const FALLBACK_AUDIO: &str = "HTTP_64_AACPLUS_ADTS";
 
 pub struct Client {
     tuner: tuner::Session,
@@ -193,9 +193,6 @@ impl Client {
             })
             .collect())
     }
-
-    /// The tuner station list — needed because [`Self::playlist`] takes a `stationToken`, which
-    /// the REST list does not provide.
 
     /// The Modes available for a station ("My Station", "Crowd Faves", "Discovery", "Deep
     /// Cuts", …), in Pandora's own order.

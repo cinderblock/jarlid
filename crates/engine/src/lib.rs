@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use audio_thread::AudioThread;
-use pandora::{Station, Track};
+use pandora::Track;
 use tokio::sync::{mpsc, Mutex};
 
 /// Keep at least this many tracks queued; fetch more when we drop below it. Pandora returns
@@ -114,10 +114,6 @@ impl Engine {
         let started = Self::start(username, password).await?;
         credentials::store(username, password)?;
         Ok(started)
-    }
-
-    pub async fn stations(&self) -> Result<Vec<Station>> {
-        Ok(self.state.lock().await.client.stations().await?)
     }
 
     /// Every station, with the playback token and Pandora's special-station flags.

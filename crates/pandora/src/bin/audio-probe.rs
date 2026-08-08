@@ -8,6 +8,7 @@
 //!
 //! Run: cargo run --bin audio-probe
 
+use pandora::json::find_key;
 use pandora::{mp4, rest};
 use serde_json::{json, Value};
 
@@ -15,20 +16,6 @@ fn heading(text: &str) {
     println!("\n=== {text} ===");
 }
 
-/// Pull the first value found under any of these keys, at any depth. Pandora's responses nest
-/// inconsistently across endpoints, and we care about the value, not the path.
-fn find_key<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
-    match value {
-        Value::Object(map) => {
-            if let Some(found) = map.get(key) {
-                return Some(found);
-            }
-            map.values().find_map(|v| find_key(v, key))
-        }
-        Value::Array(items) => items.iter().find_map(|v| find_key(v, key)),
-        _ => None,
-    }
-}
 
 #[tokio::main]
 async fn main() {
