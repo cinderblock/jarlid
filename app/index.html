@@ -40,8 +40,19 @@
     <div id="login-hint" hidden>
       <div class="card">
         <h2>Sign in to Pandora</h2>
-        <p>Log in inside the separate <b>“Pandora Engine”</b> window (check <b>“Keep me signed in”</b>), then start a station. Playback appears here automatically and the session persists next time.</p>
-        <button id="open-engine">Bring Pandora Engine to front</button>
+        <p>Jarlid talks to Pandora directly, so sign in here. Your password is
+          stored in the Windows Credential Manager, encrypted for your account.</p>
+        <form id="login-form">
+          <label for="login-user">Email</label>
+          <input id="login-user" type="email" autocomplete="username" required
+                 placeholder="you@example.com" />
+
+          <label for="login-pass">Password</label>
+          <input id="login-pass" type="password" autocomplete="current-password" required />
+
+          <button id="login-submit" type="submit">Sign in</button>
+          <p id="login-error" class="error" hidden></p>
+        </form>
       </div>
     </div>
 

@@ -74,7 +74,6 @@ const fmt = (s: number) => {
 
 // ---- state -------------------------------------------------------------
 let currentKey = "";
-let everPlayed = false;
 let syncedLines: LyricLine[] | null = null;
 // remote (network player) mode
 let remote: RemoteState | null = null;
@@ -154,7 +153,6 @@ function highlightLine(position: number) {
 
 // ---- now-playing -------------------------------------------------------
 async function onNowPlaying(np: NowPlaying) {
-  everPlayed = true;
   lastLocalNp = np;
   if (remoteMode) return; // remote overlay owns the screen; re-rendered on exit
   loginHint.hidden = true;
@@ -515,9 +513,32 @@ $("skip").addEventListener("click", () =>
 $("replay").addEventListener("click", () => cmd("replay"));
 thumbUpBtn.addEventListener("click", () => cmd("thumbUp"));
 thumbDownBtn.addEventListener("click", () => cmd("thumbDown"));
-$("open-engine").addEventListener("click", () =>
-  invoke("show_engine", { visible: true }).catch(() => {})
-);
+// Sign in directly — there is no Pandora webview to log into any more. The password goes
+// straight to the Rust side, which only persists it once Pandora has actually accepted it.
+$("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const user = $("login-user") as HTMLInputElement;
+  const pass = $("login-pass") as HTMLInputElement;
+  const submit = $("login-submit") as HTMLButtonElement;
+  const error = $("login-error");
+
+  error.hidden = true;
+  submit.disabled = true;
+  submit.textContent = "Signing in…";
+
+  try {
+    await invoke("native_sign_in", { username: user.value, password: pass.value });
+    // Don't leave the password sitting in the DOM once it has been handed over.
+    pass.value = "";
+    loginHint.hidden = true;
+  } catch (err) {
+    error.textContent = String(err);
+    error.hidden = false;
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Sign in";
+  }
+});
 $("engine-btn").addEventListener("click", () =>
   invoke("toggle_engine").catch(() => {})
 );
@@ -800,9 +821,16 @@ listen<{ thumbUp: boolean; thumbDown: boolean }>("engine://thumbs", (e) =>
   setThumbs(e.payload.thumbUp, e.payload.thumbDown)
 );
 listen("engine://needs-login", () => {
-  // Once a track has ever played, ignore transient login signals (they fire during
-  // Pandora's initial "/" load before redirecting to the player).
-  if (everPlayed) return;
+  // Authoritative now: the native engine emits this only when the credential store is empty or
+  // the saved credentials were rejected. The old `everPlayed` guard existed because Pandora's
+  // page fired spurious login signals during its initial load; there is no page any more.
   player.hidden = true;
   loginHint.hidden = false;
+});
+
+// Surface engine failures instead of leaving the UI silently stuck.
+listen<{ message: string }>("engine://error", (e) => {
+  const error = $("login-error");
+  error.textContent = e.payload.message;
+  error.hidden = false;
 });

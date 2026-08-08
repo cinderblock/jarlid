@@ -760,3 +760,47 @@ body.remote #remote-vol-wrap {
     transform-origin: center;
   }
 }
+
+/* Sign-in form. Jarlid authenticates to Pandora itself now, so this replaces the old
+   "log in inside the Pandora Engine window" hint. */
+#login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 18px;
+  text-align: left;
+}
+#login-form label {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+#login-form input {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: inherit;
+  font: inherit;
+  margin-bottom: 8px;
+}
+#login-form input:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.09);
+}
+#login-form button {
+  margin-top: 6px;
+}
+#login-form button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+#login-error {
+  color: #ff8a80;
+  font-size: 13px;
+  margin: 10px 0 0;
+  /* Pandora's errors can be long; keep the card from stretching off-screen. */
+  overflow-wrap: anywhere;
+}

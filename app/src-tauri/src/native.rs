@@ -91,6 +91,11 @@ async fn attach(
                                 "station": station,
                                 "art": art(1080),
                                 "artFallback": art(500),
+                                // A freshly-served track carries no feedback yet. The UI's
+                                // NowPlaying type expects these, and omitting them would leave
+                                // the thumb buttons showing the previous track's state.
+                                "thumbUp": false,
+                                "thumbDown": false,
                             }),
                         );
                         // A new track carries no feedback yet; clear the taskbar glyphs so they
