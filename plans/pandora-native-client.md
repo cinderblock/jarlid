@@ -514,6 +514,91 @@ listening, which does not scale and should not have been necessary.
 unannounced. During listening tests the user twice reported them as faults. Interactive checks must
 not contain unannounced control tests — both are now opt-in (`pause`, `skip` arguments).
 
+### 🎛 2026-08-08 Station Modes — REST endpoints, honoured by tuner playlists
+
+Endpoints, extracted from the shipping bundle (`web-app.*.js`):
+
+```
+v1/interactiveradio/getAvailableModesSimple    body { stationId }
+v1/interactiveradio/setAndGetAvailableModes    body { stationId, modeId }
+v1/action/mode
+```
+
+⚠️ Pandora's own constant for the setter contains a **trailing space**
+(`"v1/interactiveradio/setAndGetAvailableModes "`). Send it without.
+
+Modes on the test account: My Station (0), Crowd Faves (1), Discovery (2), Deep Cuts (3), Newly
+Released (4), Artist Only (5), Energy Boost (1091989), Relax. Each carries `modeDescription`,
+`isModeAvailable`, `isPremiumOnly`, `isInitialMode`.
+
+**The question that gated the feature:** Modes are a REST "interactive radio" concept, but our
+audio comes from the tuner API. If the two didn't talk, a mode picker would look like it worked
+and silently do nothing. **They do talk** — verified by A/B sampling *before* writing the feature
+(`cargo run --example modes-ab`): across 8 modes, **36 artists appeared in exactly one mode**, and
+the character matched the descriptions (Discovery surfaced unfamiliar artists, Relax pulled a
+different genre). Evidence, not proof — playlists are stochastic — but strong and corroborated by
+ear.
+
+Setting a mode **clears the queued tracks**; otherwise the change isn't audible for several songs
+and reads as broken. The currently playing track is deliberately left alone.
+
+### 🧭 2026-08-08 Station ids: a wrong conclusion, and the real lesson
+
+Modes need the REST `stationId`; playback holds a tuner `stationToken`. An equivalence sweep first
+reported that 1 of 88 stations disagreed — so a name-based lookup was written to work around it.
+
+**That conclusion was wrong, and the workaround was the dangerous part.** The account has **two
+stations both named "Sandstorm Radio"**; the comparison map collapsed them and compared against
+the wrong one. The ids do agree. The real finding is the inverse:
+
+> **Station names are NOT unique.** Name-based lookup is the unsafe path, not the safe one.
+
+`Engine::rest_station_id` now matches on the id, and only falls back to a name when **exactly
+one** station carries it — refusing rather than guessing when ambiguous. Also note the tuner list
+has 89 stations vs REST's 88, so the two lists are not a bijection either.
+
+### 📻 2026-08-08 QuickMix and other special stations
+
+Tuner `user.getStationList` flags them: `isQuickMix`, `isThumbprint`, `isGenreStation`. QuickMix
+also carries `quickMixStationIds` (29 on the test account).
+
+- **QuickMix has no Modes** — the picker must hide, not show a one-item list.
+- **Every QuickMix track carries `stationId`** naming the contributing station that produced it.
+  That is the only way to answer "what am I actually listening to right now?", and the UI now
+  shows `from <station>` whenever it differs from the selected station.
+
+### 🔇 2026-08-08 Media keys silently dead — `"toggle"` had no handler
+
+The media-key/taskbar dispatcher sends `"toggle"` for play/pause (`Action::Toggle`, from both
+`MediaControlEvent::Toggle` and the taskbar PlayPause button). `native_cmd` only knew
+`"playpause"`, so `"toggle"` hit the unknown-command arm.
+
+**It failed invisibly**: `engine_cmd` is called from OS callbacks with nowhere to report to, so it
+could only log. Pause itself was fine — when paused the audio callback writes zero samples and
+explicitly zeroes the whole buffer.
+
+Structural fix, because the next added command would hit the same trap:
+`native::COMMANDS` lists every handled command; `engine_cmd` `debug_assert!`s (and logs in
+release) on anything unknown; a test asserts every string the dispatcher can send is handled,
+including camelCase spellings, since only the handler normalises case.
+
+⚠️ The first attempt at this guard was **decorative** — `COMMANDS`/`is_known_command` were used
+only by the test, which the compiler flagged as dead code. A guard that never runs in the real
+path is not a guard. Wiring it into `engine_cmd` fixed both.
+
+### 2026-08-08 Single instance
+
+Two copies could run at once, each grabbing the audio device and registering its own SMTC session,
+which makes media-key routing ambiguous. `tauri-plugin-single-instance` (registered **first**, per
+its contract) now focuses the running copy instead.
+
+⚠️ **It cannot block an instance that predates the plugin** — an older build never creates the
+lock a newer one looks for. Verified working between two guarded builds; the installed v1.0.0 and
+a dev build will still both run.
+
+Also observed: two clients on one account really do stream simultaneously, so Pandora's
+one-stream limit is not enforced as strictly as `STREAM_VIOLATION` implies.
+
 ### ⚠️ 2026-08-07 Pandora enforces ONE concurrent stream per account (`STREAM_VIOLATION`)
 
 REST `playlist/getFragment` fails with `STREAM_VIOLATION` while another client is streaming on the

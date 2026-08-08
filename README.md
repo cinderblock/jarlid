@@ -18,6 +18,11 @@ anywhere in it.
   artwork as the in-app transport and following the system light/dark theme.
 - **Transport & stations**: play/pause (Space), skip, thumbs, replay, searchable station
   picker, recently-played art gallery with per-track detail modal.
+- **Station Modes**: switch a station between My Station, Crowd Faves, Discovery, Deep Cuts,
+  Newly Released, Artist Only, Energy Boost and Relax, with Pandora's own description of each
+  shown inline. Switching clears the queued tracks so the change is audible within a song or two.
+- **QuickMix shows its source**: QuickMix blends dozens of your stations, and each track says
+  which one it came from — otherwise there's no way to tell what you're actually listening to.
 - **Network player (UPnP/DLNA + WiiM) remote mode**: when local playback is idle and a
   renderer on the LAN is playing, Jarlid becomes its display — "Now playing on …" with art and
   synced lyrics. WiiM devices use the native LinkPlay API, so metadata works for the WiiM's own
@@ -73,8 +78,8 @@ A Tauri app whose only webview is our own UI. Three library crates do the real w
 - **`crates/audio`** — decoding and playback. Windows Media Foundation decodes HE-AAC *with SBR*
   (Symphonia implements neither SBR nor PS, and would silently decode at half the sample rate),
   resampling to the output device's rate; a lock-free ring buffer feeds cpal.
-- **`crates/engine`** — the radio. Queue refill, auto-advance, transport, thumbs, and credentials
-  in the Windows Credential Manager.
+- **`crates/engine`** — the radio. Queue refill, auto-advance, transport, thumbs, station Modes,
+  and credentials in the Windows Credential Manager.
 
 `app/src-tauri/src/native.rs` drives the engine and emits the same `engine://` events the old
 bridge script did, so the UI, media integration and lyrics needed no changes when the webview was
