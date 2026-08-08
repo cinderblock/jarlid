@@ -165,7 +165,7 @@ impl Engine {
         // Populate the map lazily — the first QuickMix track usually arrives before anything has
         // asked for the station list.
         if state.station_names.is_empty() {
-            if let Ok(stations) = state.client.station_details().await {
+            if let Ok(stations) = state.client.tuner_station_details().await {
                 state.station_names = stations
                     .iter()
                     .map(|s| (s.station_id.clone(), s.station_name.clone()))
