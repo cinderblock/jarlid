@@ -44,6 +44,8 @@ pub enum Event {
     TrackEnded,
     Paused(bool),
     StationChanged(String),
+    /// The station's Mode changed ("Crowd Faves", "Deep Cuts", …).
+    ModeChanged(String),
     /// Pandora permits one concurrent stream per account; another device has it.
     StreamTaken,
     Error(String),
@@ -52,9 +54,14 @@ pub enum Event {
 struct State {
     client: pandora::Client,
     station_token: Option<String>,
+    /// The station's **REST** id, which the Modes endpoints need. Resolved on first use and
+    /// cached; see [`Engine::rest_station_id`] for why it isn't simply the tuner token.
+    station_rest_id: Option<String>,
     station_name: String,
     queue: Vec<Track>,
     current: Option<Track>,
+    /// stationId → station name, so a QuickMix track can name its source without a round trip.
+    station_names: std::collections::HashMap<String, String>,
 }
 
 pub struct Engine {
@@ -76,9 +83,11 @@ impl Engine {
             state: Arc::new(Mutex::new(State {
                 client,
                 station_token: None,
+                station_rest_id: None,
                 station_name: String::new(),
                 queue: Vec::new(),
                 current: None,
+                station_names: std::collections::HashMap::new(),
             })),
             audio: Arc::new(AudioThread::spawn()),
             events,
@@ -126,11 +135,129 @@ impl Engine {
         Ok(self.state.lock().await.client.station_details(token).await?)
     }
 
+    /// The tuner station list with Pandora's special-station flags, for a picker that wants to
+    /// treat QuickMix and Thumbprint differently from ordinary stations.
+    pub async fn tuner_station_details(&self) -> Result<Vec<pandora::TunerStation>> {
+        let mut state = self.state.lock().await;
+        let stations = state.client.tuner_station_details().await?;
+        // Cache the id→name map so QuickMix tracks can name their source station without an
+        // extra round trip per track.
+        state.station_names = stations
+            .iter()
+            .map(|s| (s.station_id.clone(), s.station_name.clone()))
+            .collect();
+        Ok(stations)
+    }
+
+    /// Which station produced the current track.
+    ///
+    /// On an ordinary station this is just that station and isn't worth showing. On QuickMix it
+    /// answers "what am I actually listening to right now?", which is otherwise invisible.
+    /// Returns `None` when it matches the selected station, so callers can render it
+    /// unconditionally without special-casing.
+    pub async fn source_station(&self) -> Option<String> {
+        let mut state = self.state.lock().await;
+        let track = state.current.clone()?;
+        if track.station_id.is_empty() {
+            return None;
+        }
+
+        // Populate the map lazily — the first QuickMix track usually arrives before anything has
+        // asked for the station list.
+        if state.station_names.is_empty() {
+            if let Ok(stations) = state.client.station_details().await {
+                state.station_names = stations
+                    .iter()
+                    .map(|s| (s.station_id.clone(), s.station_name.clone()))
+                    .collect();
+            }
+        }
+
+        let name = state.station_names.get(&track.station_id)?.clone();
+        (name != state.station_name).then_some(name)
+    }
+
+    /// Modes available for the station currently playing.
+    pub async fn modes(&self) -> Result<Vec<pandora::Mode>> {
+        let mut state = self.state.lock().await;
+        let id = Self::rest_station_id(&mut state).await?;
+        Ok(state.client.station_modes(&id).await?)
+    }
+
+    /// Resolve (and cache) the REST id for the current station.
+    ///
+    /// On the test account the tuner `stationToken` and the REST `stationId` are the same value
+    /// for every one of the 88 REST stations — but that is an observation, not a guarantee, so we
+    /// confirm the id actually exists rather than assuming.
+    ///
+    /// Name matching is only a fallback, and a weak one: station names are **not unique** (this
+    /// account has two both called "Sandstorm Radio"). So a name lookup is used only when exactly
+    /// one station carries that name; an ambiguous name is treated as unresolvable rather than
+    /// silently picking the wrong station's modes.
+    async fn rest_station_id(state: &mut State) -> Result<String> {
+        if let Some(id) = &state.station_rest_id {
+            return Ok(id.clone());
+        }
+        // Nothing is playing yet, so there is no station to resolve.
+        let token = state.station_token.clone().ok_or(Error::NoStation)?;
+
+        let stations = state.client.stations().await?;
+
+        // Exact: the tuner token is itself a valid REST station id. Unambiguous, so prefer it.
+        let id = if stations.iter().any(|s| s.station_id == token) {
+            token
+        } else {
+            let name = state.station_name.clone();
+            let mut matches = stations.iter().filter(|s| s.name == name);
+            match (matches.next(), matches.next()) {
+                (Some(station), None) => station.station_id.clone(),
+                // Ambiguous or absent: refuse rather than guess.
+                _ => return Err(Error::NoStation),
+            }
+        };
+
+        state.station_rest_id = Some(id.clone());
+        Ok(id)
+    }
+
+    /// Switch the current station's Mode.
+    ///
+    /// Pandora applies this to newly generated playlists, so the queue we already hold is stale.
+    /// We drop it and refill, otherwise the change wouldn't be audible for several tracks and
+    /// would look broken. The *currently playing* track is deliberately left alone — cutting off
+    /// a song mid-play to honour a mode change is more jarring than useful.
+    pub async fn set_mode(&self, mode_id: i64) -> Result<()> {
+        let name = {
+            let mut state = self.state.lock().await;
+            let id = Self::rest_station_id(&mut state).await?;
+            state.client.set_station_mode(&id, mode_id).await?;
+            state.queue.clear();
+
+            state
+                .client
+                .station_modes(&id)
+                .await
+                .ok()
+                .and_then(|modes| {
+                    modes
+                        .into_iter()
+                        .find(|m| m.mode_id == mode_id)
+                        .map(|m| m.mode_name)
+                })
+                .unwrap_or_default()
+        };
+
+        let _ = self.events.send(Event::ModeChanged(name));
+        Ok(())
+    }
+
     /// Switch station and begin playing it.
     pub async fn play_station(&self, name: &str, token: &str) -> Result<()> {
         {
             let mut state = self.state.lock().await;
             state.station_token = Some(token.to_string());
+            // Different station, so the cached REST id no longer applies.
+            state.station_rest_id = None;
             state.station_name = name.to_string();
             state.queue.clear();
             state.current = None;

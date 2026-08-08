@@ -8,6 +8,8 @@ interface NowPlaying {
   artist: string;
   album: string;
   station: string;
+  /// On QuickMix, which contributing station this track came from. Empty on an ordinary station.
+  sourceStation: string;
   art: string;
   artFallback: string;
   thumbUp: boolean;
@@ -62,6 +64,7 @@ const stationExport = $("station-export");
 const stationExportBtn = $<HTMLButtonElement>("station-export-btn");
 const stationExportCancel = $<HTMLButtonElement>("station-export-cancel");
 const stationExportStatus = $("station-export-status");
+const sourceEl = $("source-station");
 const histEl = $("history");
 const barEl = $("bar");
 const tCur = $("t-cur");
@@ -175,6 +178,9 @@ async function onNowPlaying(np: NowPlaying) {
   artistEl.textContent = np.artist || "";
   albumEl.textContent = np.album || "";
   if (np.station) stationBtn.textContent = np.station;
+  // QuickMix blends many stations; without this there's no way to tell which one is playing.
+  sourceEl.textContent = np.sourceStation ? `from ${np.sourceStation}` : "";
+  sourceEl.hidden = !np.sourceStation;
   setThumbs(np.thumbUp, np.thumbDown);
 
   setArt(np.art || np.artFallback, np.artFallback);
@@ -593,6 +599,11 @@ function renderStationList(filter = "") {
         activeStation = name;
         stationBtn.textContent = name;
         stationPanel.hidden = true;
+        // Modes are per-station, so the current selection no longer applies. Give the engine a
+        // moment to switch before asking for the new station's modes.
+        activeMode = "";
+        modeWrap.hidden = true;
+        setTimeout(() => void refreshModes(), 600);
       });
     }
     stationList.appendChild(item);
@@ -757,6 +768,8 @@ listen<{ stations: string[]; tokens: string[] }>("engine://stations", (e) => {
   if (!stations.length) return;
   stationNames = stations;
   stationTokens = tokens ?? [];
+  // The station list arriving means we know what's playing, so its modes are fetchable.
+  void refreshModes();
   // Drop selections for stations that no longer exist.
   if (!exporting) {
     const live = new Set(stationTokens);
@@ -765,6 +778,98 @@ listen<{ stations: string[]; tokens: string[] }>("engine://stations", (e) => {
   if (!stationPanel.hidden) {
     renderStationList(stationSearch.value);
     refreshSelectionUi();
+  }
+});
+
+// ---- station modes (My Station / Crowd Faves / Discovery / Deep Cuts …) ----
+// Modes are set over Pandora's REST API but the tuner playlist honours them, so switching here
+// really does change what plays next. It affects newly generated playlists, not the current
+// track — the engine clears its queue so the change is audible within a song or two.
+type Mode = {
+  modeId: number;
+  modeName: string;
+  modeButtonText: string;
+  modeDescription: string;
+  isInitialMode: boolean;
+};
+
+const modeWrap = $("mode-wrap");
+const modeBtn = $("mode-btn");
+const modePanel = $("mode-panel");
+const modeList = $("mode-list");
+let modes: Mode[] = [];
+let activeMode = "";
+
+function renderModes() {
+  modeList.innerHTML = "";
+  modes.forEach((mode) => {
+    const label = mode.modeButtonText || mode.modeName;
+    const item = document.createElement("div");
+    item.className = "mode-item" + (label === activeMode ? " active" : "");
+
+    const name = document.createElement("div");
+    name.className = "mode-name";
+    name.textContent = label;
+    item.appendChild(name);
+
+    // Pandora's own one-liner. Shown inline rather than on hover — the names alone don't
+    // explain themselves, and hover text is invisible on a touchscreen.
+    if (mode.modeDescription) {
+      const desc = document.createElement("div");
+      desc.className = "mode-desc";
+      desc.textContent = mode.modeDescription;
+      item.appendChild(desc);
+    }
+
+    item.addEventListener("click", () => {
+      activeMode = label;
+      modeBtn.textContent = label;
+      modePanel.hidden = true;
+      invoke("native_set_mode", { modeId: mode.modeId }).catch(() => {
+        // Roll back if Pandora rejected it, rather than showing a mode that isn't set.
+        void refreshModes();
+      });
+      renderModes();
+    });
+    modeList.appendChild(item);
+  });
+}
+
+async function refreshModes() {
+  try {
+    modes = await invoke<Mode[]>("native_modes");
+  } catch {
+    modes = [];
+  }
+  // A station with only the default mode has nothing worth choosing between.
+  modeWrap.hidden = modes.length < 2;
+  if (!modes.length) return;
+  if (!activeMode) {
+    const initial = modes.find((m) => m.isInitialMode) ?? modes[0];
+    activeMode = initial.modeButtonText || initial.modeName;
+  }
+  modeBtn.textContent = activeMode;
+  renderModes();
+}
+
+modeBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  modePanel.hidden = !modePanel.hidden;
+  if (!modePanel.hidden) renderModes();
+});
+window.addEventListener("click", (e) => {
+  if (!modePanel.hidden && !(e.target as HTMLElement).closest("#mode-wrap")) {
+    modePanel.hidden = true;
+  }
+});
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") modePanel.hidden = true;
+});
+listen<{ mode: string }>("engine://mode", (e) => {
+  if (e.payload.mode) {
+    activeMode = e.payload.mode;
+    modeBtn.textContent = activeMode;
+    renderModes();
   }
 });
 

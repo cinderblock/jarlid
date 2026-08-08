@@ -62,6 +62,7 @@ async fn main() {
                 }
                 engine::Event::TrackEnded => println!("   (ended)"),
                 engine::Event::StationChanged(name) => println!("📻 station: {name}"),
+                engine::Event::ModeChanged(name) => println!("🎛  mode: {name}"),
                 engine::Event::Paused(paused) => {
                     println!("   {}", if paused { "paused" } else { "resumed" })
                 }

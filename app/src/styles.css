@@ -310,6 +310,80 @@ body.remote #history {
   color: var(--accent);
 }
 
+/* which station a QuickMix track actually came from */
+#source-station {
+  font-size: 0.74rem;
+  color: var(--faint);
+  margin-top: 2px;
+}
+
+/* station modes (My Station / Crowd Faves / Discovery / Deep Cuts …) */
+#mode-wrap {
+  position: relative;
+  margin-top: 4px;
+}
+#mode-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  outline: none;
+  border-radius: 999px;
+  padding: 3px 12px;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+#mode-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--fg);
+}
+#mode-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 300px;
+  max-height: 340px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  background: rgba(22, 22, 28, 0.92);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 8px;
+  z-index: 7;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.55);
+}
+.mode-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.mode-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.mode-name {
+  font-size: 0.88rem;
+  color: var(--dim);
+}
+.mode-item:hover .mode-name,
+.mode-item.active .mode-name {
+  color: var(--fg);
+}
+.mode-item.active .mode-name {
+  font-weight: 600;
+}
+/* Pandora's own one-liner, shown inline rather than on hover — the mode names
+   don't explain themselves and hover text is invisible on a touchscreen. */
+.mode-desc {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--faint);
+  margin-top: 2px;
+}
+
 #tooltip {
   position: fixed;
   z-index: 9;

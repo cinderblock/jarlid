@@ -18,7 +18,7 @@ pub mod rest;
 pub mod tuner;
 
 pub use client::Client;
-pub use models::{Art, Station, Track, TrackKind};
+pub use models::{Art, Mode, Station, Track, TrackKind, TunerStation};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

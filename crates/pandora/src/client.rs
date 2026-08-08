@@ -14,7 +14,7 @@
 
 use serde_json::{json, Value};
 
-use crate::models::{Station, Track};
+use crate::models::{Mode, Station, Track, TunerStation};
 use crate::{demo::find_key, rest, tuner, Error, Result};
 
 /// Stream spec for the best audio this account can get: 128 kbps MP3, measured.
@@ -205,6 +205,66 @@ impl Client {
                 stations
                     .iter()
                     .map(|s| (string_at(s, "stationName"), string_at(s, "stationToken")))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// The Modes available for a station ("My Station", "Crowd Faves", "Discovery", "Deep
+    /// Cuts", …), in Pandora's own order.
+    ///
+    /// Modes live on the REST "interactive radio" API, but the tuner playlist honours whatever is
+    /// set — verified by A/B sampling in `examples/modes-ab.rs`, where each mode surfaced artists
+    /// the others never did. Without that, a mode picker would silently do nothing.
+    ///
+    /// Unavailable modes are filtered out: offering a button that cannot work is worse than
+    /// omitting it.
+    pub async fn station_modes(&mut self, station_id: &str) -> Result<Vec<Mode>> {
+        let response = self
+            .rest_call(
+                "v1/interactiveradio/getAvailableModesSimple",
+                json!({ "stationId": station_id }),
+            )
+            .await?;
+
+        Ok(find_key(&response, "availableModes")
+            .and_then(Value::as_array)
+            .map(|modes| {
+                modes
+                    .iter()
+                    .filter_map(|m| serde_json::from_value::<Mode>(m.clone()).ok())
+                    .filter(|m| m.is_mode_available)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Switch a station's Mode. Takes effect on the next playlist fetch, not the current track.
+    pub async fn set_station_mode(&mut self, station_id: &str, mode_id: i64) -> Result<()> {
+        self.rest_call(
+            "v1/interactiveradio/setAndGetAvailableModes",
+            json!({ "stationId": station_id, "modeId": mode_id }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The tuner station list with Pandora's special-station flags (`isQuickMix`,
+    /// `isThumbprint`, `isGenreStation`) and both ids.
+    ///
+    /// Richer than [`Self::tuner_stations`], which exists for callers that only need name+token.
+    ///
+    /// Named for the tuner list specifically to avoid colliding with [`Self::station_details`],
+    /// which is a different thing entirely (one station's seeds and thumb history, for export).
+    pub async fn tuner_station_details(&mut self) -> Result<Vec<TunerStation>> {
+        let list = self.tuner_call("user.getStationList", json!({})).await?;
+        Ok(list
+            .get("stations")
+            .and_then(Value::as_array)
+            .map(|stations| {
+                stations
+                    .iter()
+                    .filter_map(|s| serde_json::from_value::<TunerStation>(s.clone()).ok())
                     .collect()
             })
             .unwrap_or_default())

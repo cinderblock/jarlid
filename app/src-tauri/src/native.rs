@@ -112,6 +112,9 @@ async fn attach(
             while let Some(event) = events.recv().await {
                 match event {
                     Event::StationChanged(name) => station = name,
+                    Event::ModeChanged(name) => {
+                        let _ = app.emit("engine://mode", json!({ "mode": name }));
+                    }
                     Event::TrackStarted(track) => {
                         // The UI wants a big image and a smaller fallback, exactly as before.
                         let art = |min: u32| {
@@ -119,6 +122,12 @@ async fn attach(
                                 .map(|a| a.url.clone())
                                 .unwrap_or_default()
                         };
+                        // On QuickMix (and other blends) the track comes from one of the
+                        // contributing stations. Naming it answers "what am I actually listening
+                        // to?" — invisible otherwise. `None` on an ordinary station, where it
+                        // would just repeat the station name.
+                        let source = engine.source_station().await.unwrap_or_default();
+
                         let _ = app.emit(
                             "engine://nowplaying",
                             json!({
@@ -126,6 +135,7 @@ async fn attach(
                                 "artist": track.artist_name,
                                 "album": track.album_title,
                                 "station": station,
+                                "sourceStation": source,
                                 "art": art(1080),
                                 "artFallback": art(500),
                                 // Pandora's own recorded feedback, not a guess. This is what
@@ -258,6 +268,34 @@ pub async fn native_stations(
         .get()
         .await?
         .tuner_stations()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Modes for the station currently playing ("My Station", "Crowd Faves", "Deep Cuts", …).
+///
+/// Returns an empty list rather than an error when nothing is playing yet, so the UI can call
+/// this freely without special-casing startup.
+#[tauri::command]
+pub async fn native_modes(
+    state: tauri::State<'_, NativeEngine>,
+) -> Result<Vec<pandora::Mode>, String> {
+    match state.get().await?.modes().await {
+        Ok(modes) => Ok(modes),
+        Err(engine::Error::NoStation) => Ok(Vec::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn native_set_mode(
+    state: tauri::State<'_, NativeEngine>,
+    mode_id: i64,
+) -> Result<(), String> {
+    state
+        .get()
+        .await?
+        .set_mode(mode_id)
         .await
         .map_err(|e| e.to_string())
 }
