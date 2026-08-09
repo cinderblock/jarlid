@@ -434,3 +434,39 @@ and spaces"
         assert!(!body.contains("you@example.com"));
     }
 }
+
+#[cfg(test)]
+mod inspect {
+    use super::*;
+
+    /// Print a realistic report so a human can read what actually gets filed.
+    ///
+    /// Property assertions cannot catch a report that is technically correct and useless to read.
+    /// Run with: cargo test show_a_real_report -- --nocapture --ignored
+    #[test]
+    #[ignore = "prints a sample report; not an assertion"]
+    fn show_a_real_report() {
+        let diagnostics = Diagnostics::default();
+        diagnostics.record("engine", "pandora error 0: STREAM_VIOLATION");
+        diagnostics.record(
+            "engine",
+            "could not play https://t1-5.p-cdn.us/access/?version=5&lid=987654&token=SIGNEDTOKENVALUE",
+        );
+        diagnostics.record("ui", "Cannot read properties of null (reading 'textContent') (index.js:412)");
+        diagnostics.record("panic", "panicked at src/audio.rs:88: device disconnected");
+
+        let context = UiContext {
+            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Edg/140.0.0.0".into(),
+            station: "QuickMix".into(),
+            source_station: "Lindsey Stirling Radio".into(),
+            mode: "Deep Cuts".into(),
+            remote: false,
+            note: "Skipped a track and the audio stopped. Account: me@example.com".into(),
+        };
+
+        let body = build_body("1.1.0", &context, "position 42s, buffered 5.0s, drift 0.00s", &diagnostics.recent());
+        println!("\n===== ISSUE BODY =====\n{body}\n===== END =====");
+        let url = issue_url("engine: pandora error 0: STREAM_VIOLATION", &body);
+        println!("url length: {} (limit {MAX_URL})", url.len());
+    }
+}
