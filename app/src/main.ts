@@ -1130,7 +1130,45 @@ function hideToast() {
 }
 $("toast-close").addEventListener("click", hideToast);
 
-listen<{ message: string }>("engine://error", (e) => showToast(e.payload.message));
+// ---- problem reporting --------------------------------------------------
+// Everything sent to GitHub is redacted backend-side (see diagnostics.rs) and lands in GitHub's
+// editor for review — nothing is ever submitted on the user's behalf.
+function reportIssue(note = "") {
+  invoke("native_report_issue", {
+    context: {
+      userAgent: navigator.userAgent,
+      station: stationBtn.textContent ?? "",
+      sourceStation: sourceEl.textContent ?? "",
+      mode: modeBtn.textContent ?? "",
+      remote: remoteMode,
+      note,
+    },
+  }).catch((err) => showToast(`Could not open the issue page: ${err}`));
+}
+
+/** Record a problem for the next bug report, whether or not one is filed now. */
+function recordIncident(source: string, message: string) {
+  invoke("native_record_incident", { source, message }).catch(() => {});
+}
+
+const REPORT = { label: "Report issue", run: () => reportIssue() };
+
+listen<{ message: string }>("engine://error", (e) =>
+  showToast(e.payload.message, REPORT)
+);
+
+// A thrown error in the UI used to leave the interface subtly wrong with nothing said about it.
+window.addEventListener("error", (e) => {
+  const where = e.filename ? ` (${e.filename}:${e.lineno})` : "";
+  recordIncident("ui", `${e.message}${where}`);
+  showToast("Something went wrong in the interface.", REPORT);
+});
+
+// Unhandled rejections are the common shape here: every invoke() returns a promise.
+window.addEventListener("unhandledrejection", (e) => {
+  recordIncident("ui", `unhandled rejection: ${e.reason}`);
+  showToast("Something went wrong in the interface.", REPORT);
+});
 
 // Another device holds the account's single stream. Recoverable, and the engine keeps retrying
 // on its own — so say so, and offer to claim it now rather than waiting.
@@ -1140,7 +1178,13 @@ listen<{ message: string }>("engine://stream-taken", (e) => {
     run: () => {
       invoke("native_take_over")
         .then(() => showToast("Playing here now.", undefined, 3000))
-        .catch(() => showToast("Could not take over — the other device still has it."));
+        .catch(() => {
+          recordIncident("engine", "take over failed");
+          showToast(
+            "Could not take over — the other device still has it.",
+            REPORT
+          );
+        });
     },
   });
 });

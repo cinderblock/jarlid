@@ -164,6 +164,9 @@ async fn attach(
                         );
                     }
                     Event::Error(message) => {
+                        // Keep it for the next bug report, not just for this toast.
+                        app.state::<crate::diagnostics::Diagnostics>()
+                            .record("engine", &message);
                         let _ = app.emit("engine://error", json!({ "message": message }));
                     }
                     Event::TrackEnded | Event::Paused(_) => {}

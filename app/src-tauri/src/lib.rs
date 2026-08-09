@@ -1,3 +1,4 @@
+mod diagnostics;
 mod export;
 mod native;
 #[cfg(windows)]
@@ -642,6 +643,9 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Set by the panic hook, drained into diagnostics once the app is up.
+static LAST_PANIC: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // HardwareMediaKeyHandling is off so media keys reach our native SMTC session rather than
@@ -655,6 +659,19 @@ pub fn run() {
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
         "--use-angle=d3d11 --disable-features=HardwareMediaKeyHandling",
     );
+
+    // Panics in background threads otherwise vanish into a stderr nobody sees. Recording them
+    // means the next bug report carries the panic that caused the trouble.
+    {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            LAST_PANIC
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .replace(info.to_string());
+            previous(info);
+        }));
+    }
 
     tauri::Builder::default()
         // MUST be registered first, per the plugin's contract.
@@ -677,6 +694,7 @@ pub fn run() {
         // Save dialog for the station-preferences export (driven from Rust).
         .plugin(tauri_plugin_dialog::init())
         .manage(export::ExportCtl::default())
+        .manage(diagnostics::Diagnostics::default())
         // Remember main-window position/size across launches.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
@@ -693,6 +711,8 @@ pub fn run() {
             native::native_stations,
             native::native_modes,
             native::native_take_over,
+            diagnostics::native_report_issue,
+            diagnostics::native_record_incident,
             native::native_set_mode,
             native::native_volume,
             player_cmd,
@@ -704,6 +724,9 @@ pub fn run() {
             // It emits the same `engine://` events the webview bridge did, so the UI, SMTC
             // session, thumb toolbar and lyrics sync need no changes.
             app.manage(native::NativeEngine::default());
+            if let Some(panic) = LAST_PANIC.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                app.state::<diagnostics::Diagnostics>().record("panic", &panic);
+            }
             native::init(&app.handle().clone());
 
             // The engine webview is gone. Pandora's site is no longer loaded, scraped or
