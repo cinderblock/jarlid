@@ -45,6 +45,25 @@ fn load_last_station(app: &AppHandle) -> Option<(String, String)> {
     Some((name, token))
 }
 
+/// Shape the UI's station list expects. One place, so the picker, the Stations page and
+/// the `native_stations` command can never disagree about it.
+fn station_payload(stations: &[pandora::TunerStation]) -> serde_json::Value {
+    serde_json::Value::Array(
+        stations
+            .iter()
+            .map(|s| {
+                json!({
+                    "name": s.station_name,
+                    "token": s.station_token,
+                    "isQuickMix": s.is_quick_mix,
+                    "isGenreStation": s.is_genre_station,
+                    "isThumbprint": s.is_thumbprint,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 /// Managed app state. `None` until sign-in succeeds.
 #[derive(Clone, Default)]
 pub struct NativeEngine(Arc<Mutex<Option<Arc<Engine>>>>);
@@ -91,15 +110,14 @@ async fn attach(
     let engine = Arc::new(started);
     *app.state::<NativeEngine>().0.lock().await = Some(Arc::clone(&engine));
 
-    // Station list for the picker. The tokens go with it: switching station and
-    // exporting one both need the token, and emitting names alone left the
-    // picker unable to do either.
+    // Station list for the picker and the Stations page. Tokens go with it (switching
+    // station and exporting one both need the token), and so do Pandora's special-station
+    // flags — the Stations page marks them, because a QuickMix has no seeds or thumbs of
+    // its own and would otherwise look like a broken export.
     if let Ok(stations) = engine.station_list().await {
-        let names: Vec<&String> = stations.iter().map(|s| &s.station_name).collect();
-        let tokens: Vec<&String> = stations.iter().map(|s| &s.station_token).collect();
         let _ = app.emit(
             "engine://stations",
-            json!({ "stations": names, "tokens": tokens }),
+            json!({ "stations": station_payload(&stations) }),
         );
     }
 
@@ -274,13 +292,24 @@ pub async fn native_is_signed_in() -> Result<bool, String> {
 #[tauri::command]
 pub async fn native_stations(
     state: tauri::State<'_, NativeEngine>,
-) -> Result<Vec<pandora::TunerStation>, String> {
-    state
+) -> Result<serde_json::Value, String> {
+    let stations = state
         .get()
         .await?
         .station_list()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(station_payload(&stations))
+}
+
+/// Which Pandora account is signed in, for the Settings page. `None` when nothing is
+/// stored. Returns only the username — the password never leaves the credential store.
+#[tauri::command]
+pub async fn native_account() -> Result<Option<String>, String> {
+    match engine::credentials::load() {
+        Ok(saved) => Ok(saved.map(|c| c.username)),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Modes for the station currently playing ("My Station", "Crowd Faves", "Deep Cuts", …).
@@ -289,9 +318,7 @@ pub async fn native_stations(
 /// this freely without special-casing startup.
 /// Claim the account's single stream for this device, then resume.
 #[tauri::command]
-pub async fn native_take_over(
-    state: tauri::State<'_, NativeEngine>,
-) -> Result<(), String> {
+pub async fn native_take_over(state: tauri::State<'_, NativeEngine>) -> Result<(), String> {
     state
         .get()
         .await?

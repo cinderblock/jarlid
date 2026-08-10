@@ -703,6 +703,7 @@ pub fn run() {
             export::export_stations,
             fetch_lyrics,
             install_update,
+            native::native_account,
             native::native_cmd,
             native::native_is_signed_in,
             native::native_play_station,
@@ -725,7 +726,8 @@ pub fn run() {
             // session, thumb toolbar and lyrics sync need no changes.
             app.manage(native::NativeEngine::default());
             if let Some(panic) = LAST_PANIC.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                app.state::<diagnostics::Diagnostics>().record("panic", &panic);
+                app.state::<diagnostics::Diagnostics>()
+                    .record("panic", &panic);
             }
             native::init(&app.handle().clone());
 

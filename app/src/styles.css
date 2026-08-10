@@ -160,11 +160,6 @@ body.remote #history {
   width: 340px;
   max-height: 420px;
 }
-#station-head {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 6px;
-}
 #station-search {
   background: rgba(255, 255, 255, 0.08);
   border: none;
@@ -174,97 +169,24 @@ body.remote #history {
   font-family: inherit;
   font-size: 0.85rem;
   padding: 8px 10px;
-  flex: 1;
-  min-width: 0;
-}
-.sp-icon {
-  flex: none;
-  width: 34px;
-  background: rgba(255, 255, 255, 0.08);
-  border: none;
-  border-radius: 8px;
-  color: var(--faint);
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-}
-.sp-icon svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.sp-icon:hover {
-  color: var(--fg);
-}
-.sp-icon[aria-pressed="true"] {
-  background: var(--accent);
-  color: #111;
-}
-#station-selectall {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 10px 8px;
-  font-size: 0.8rem;
-  color: var(--dim);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   margin-bottom: 6px;
 }
-.sp-check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-.sp-check input {
-  accent-color: var(--accent);
-  cursor: pointer;
-  margin: 0;
-}
-#station-selcount {
-  color: var(--faint);
-  font-variant-numeric: tabular-nums;
-}
-#station-export {
+#station-all-link {
+  margin-top: 6px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
-  margin-top: 6px;
-  padding-top: 8px;
-}
-#station-export button {
-  width: 100%;
-  background: var(--accent);
-  color: #111;
-  border: none;
-  border-radius: 8px;
+  padding: 8px 10px 2px;
+  background: none;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  color: var(--faint);
   font-family: inherit;
-  font-size: 0.85rem;
-  font-weight: 600;
-  padding: 9px 10px;
+  font-size: 0.8rem;
+  text-align: left;
   cursor: pointer;
 }
-#station-export button:disabled {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--faint);
-  cursor: default;
-}
-#station-export-cancel {
-  margin-top: 6px;
-  background: rgba(255, 255, 255, 0.1) !important;
-  color: var(--dim) !important;
-}
-#station-export-status {
-  font-size: 0.76rem;
-  color: var(--faint);
-  margin-top: 6px;
-  text-align: center;
-  min-height: 1em;
-}
-#station-export-status.err {
-  color: #ff8080;
+#station-all-link:hover {
+  color: var(--fg);
 }
 #station-search::placeholder {
   color: var(--faint);
@@ -289,27 +211,6 @@ body.remote #history {
   color: var(--fg);
   font-weight: 600;
 }
-/* selection mode: same row, plus a checkbox; clicking the row toggles it */
-.station-item.pick {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-.station-item.pick input {
-  accent-color: var(--accent);
-  flex: none;
-  margin: 0;
-  pointer-events: none;
-}
-.station-item.pick span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.station-item.done {
-  color: var(--accent);
-}
-
 /* which station a QuickMix track actually came from */
 #source-station {
   font-size: 0.74rem;
@@ -427,12 +328,17 @@ body.remote #history {
   text-decoration: underline;
 }
 
-/* engine window toggle (top-right corner) */
-#engine-btn {
+/* Top-right control cluster. Flex so a hidden button collapses rather than leaving a
+   hole — the speaker button only appears when a network renderer is discovered. */
+#topbar {
   position: fixed;
   top: 14px;
   right: 14px;
   z-index: 6;
+  display: flex;
+  gap: 8px;
+}
+#topbar button {
   width: 34px;
   height: 34px;
   border-radius: 50%;
@@ -444,40 +350,11 @@ body.remote #history {
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
 }
-#engine-btn:hover {
+#topbar button:hover {
   color: var(--fg);
   background: rgba(255, 255, 255, 0.14);
 }
-#engine-btn svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-}
-
-/* speakers (network player) button + preset panel */
-#speakers-btn {
-  position: fixed;
-  top: 14px;
-  right: 56px;
-  z-index: 6;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--faint);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
-}
-#speakers-btn:hover {
-  color: var(--fg);
-  background: rgba(255, 255, 255, 0.14);
-}
-#speakers-btn svg {
+#topbar button svg {
   width: 18px;
   height: 18px;
   fill: none;
@@ -486,6 +363,8 @@ body.remote #history {
   stroke-linejoin: round;
   stroke-linecap: round;
 }
+
+/* speakers (network player) button + preset panel */
 #speakers-panel {
   position: fixed;
   top: 56px;
@@ -999,4 +878,264 @@ body.remote #remote-vol-wrap {
   padding: 4px 8px;
   font-size: 1rem;
   line-height: 1;
+}
+
+/* ---- full-window pages (Stations, Settings) -----------------------------
+   Deliberately a page, not a dropdown: an export walks the whole collection a
+   station at a time, so it needs room for a list, progress and results, and it
+   must not vanish because a click landed outside a popover. */
+#stations-page,
+#settings-page {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  background: rgba(14, 14, 18, 0.96);
+  backdrop-filter: blur(24px);
+}
+#stations-page[hidden],
+#settings-page[hidden] {
+  display: none;
+}
+.page-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.page-head h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+#sp-search {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  outline: none;
+  border-radius: 8px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 8px 12px;
+}
+#sp-select {
+  flex: none;
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  border-radius: 8px;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 0.82rem;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+#sp-select[aria-pressed="true"] {
+  background: var(--accent);
+  color: #111;
+  font-weight: 600;
+}
+.page-close {
+  /* Pinned right even when nothing else in the header grows — the Settings header has
+     no search box to take up the slack. */
+  margin-left: auto;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--dim);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.page-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--fg);
+}
+
+#sp-bulk {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  font-size: 0.82rem;
+  color: var(--dim);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.sp-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.sp-check input {
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+}
+#sp-count {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+#sp-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 8px 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 2px 8px;
+  align-content: start;
+}
+.sp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  color: var(--dim);
+  cursor: pointer;
+  text-align: left;
+  background: none;
+  border: none;
+  font-family: inherit;
+  width: 100%;
+  min-width: 0;
+}
+.sp-row:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+}
+.sp-row.active {
+  color: var(--fg);
+  font-weight: 600;
+}
+.sp-row input {
+  accent-color: var(--accent);
+  flex: none;
+  margin: 0;
+  pointer-events: none;
+}
+/* Shrink-to-fit, not flex:1 — a growing name would shove the tag to the far edge of
+   a wide grid cell, leaving it floating unattached to the station it describes. */
+.sp-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* Marks QuickMix / genre / Thumbprint stations, which behave differently on export:
+   QuickMix has no seeds or thumbs of its own. */
+.sp-tag {
+  flex: none;
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
+.page-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.page-foot-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+.page-foot button {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--dim);
+  border: none;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.84rem;
+  padding: 9px 16px;
+  cursor: pointer;
+}
+.page-foot button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--fg);
+}
+#sp-export:not(:disabled) {
+  background: var(--accent);
+  color: #111;
+  font-weight: 600;
+}
+.page-foot button:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+#sp-status {
+  font-size: 0.8rem;
+  color: var(--faint);
+  min-height: 1em;
+  flex: 1;
+  min-width: 0;
+}
+#sp-status.err {
+  color: #ff8f8f;
+}
+#sp-status.ok {
+  color: var(--accent);
+}
+
+.page-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+}
+.set-section {
+  max-width: 520px;
+}
+.set-section h3 {
+  margin: 0 0 10px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+  font-weight: 600;
+}
+.set-row {
+  font-size: 0.92rem;
+  color: var(--fg);
+  margin-bottom: 12px;
+}
+#set-signout {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--dim);
+  border: none;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.84rem;
+  padding: 9px 16px;
+  cursor: pointer;
+}
+#set-signout:hover {
+  background: rgba(255, 120, 120, 0.18);
+  color: #ffb4b4;
+}
+.set-note {
+  font-size: 0.78rem;
+  color: var(--faint);
+  line-height: 1.5;
+  margin: 10px 0 0;
 }

@@ -19,12 +19,66 @@
       <button id="toast-action" hidden></button>
       <button id="toast-close" aria-label="Dismiss">×</button>
     </div>
-    <button id="speakers-btn" hidden>
-      <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
-    </button>
+    <!-- Top-right controls. A flex row rather than individually-positioned buttons, so a
+         hidden one (the speaker button, which only appears when a renderer is found)
+         collapses instead of leaving a gap. -->
+    <div id="topbar">
+      <button id="speakers-btn" hidden>
+        <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+      </button>
+      <button id="stations-btn" aria-label="All stations">
+        <svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h9"/><circle cx="18" cy="18" r="3"/></svg>
+      </button>
+      <button id="settings-btn" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 14.6a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.9.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9h-.2a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.4-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1A1.7 1.7 0 0 0 10 4.6v-.2a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.6 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </div>
     <div id="speakers-panel" hidden>
       <div id="speakers-head"></div>
       <div id="speakers-list"></div>
+    </div>
+
+    <!-- Stations: browse and play, or select for export/import. Full-page because an
+         export walks the whole collection and needs room to show progress. -->
+    <div id="stations-page" hidden>
+      <header class="page-head">
+        <h2>Stations</h2>
+        <input id="sp-search" type="text" placeholder="Search…" spellcheck="false" />
+        <button id="sp-select" aria-pressed="false">Select</button>
+        <button id="sp-close" class="page-close" aria-label="Close">×</button>
+      </header>
+
+      <div id="sp-bulk" hidden>
+        <label class="sp-check"><input id="sp-all" type="checkbox" /><span>Select all</span></label>
+        <span id="sp-count"></span>
+      </div>
+
+      <div id="sp-list"></div>
+
+      <footer class="page-foot">
+        <div id="sp-status"></div>
+        <div class="page-foot-actions">
+          <button id="sp-import">Import…</button>
+          <button id="sp-export" disabled>Export…</button>
+          <button id="sp-cancel" hidden>Cancel</button>
+        </div>
+      </footer>
+    </div>
+
+    <div id="settings-page" hidden>
+      <header class="page-head">
+        <h2>Settings</h2>
+        <button id="set-close" class="page-close" aria-label="Close">×</button>
+      </header>
+      <div class="page-body">
+        <section class="set-section">
+          <h3>Account</h3>
+          <div id="set-account" class="set-row">Checking…</div>
+          <button id="set-signout">Sign out</button>
+          <p class="set-note">Your password is stored in the Windows Credential Manager,
+            encrypted for your user. Signing out removes it from this machine.</p>
+        </section>
+      </div>
     </div>
 
     <div id="hist-modal" hidden>
@@ -68,22 +122,9 @@
           <div id="station-wrap">
             <button id="station"></button>
             <div id="station-panel" hidden>
-              <div id="station-head">
-                <input id="station-search" type="text" placeholder="Search stations…" spellcheck="false" />
-                <button id="station-select-toggle" class="sp-icon" aria-pressed="false" aria-label="Select stations to export">
-                  <svg viewBox="0 0 24 24"><path d="M3 5h10M3 12h10M3 19h10"/><path d="m16 11 2.5 2.5L23 9"/></svg>
-                </button>
-              </div>
-              <div id="station-selectall" hidden>
-                <label class="sp-check"><input id="station-all" type="checkbox" /><span>Select all</span></label>
-                <span id="station-selcount"></span>
-              </div>
+              <input id="station-search" type="text" placeholder="Search stations…" spellcheck="false" />
               <div id="station-list"></div>
-              <div id="station-export" hidden>
-                <button id="station-export-btn" disabled>Export preferences…</button>
-                <button id="station-export-cancel" hidden>Cancel</button>
-                <div id="station-export-status"></div>
-              </div>
+              <button id="station-all-link">All stations…</button>
             </div>
           </div>
           <div id="source-station" hidden></div>

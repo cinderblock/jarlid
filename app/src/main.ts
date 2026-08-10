@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import * as stationsPage from "./stations-page";
+import type { StationInfo } from "./stations-page";
+import * as settingsPage from "./settings-page";
 
 // ---- types -------------------------------------------------------------
 interface NowPlaying {
@@ -56,14 +59,7 @@ const stationBtn = $("station");
 const stationPanel = $("station-panel");
 const stationSearch = $<HTMLInputElement>("station-search");
 const stationList = $("station-list");
-const stationSelectToggle = $<HTMLButtonElement>("station-select-toggle");
-const stationSelectAll = $("station-selectall");
-const stationAll = $<HTMLInputElement>("station-all");
-const stationSelCount = $("station-selcount");
-const stationExport = $("station-export");
-const stationExportBtn = $<HTMLButtonElement>("station-export-btn");
-const stationExportCancel = $<HTMLButtonElement>("station-export-cancel");
-const stationExportStatus = $("station-export-status");
+const stationAllLink = $<HTMLButtonElement>("station-all-link");
 const sourceEl = $("source-station");
 const histEl = $("history");
 const barEl = $("bar");
@@ -554,189 +550,29 @@ $("login-form").addEventListener("submit", async (e) => {
   }
 });
 // ---- station switching (searchable picker) -------------------------------
-// A station is identified by its tuner token: playing it and exporting it both
-// take the token, and the name is not unique.
-let stationNames: string[] = [];
-let stationTokens: string[] = [];
+// The picker is a quick jump-to-station list only. Selecting stations for export
+// lives on the Stations page, which has room for a long run's progress.
+// A station is identified by its tuner token: the name is not unique.
+let stations: StationInfo[] = [];
 let activeStation = "";
-
-// Selection mode, for export. A row click toggles a checkbox instead of
-// switching station.
-let selectMode = false;
-const selected = new Set<string>();
-let exporting = false;
-
-const matches = (name: string, f: string) => !f || name.toLowerCase().includes(f);
 
 function renderStationList(filter = "") {
   const f = filter.trim().toLowerCase();
   stationList.innerHTML = "";
-  stationNames.forEach((name, i) => {
-    if (!matches(name, f)) return;
-    const token = stationTokens[i];
+  for (const st of stations) {
+    if (f && !st.name.toLowerCase().includes(f)) continue;
     const item = document.createElement("div");
-    item.className = "station-item" + (name === activeStation ? " active" : "");
-    if (selectMode) {
-      item.classList.add("pick");
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = !!token && selected.has(token);
-      const label = document.createElement("span");
-      label.textContent = name;
-      item.append(box, label);
-      item.addEventListener("click", () => {
-        if (!token || exporting) return;
-        if (selected.has(token)) selected.delete(token);
-        else selected.add(token);
-        box.checked = selected.has(token);
-        refreshSelectionUi();
-      });
-    } else {
-      item.textContent = name;
-      item.addEventListener("click", () => {
-        if (!token) return;
-        invoke("native_play_station", { name, token }).catch(() => {});
-        activeStation = name;
-        stationBtn.textContent = name;
-        stationPanel.hidden = true;
-        // Modes are per-station, so the current selection no longer applies. Give the engine a
-        // moment to switch before asking for the new station's modes.
-        activeMode = "";
-        modeWrap.hidden = true;
-        setTimeout(() => void refreshModes(), 600);
-      });
-    }
+    item.className = "station-item" + (st.name === activeStation ? " active" : "");
+    item.textContent = st.name;
+    item.addEventListener("click", () => {
+      invoke("native_play_station", { name: st.name, token: st.token }).catch(() => {});
+      activeStation = st.name;
+      stationBtn.textContent = st.name;
+      stationPanel.hidden = true;
+    });
     stationList.appendChild(item);
-  });
-}
-
-/** Tokens of the stations the current search filter is showing. */
-function visibleTokens(): string[] {
-  const f = stationSearch.value.trim().toLowerCase();
-  return stationTokens.filter((t, i) => t && matches(stationNames[i], f));
-}
-
-/** Keep the select-all checkbox, counter and export button in sync. */
-function refreshSelectionUi() {
-  const vis = visibleTokens();
-  const visSelected = vis.filter((t) => selected.has(t)).length;
-  stationAll.checked = vis.length > 0 && visSelected === vis.length;
-  stationAll.indeterminate = visSelected > 0 && visSelected < vis.length;
-  const filtering = stationSearch.value.trim().length > 0;
-  stationAll.nextElementSibling!.textContent = filtering
-    ? `Select all ${vis.length} matching`
-    : `Select all ${vis.length}`;
-  stationSelCount.textContent = selected.size ? `${selected.size} selected` : "";
-  stationExportBtn.disabled = exporting || selected.size === 0;
-  stationExportBtn.textContent = exporting
-    ? "Exporting…"
-    : selected.size
-      ? `Export ${selected.size} station${selected.size === 1 ? "" : "s"}…`
-      : "Export preferences…";
-}
-
-function setSelectMode(on: boolean) {
-  selectMode = on;
-  stationPanel.classList.toggle("selecting", on);
-  stationSelectToggle.setAttribute("aria-pressed", String(on));
-  stationSelectAll.hidden = !on;
-  stationExport.hidden = !on;
-  if (!on) {
-    selected.clear();
-    stationExportStatus.textContent = "";
-    stationExportStatus.classList.remove("err");
   }
-  renderStationList(stationSearch.value);
-  refreshSelectionUi();
 }
-
-stationSelectToggle.addEventListener("click", (e) => {
-  e.stopPropagation();
-  if (!exporting) setSelectMode(!selectMode);
-});
-attachTip(stationSelectToggle, () =>
-  selectMode ? "Leave selection mode" : "Select stations to export"
-);
-
-stationAll.addEventListener("click", (e) => {
-  e.stopPropagation();
-  if (exporting) return;
-  const vis = visibleTokens();
-  const allOn = vis.every((t) => selected.has(t));
-  for (const t of vis) {
-    if (allOn) selected.delete(t);
-    else selected.add(t);
-  }
-  renderStationList(stationSearch.value);
-  refreshSelectionUi();
-});
-
-// ---- export run ----------------------------------------------------------
-interface ExportProgress {
-  done: number;
-  total: number;
-  station: string;
-}
-interface ExportResult {
-  path: string | null; // null = user dismissed the save dialog
-  stations: number;
-  thumbs: number;
-  seeds: number;
-  skipped: string[];
-  stoppedReason: string | null;
-}
-
-function setExporting(on: boolean) {
-  exporting = on;
-  stationExportCancel.hidden = !on;
-  stationSearch.disabled = on;
-  stationSelectToggle.disabled = on;
-  stationAll.disabled = on;
-  refreshSelectionUi();
-}
-
-function exportStatus(text: string, isError = false) {
-  stationExportStatus.textContent = text;
-  stationExportStatus.classList.toggle("err", isError);
-}
-
-listen<ExportProgress>("export://progress", (e) => {
-  const { done, total, station } = e.payload;
-  exportStatus(`${done}/${total} — ${station}`);
-});
-
-stationExportBtn.addEventListener("click", async (e) => {
-  e.stopPropagation();
-  if (exporting || !selected.size) return;
-  // Export in collection order so the file reads predictably.
-  const picked: [string, string][] = [];
-  stationTokens.forEach((t, i) => {
-    if (selected.has(t)) picked.push([stationNames[i], t]);
-  });
-  setExporting(true);
-  exportStatus(`Starting — ${picked.length} station${picked.length === 1 ? "" : "s"}…`);
-  try {
-    const r = await invoke<ExportResult>("export_stations", { stations: picked });
-    // A run that stopped early still produced a file worth keeping — say both
-    // what was saved and why it's short, rather than claiming plain success.
-    const parts: string[] = [];
-    if (r.path) parts.push(`Saved ${r.stations} stations — ${r.thumbs} thumbs, ${r.seeds} seeds.`);
-    else parts.push(`Not saved (${r.stations} stations were collected).`);
-    if (r.stoppedReason) parts.push(`Stopped early: ${r.stoppedReason}.`);
-    if (r.skipped.length) parts.push(`${r.skipped.length} station(s) failed and were skipped.`);
-    exportStatus(parts.join(" "), !!r.stoppedReason || r.skipped.length > 0);
-  } catch (err) {
-    exportStatus(String(err), true);
-  } finally {
-    setExporting(false);
-  }
-});
-
-stationExportCancel.addEventListener("click", (e) => {
-  e.stopPropagation();
-  exportStatus("Cancelling…");
-  invoke("cancel_export").catch(() => {});
-});
 
 stationBtn.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -744,42 +580,46 @@ stationBtn.addEventListener("click", (e) => {
   if (!stationPanel.hidden) {
     stationSearch.value = "";
     renderStationList();
-    refreshSelectionUi();
     stationSearch.focus();
   }
 });
-stationSearch.addEventListener("input", () => {
-  renderStationList(stationSearch.value);
-  refreshSelectionUi();
+stationSearch.addEventListener("input", () => renderStationList(stationSearch.value));
+stationAllLink.addEventListener("click", (e) => {
+  e.stopPropagation();
+  stationPanel.hidden = true;
+  stationsPage.open();
 });
 window.addEventListener("click", (e) => {
-  if (exporting) return; // don't yank the progress readout out from under a run
   if (!stationPanel.hidden && !(e.target as HTMLElement).closest("#station-wrap")) {
     stationPanel.hidden = true;
   }
 });
 window.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape" || exporting) return;
-  if (selectMode) setSelectMode(false);
-  else stationPanel.hidden = true;
+  // The pages own Escape while they are up.
+  if (e.key === "Escape" && !stationsPage.isOpen()) stationPanel.hidden = true;
 });
-listen<{ stations: string[]; tokens: string[] }>("engine://stations", (e) => {
-  const { stations, tokens } = e.payload;
-  if (!stations.length) return;
-  stationNames = stations;
-  stationTokens = tokens ?? [];
+
+listen<{ stations: StationInfo[] }>("engine://stations", (e) => {
+  const next = e.payload.stations;
+  if (!next?.length) return;
+  stations = next;
+  stationsPage.setStations(next, activeStation);
   // The station list arriving means we know what's playing, so its modes are fetchable.
   void refreshModes();
-  // Drop selections for stations that no longer exist.
-  if (!exporting) {
-    const live = new Set(stationTokens);
-    for (const t of [...selected]) if (!live.has(t)) selected.delete(t);
-  }
-  if (!stationPanel.hidden) {
-    renderStationList(stationSearch.value);
-    refreshSelectionUi();
-  }
+  if (!stationPanel.hidden) renderStationList(stationSearch.value);
 });
+
+// ---- top-right pages -----------------------------------------------------
+$("stations-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  stationsPage.open();
+});
+$("settings-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  settingsPage.open();
+});
+attachTip($("stations-btn"), () => "All stations — browse, export");
+attachTip($("settings-btn"), () => "Settings");
 
 // ---- station modes (My Station / Crowd Faves / Discovery / Deep Cuts …) ----
 // Modes are set over Pandora's REST API but the tuner playlist honours them, so switching here
