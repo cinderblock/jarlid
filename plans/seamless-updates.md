@@ -15,8 +15,11 @@ starts and it almost feels like nothing happened."*
 
 ## Decisions already made (don't re-ask)
 
-- **Fully automatic.** No prompt. Download silently, restart at the next song boundary,
-  show a brief "updating…" note as it happens. No opt-out setting for now.
+- **Fully automatic, with an off switch.** No prompt: download silently, restart at the
+  next song boundary, show a brief "updating…" note as it happens. Settings → Updates →
+  "Install updates automatically" turns it off (default ON — it is opt-*out*). The setting
+  lives in `app_config_dir/settings.json`, NOT `localStorage`, because the update loop
+  reads it from Rust long before the UI is involved.
 - **Simple version first.** Ship staged-download + fire-at-boundary + quiet install, and
   live with the resulting gap before optimising further.
 - **Pre-buffered resume is DEFERRED** (see "Deferred" below) — the user chose to feel the
@@ -121,6 +124,9 @@ not a design choice to agonise over. Concretely:
 
 ## Guards (must not restart at a bad moment)
 
+- **Never when the Settings checkbox is off** — and the background loop does not even
+  download in that case. An explicit badge click still installs: a click is a request, not
+  automation.
 - **Never while an export is running.** `ExportCtl.running` already exists; check it.
 - **Never while paused.** Nothing is being interrupted, but a restart would come back
   *playing* and start music at someone who deliberately stopped it. Trade-off accepted: an

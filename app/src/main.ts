@@ -476,6 +476,19 @@ const versionEl = $("version");
 let baseVersion = "";
 let pendingVersion: string | null = null;
 let versionBusy = false;
+// Mirrors the Settings checkbox. The badge must not promise "after this song" when
+// nothing is going to happen on its own.
+let autoUpdate = true;
+invoke<{ autoUpdate: boolean }>("get_settings")
+  .then((s) => {
+    autoUpdate = s.autoUpdate;
+    renderVersion();
+  })
+  .catch(() => {});
+window.addEventListener("jarlid:auto-update", (e) => {
+  autoUpdate = (e as CustomEvent<boolean>).detail;
+  renderVersion();
+});
 function renderVersion() {
   versionEl.classList.toggle("update", !!pendingVersion);
   if (!pendingVersion) {
@@ -483,17 +496,24 @@ function renderVersion() {
     return;
   }
   // Say what will happen and when. "update to vX" read like a button you had to press;
-  // it installs itself, and the only question is when. Paused matters because a paused
-  // app is deliberately never restarted — "after this song" would be a lie.
+  // when it is automatic it installs itself and the only question is when. Paused matters
+  // because a paused app is deliberately never restarted — "after this song" would be a
+  // lie. With automatic updates off, nothing happens until this is clicked, so it goes
+  // back to naming the action.
+  if (!autoUpdate) {
+    versionEl.textContent = `update to v${pendingVersion}`;
+    return;
+  }
   versionEl.textContent = lastPlayhead.paused
     ? `updating to v${pendingVersion} when playback resumes`
     : `updating to v${pendingVersion} after this song`;
 }
-attachTip(versionEl, () =>
-  pendingVersion
+attachTip(versionEl, () => {
+  if (!pendingVersion) return "Click to check for updates";
+  return autoUpdate
     ? "Installs on its own at the end of a song. Click to update now instead."
-    : "Click to check for updates"
-);
+    : "Click to install now. Automatic updates are off in Settings.";
+});
 function flashVersion(text: string) {
   versionEl.textContent = text;
   setTimeout(() => {

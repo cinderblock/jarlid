@@ -130,6 +130,7 @@ pub async fn stage(app: &tauri::AppHandle) -> Result<Option<String>, String> {
 /// "why didn't it update?" is otherwise unanswerable.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Hold {
+    Disabled,
     NothingStaged,
     Exporting,
     Remote,
@@ -139,6 +140,7 @@ enum Hold {
 impl Hold {
     fn reason(&self) -> &'static str {
         match self {
+            Hold::Disabled => "automatic updates are off",
             Hold::NothingStaged => "nothing staged",
             Hold::Exporting => "an export is running",
             Hold::Remote => "a network player owns playback",
@@ -150,6 +152,9 @@ impl Hold {
 /// What the world looks like when we consider installing.
 #[derive(Debug, Clone, Copy)]
 struct Conditions {
+    /// The Settings checkbox. Off means never install on our own initiative — but an
+    /// explicit click still works, which is why `force` overrides it.
+    auto: bool,
     staged: bool,
     exporting: bool,
     remote: bool,
@@ -162,6 +167,9 @@ struct Conditions {
 /// outside a release build (see [`spawn`]), so this is the only part that can be tested
 /// at all — and it is the part where a mistake means restarting the app at a bad moment.
 fn decide(c: Conditions) -> Result<(), Hold> {
+    if !c.auto {
+        return Err(Hold::Disabled);
+    }
     if !c.staged {
         return Err(Hold::NothingStaged);
     }
@@ -184,6 +192,7 @@ fn decide(c: Conditions) -> Result<(), Hold> {
 
 fn conditions(app: &tauri::AppHandle, playing: bool) -> Conditions {
     Conditions {
+        auto: crate::settings::get(app).auto_update,
         staged: app.state::<UpdateCtl>().pending().is_some(),
         exporting: app.state::<crate::export::ExportCtl>().is_running(),
         remote: crate::remote_active(),
@@ -224,12 +233,13 @@ fn try_install(app: &tauri::AppHandle, playing: bool, why: &str, force: bool) {
     let ctl = app.state::<UpdateCtl>();
     let mut c = conditions(app, playing);
     if force {
+        c.auto = true;
         c.remote = false;
         c.playing = true;
     }
     if let Err(h) = decide(c) {
         // Silent when there is simply nothing to install, or every track end would log.
-        if h != Hold::NothingStaged {
+        if !matches!(h, Hold::NothingStaged | Hold::Disabled) {
             eprintln!("[updater] holding install ({why}): {}", h.reason());
         }
         return;
@@ -271,7 +281,8 @@ pub fn spawn(app: &tauri::AppHandle) {
         let mut since_check = CHECK_EVERY; // check immediately on the first pass
 
         loop {
-            if since_check >= CHECK_EVERY && app.state::<UpdateCtl>().pending().is_none() {
+            let auto = crate::settings::get(&app).auto_update;
+            if auto && since_check >= CHECK_EVERY && app.state::<UpdateCtl>().pending().is_none() {
                 since_check = Duration::ZERO;
                 if let Err(e) = stage(&app).await {
                     eprintln!("[updater] check failed: {e}");
@@ -282,7 +293,7 @@ pub fn spawn(app: &tauri::AppHandle) {
             since_check += BACKSTOP_TICK;
 
             // Only while playing: see the module note on never restarting a paused app.
-            if playing(&app).await {
+            if auto && playing(&app).await {
                 if let Some(waited) = app.state::<UpdateCtl>().waited() {
                     if waited >= MAX_WAIT {
                         // No boundary in six minutes of playback — something is stuck, and
@@ -311,11 +322,25 @@ mod tests {
     /// Everything lined up for an install: staged, playing, nothing else going on.
     fn ready() -> Conditions {
         Conditions {
+            auto: true,
             staged: true,
             exporting: false,
             remote: false,
             playing: true,
         }
+    }
+
+    /// With the Settings checkbox off, nothing installs on its own — not even with an
+    /// update already downloaded and a track ending.
+    #[test]
+    fn does_nothing_when_automatic_updates_are_off() {
+        assert_eq!(
+            decide(Conditions {
+                auto: false,
+                ..ready()
+            }),
+            Err(Hold::Disabled)
+        );
     }
 
     #[test]
@@ -380,6 +405,7 @@ mod tests {
     #[test]
     fn reports_the_most_important_hold_first() {
         let c = Conditions {
+            auto: true,
             staged: true,
             exporting: true,
             remote: true,
@@ -400,12 +426,16 @@ mod tests {
     #[test]
     fn an_explicit_request_waives_only_the_courtesy_guards() {
         let forced = |c: Conditions| Conditions {
+            auto: true,
             remote: false,
             playing: true,
             ..c
         };
 
+        // Deliberately the worst case: the setting is off AND a renderer owns playback
+        // AND it is paused. Automatically this does nothing; asked for, it goes.
         let paused_remote = Conditions {
+            auto: false,
             staged: true,
             exporting: false,
             remote: true,
@@ -413,7 +443,7 @@ mod tests {
         };
         assert_eq!(
             decide(paused_remote),
-            Err(Hold::Remote),
+            Err(Hold::Disabled),
             "held automatically"
         );
         assert_eq!(

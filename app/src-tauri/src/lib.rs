@@ -1,6 +1,7 @@
 mod diagnostics;
 mod export;
 mod native;
+mod settings;
 #[cfg(windows)]
 mod thumbbar;
 mod updates;
@@ -713,6 +714,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(export::ExportCtl::default())
         .manage(updates::UpdateCtl::default())
+        .manage(settings::SettingsCtl::default())
         .manage(diagnostics::Diagnostics::default())
         // Remember main-window position/size across launches.
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -723,6 +725,8 @@ pub fn run() {
             fetch_lyrics,
             install_update,
             native::native_account,
+            settings::get_settings,
+            settings::set_auto_update,
             native::native_cmd,
             native::native_is_signed_in,
             native::native_play_station,
