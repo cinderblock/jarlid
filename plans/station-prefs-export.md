@@ -15,8 +15,11 @@ account, has no official export, and disappears with the account.
 
 ## Decisions already made (don't re-ask)
 
-- **UI:** checkbox multi-select in the **existing station picker** (search filter,
-  Select all / none, Export button). A dedicated **Library window** is a later round.
+- **UI:** a dedicated **Stations page** (full window, own top-right button) that browses
+  and plays the collection *and* hosts export/import. This replaced an earlier attempt to
+  put export in the station-picker dropdown — rejected by the user, and rightly: a dropdown
+  340px wide that closes on any outside click is no place for a multi-minute operation.
+  A **Settings page** sits behind a second top-right button.
 - **Format:** ONE versioned JSON file, `"jarlidExport": 1`. Not CSV, not per-station files.
 - **Scope:** thumbs + seeds + per-station settings. Explicitly OUT: dumping raw API
   responses wholesale, and exporting Jarlid's local recently-played history.
@@ -170,15 +173,27 @@ invokes `native_play_station`.
       (dropped `album`, added `musicToken`/`pandoraId`/`dated`, fixed the settings list).
 - [x] 2026-08-08 10 unit tests, fixture mirrors the real observed shape. All green,
       `tsc --noEmit` clean.
+- [x] 2026-08-10 Export moved out of the picker to a full Stations page; Settings page
+      added (account + sign out, which had no UI at all before). `engine://stations` now
+      carries the full station shape; new `native_account` command.
+- [x] 2026-08-10 Pages checked in a browser against the real modules with a stub station
+      list (grid, tags, filter, select-all indeterminate, button labelling, signed-out
+      fallback). Only console errors are `listen()` without `__TAURI_INTERNALS__`, expected
+      outside Tauri.
 - [ ] **Not yet exercised end-to-end in the running app** — see below.
+- [ ] **Import not started.** Needs `station.addMusic` verified against a throwaway station
+      first (the precedent is `crates/pandora/examples/verify-writes.rs`, which the user
+      authorised for exactly one disposable station). Guessing the method name would be
+      exactly the mistake the live probe caught for export.
 
 ## Still to verify
 
 The API layer is confirmed against the live account. What has *not* been run:
 
-1. The full flow in the app: select stations → Export → save dialog → file on disk.
+1. The full flow in the app: open Stations → Select → Export → save dialog → file on disk.
 2. Cancel mid-run.
-3. The station-picker fix (clicking a station actually switches playback now).
+3. Playing a station from the Stations page and from the picker.
+4. Sign out actually clearing the credential (destructive — costs a re-login to undo).
 4. Genre-seed name field, and thumbs-down record shape — no station sampled had either.
    The exporter hedges on the genre name and will simply leave it blank if wrong.
 
