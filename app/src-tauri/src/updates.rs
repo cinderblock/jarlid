@@ -41,7 +41,11 @@ const MAX_WAIT: Duration = Duration::from_secs(6 * 60);
 const BACKSTOP_TICK: Duration = Duration::from_secs(20);
 
 /// How often to look for a new release once nothing is staged.
-const CHECK_EVERY: Duration = Duration::from_secs(4 * 3600);
+///
+/// Was 4 hours, from when updates required a click and a late notice cost nothing. Now
+/// that they install themselves in a gap between songs, a release can sit unnoticed for
+/// that whole window for no reason — and the check is a single conditional GET.
+const CHECK_EVERY: Duration = Duration::from_secs(30 * 60);
 
 struct Staged {
     version: String,
