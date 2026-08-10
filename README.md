@@ -32,6 +32,11 @@ anywhere in it.
   the output device's rate, streamed with a lock-free ring buffer. Playback position is measured
   from frames actually delivered to the device, which is what keeps synced lyrics honest — decoding
   runs several seconds ahead of what you hear.
+- **Playback that survives being left alone**: a long pause releases the stream and the audio
+  device rather than sitting on a connection that the far end will quietly drop, and pressing play
+  re-opens the track and seeks back to the second you paused on. The same watchdog covers a stream
+  that stalls mid-song or an output device that disappears (headphones unplugged, monitor asleep):
+  it rebuilds where you were instead of going silent until you hit skip.
 - **Export your station preferences**: select any or all of your stations in the picker and save
   their thumbs up/down, seed artists & songs, and per-station settings to a single versioned JSON
   file. Your listening history lives only in your Pandora account and has no official export;

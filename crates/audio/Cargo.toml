@@ -18,6 +18,11 @@ windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
+    # `IMFSourceReader::SetCurrentPosition` takes a PROPVARIANT, and windows-rs only generates it
+    # when both of these are on — without them the vtable slot is a `usize` and the seek method
+    # simply does not exist. Seeking is what lets a stalled stream resume where it left off.
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
 ] }
 
 # The decode probe lives in examples/ rather than src/bin/ so that fetching a real stream to test

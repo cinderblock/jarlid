@@ -36,8 +36,16 @@ struct Shared {
     /// without touching the queue itself.
     queued: AtomicU64,
     decoder_finished: AtomicBool,
+    /// Set when decoding stopped for a reason that is *not* the end of the track — a dropped
+    /// connection, an expired URL. Kept apart from `decoder_finished` so the owner can resume the
+    /// same song rather than skipping it.
+    decode_error: AtomicBool,
     paused: AtomicBool,
     stopped: AtomicBool,
+    /// Set when cpal reports the output stream has failed — typically the device being removed or
+    /// the default endpoint changing under us. The callback stops running at that point, so
+    /// nothing else would ever notice; the owner watches this and rebuilds.
+    device_error: AtomicBool,
     /// Fixed-point volume (1024 = unity), keeping the callback free of float state.
     volume: AtomicU64,
 }
@@ -46,6 +54,8 @@ struct Shared {
 pub struct Player {
     shared: Arc<Shared>,
     format: Format,
+    /// Where in the track this player started; zero unless it was built to resume a stalled one.
+    started_at: Duration,
     // Dropping the stream stops the device, so it must outlive playback.
     _stream: cpal::Stream,
 }
@@ -53,6 +63,19 @@ pub struct Player {
 impl Player {
     /// Open `url` and begin playing immediately.
     pub fn play(url: &str) -> Result<Self> {
+        Self::play_at(url, Duration::ZERO)
+    }
+
+    /// Open `url` and begin playing `offset` into it.
+    ///
+    /// This is the recovery path: when a stream stalls or the audio device disappears, the owner
+    /// throws the old player away and builds a new one at the position the listener had reached,
+    /// so a dead socket costs a rebuffer rather than the rest of the song.
+    ///
+    /// If the source refuses to seek, playback starts from the beginning and [`Player::started_at`]
+    /// reports `0` — the position must describe what is actually being heard, or synced lyrics
+    /// would run confidently wrong for the whole track.
+    pub fn play_at(url: &str, offset: Duration) -> Result<Self> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -73,18 +96,33 @@ impl Player {
         let mut decoder = Decoder::open_at(url, Some(requested))?;
         let format = decoder.format();
 
+        // A source that won't seek still plays — from the top. Say so rather than pretending.
+        let started_at = if offset.is_zero() || decoder.seek(offset).is_err() {
+            Duration::ZERO
+        } else {
+            offset
+        };
+
         let capacity = format.sample_rate as usize
             * format.channels as usize
             * TARGET_BUFFER.as_secs() as usize;
         let (mut producer, mut consumer) = rtrb::RingBuffer::<i16>::new(capacity);
 
+        // Seed both counters, not just the position: `drift()` is `decoded - position - buffered`,
+        // so seeding the position alone would leave it saturated at zero and silently retire the
+        // lost-audio detector for the rest of the track.
+        let start_frames = (started_at.as_secs_f64() * format.sample_rate as f64) as u64;
+        let start_samples = start_frames * format.channels as u64;
+
         let shared = Arc::new(Shared {
-            frames_played: AtomicU64::new(0),
-            total_decoded: AtomicU64::new(0),
+            frames_played: AtomicU64::new(start_frames),
+            total_decoded: AtomicU64::new(start_samples),
             queued: AtomicU64::new(0),
             decoder_finished: AtomicBool::new(false),
+            decode_error: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
+            device_error: AtomicBool::new(false),
             volume: AtomicU64::new(1024),
         });
 
@@ -137,10 +175,19 @@ impl Player {
                                 .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
                         );
                     }
-                    // End of track, or an unrecoverable decode error: stop producing and let the
-                    // queue drain so the ending isn't clipped.
-                    Ok(None) | Err(_) => {
+                    // End of track: stop producing and let the queue drain so the ending isn't
+                    // clipped.
+                    Ok(None) => {
                         decode_shared.decoder_finished.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                    // A decode error is *not* an ending, and conflating the two silently ate the
+                    // rest of the song: the queue drained, `is_finished()` went true, and the
+                    // engine advanced as though the track had played out. Flagged separately so
+                    // the owner can re-open and resume where the listener actually is.
+                    Err(e) => {
+                        eprintln!("decode stopped: {e}");
+                        decode_shared.decode_error.store(true, Ordering::Relaxed);
                         return;
                     }
                 }
@@ -149,7 +196,15 @@ impl Player {
 
         let callback_shared = Arc::clone(&shared);
         let channels = config.channels() as u64;
-        let error_callback = |e| eprintln!("audio output error: {e}");
+
+        // A stream error means the callback stops being invoked — no more audio, and the queue
+        // stops draining, so `is_finished()` would never fire either. Record it so the owner can
+        // rebuild onto whatever device is current now; printing alone leaves playback dead.
+        let error_shared = Arc::clone(&shared);
+        let error_callback = move |e| {
+            eprintln!("audio output error: {e}");
+            error_shared.device_error.store(true, Ordering::Relaxed);
+        };
 
         // Runs on the audio thread: no allocation, no locks, no blocking.
         macro_rules! callback {
@@ -220,8 +275,21 @@ impl Player {
         Ok(Self {
             shared,
             format,
+            started_at,
             _stream: stream,
         })
+    }
+
+    /// Where in the track this player actually began — the requested offset, or zero if the
+    /// source refused to seek.
+    pub fn started_at(&self) -> Duration {
+        self.started_at
+    }
+
+    /// True once the output device has failed. The player produces no more audio after this and
+    /// cannot repair itself; build a new one at [`Player::position`].
+    pub fn device_error(&self) -> bool {
+        self.shared.device_error.load(Ordering::Relaxed)
     }
 
     /// How far into the track the listener actually is.
@@ -250,9 +318,18 @@ impl Player {
 
     /// True once the decoder finished *and* the queue has drained — i.e. the listener has actually
     /// heard the end, not merely that we stopped decoding.
+    ///
+    /// Deliberately false when decoding stopped because of an error; see [`Player::decode_error`].
     pub fn is_finished(&self) -> bool {
         self.shared.decoder_finished.load(Ordering::Relaxed)
             && self.shared.queued.load(Ordering::Relaxed) == 0
+    }
+
+    /// True if decoding stopped early — a dropped connection or an expired URL rather than the end
+    /// of the song. Whatever was already queued still plays out; the owner should rebuild at
+    /// [`Player::position`] to hear the rest.
+    pub fn decode_error(&self) -> bool {
+        self.shared.decode_error.load(Ordering::Relaxed)
     }
 
     /// Seconds of audio buffered ahead of the listener. Useful for spotting network stalls.

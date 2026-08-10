@@ -4,10 +4,13 @@
 //! `MFAudioFormat_PCM` output, and it inserts the AAC decoder (SBR and all) itself.
 
 use std::sync::Once;
+use std::time::Duration;
 
-use windows::core::PCWSTR;
+use windows::core::{GUID, PCWSTR};
 use windows::Win32::Media::MediaFoundation::*;
+use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+use windows::Win32::System::Variant::VT_I8;
 
 use crate::{Error, Format, Result};
 
@@ -111,6 +114,32 @@ impl Decoder {
         self.format
     }
 
+    /// Jump to `position` in the source.
+    ///
+    /// This is what makes a stalled stream recoverable: re-open the same URL, seek back to where
+    /// the listener actually was, and carry on. Over HTTP it costs one ranged request rather than
+    /// re-downloading everything already heard.
+    ///
+    /// Not every source is seekable — a server without range support, or a container without an
+    /// index, will refuse — so callers must have a plan for `Err` rather than assuming success.
+    pub fn seek(&mut self, position: Duration) -> Result<()> {
+        // MF's default time format counts in 100 ns units.
+        let ticks = (position.as_secs_f64() * 1e7) as i64;
+
+        let mut target = PROPVARIANT::default();
+        unsafe {
+            let variant = &mut target.Anonymous.Anonymous;
+            variant.vt = VT_I8;
+            variant.Anonymous.hVal = ticks;
+            // A null time format GUID means "the source's default", i.e. those 100 ns units.
+            self.reader.SetCurrentPosition(&GUID::zeroed(), &target)?;
+        }
+
+        // A seek un-ends the stream: a reader that had hit EOF can produce samples again.
+        self.finished = false;
+        Ok(())
+    }
+
     /// Decode the next chunk of PCM. Returns `None` at end of stream.
     ///
     /// Chunk sizes are whatever MF hands back (typically a few thousand frames); callers should
@@ -186,6 +215,43 @@ mod tests {
     #[test]
     fn missing_file_errors() {
         assert!(Decoder::open("Z:\\definitely\\not\\here.m4a").is_err());
+    }
+
+    /// Seeking has to *work*, not merely return `Ok`: the PROPVARIANT is hand-built, and getting
+    /// `vt` or the union field wrong is exactly the sort of mistake Media Foundation would accept
+    /// silently while ignoring the position. Resume-after-stall would then restart every track
+    /// from the top instead of where the listener was, which is much harder to spot in the app
+    /// than here.
+    ///
+    /// Uses a stock Windows sound rather than a fixture so the check costs the repo nothing.
+    #[test]
+    fn seek_skips_ahead() {
+        const SOUND: &str = r"C:\Windows\Media\Ring05.wav";
+        if !std::path::Path::new(SOUND).exists() {
+            eprintln!("skipping: {SOUND} not present on this machine");
+            return;
+        }
+
+        let mut decoder = Decoder::open(SOUND).expect("open");
+        let format = decoder.format();
+        let whole = decoder.decode_all().expect("decode from the start");
+        let duration = format.duration_of(whole.len());
+        assert!(duration > Duration::from_secs(2), "test file is too short");
+
+        let mut seeked = Decoder::open(SOUND).expect("reopen");
+        seeked.seek(duration / 2).expect("seek");
+        let rest = seeked.decode_all().expect("decode after seek");
+        let remaining = format.duration_of(rest.len());
+
+        // Decoders emit whole samples and MF may land on a nearby boundary, so allow slack —
+        // what matters is that a seek to the midpoint returned roughly half the audio and not,
+        // as a no-op seek would, all of it.
+        let expected = duration / 2;
+        let error = remaining.abs_diff(expected);
+        assert!(
+            error < duration / 10,
+            "seek to {expected:?} of {duration:?} left {remaining:?} to decode"
+        );
     }
 
     #[test]
