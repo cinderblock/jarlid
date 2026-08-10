@@ -80,7 +80,22 @@ pub async fn stage(app: &tauri::AppHandle) -> Result<Option<String>, String> {
         return Ok(Some(v)); // already holding one
     }
 
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    // Build the updater ourselves rather than using `app.updater()`, purely to attach
+    // `on_before_exit`. The hook lives on the builder and is copied into the resulting
+    // `Update`, so it has to be set here — before the handle is staged — not at install
+    // time. Without it the process is simply `exit(0)`'d with the audio device still open,
+    // and whatever the next track had already buffered gets cut off rather than stopped.
+    let handle = app.clone();
+    let updater = app
+        .updater_builder()
+        .on_before_exit(move || {
+            if let Some(engine) = handle.state::<crate::native::NativeEngine>().try_engine() {
+                engine.stop_audio();
+            }
+        })
+        .build()
+        .map_err(|e| e.to_string())?;
+
     let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
         return Ok(None);
     };

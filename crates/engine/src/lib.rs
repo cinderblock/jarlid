@@ -150,7 +150,13 @@ impl Engine {
     /// to walk stations one at a time rather than concurrently, which is also what keeps the
     /// request rate polite.
     pub async fn station_details(&self, token: &str) -> Result<serde_json::Value> {
-        Ok(self.state.lock().await.client.station_details(token).await?)
+        Ok(self
+            .state
+            .lock()
+            .await
+            .client
+            .station_details(token)
+            .await?)
     }
 
     /// Which station produced the current track.
@@ -253,6 +259,14 @@ impl Engine {
 
         let _ = self.events.send(Event::ModeChanged(name));
         Ok(())
+    }
+
+    /// Stop playback and release the audio device.
+    ///
+    /// For shutdown paths that need the device let go deliberately rather than yanked when
+    /// the process exits — notably the updater handover, which replaces the running binary.
+    pub fn stop_audio(&self) {
+        self.audio.stop();
     }
 
     /// Switch station and begin playing it.
@@ -432,7 +446,10 @@ impl Engine {
         if positive {
             state.client.thumb_up(&station, &track.track_token).await?;
         } else {
-            state.client.thumb_down(&station, &track.track_token).await?;
+            state
+                .client
+                .thumb_down(&station, &track.track_token)
+                .await?;
         }
         Ok(())
     }

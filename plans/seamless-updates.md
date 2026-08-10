@@ -76,9 +76,14 @@ genuinely restarts. Setting that expectation honestly matters more than oversell
 6. [x] UI: `app://update-staged` sets the badge; `app://update-installing` paints
    "updating to vX…" as the last thing before the process exits; clicking the badge only
    skips the wait (`install_staged` reuses the staged bytes).
-7. [ ] **Not yet done:** `on_before_exit` to stop audio cleanly. The plugin exposes the
-   hook (`UpdaterBuilder::on_before_exit`) but it is set on the builder, and we currently
-   use `app.updater()` which builds a default one. Needs `updater_builder()` instead.
+7. [x] `on_before_exit` stops the audio device before the handover. The hook lives on
+   `UpdaterBuilder` and is copied into the resulting `Update`, so it must be attached in
+   `stage()` — before the handle is staged — not at install time. Two wrinkles worth
+   remembering: the hook is a plain `Fn()` with nowhere to await, so reaching the engine
+   uses `NativeEngine::try_engine` (`tokio::Mutex::try_lock`, skipping the stop rather than
+   blocking the handover if momentarily contended); and this matters more than it first
+   appears, because `advance()` has already started the *next* track by the time
+   `TrackEnded` reaches us — so there really is audio playing at the moment we install.
 8. [ ] Verify end-to-end — see the note below on why that is awkward.
 
 ## ⚠️ How this can (and cannot) be verified

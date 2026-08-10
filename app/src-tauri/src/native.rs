@@ -81,6 +81,16 @@ impl NativeEngine {
     pub async fn engine(&self) -> Result<Arc<Engine>, String> {
         self.get().await
     }
+
+    /// Best-effort access without awaiting, for shutdown paths.
+    ///
+    /// `on_before_exit` in the updater is a plain `Fn()`, so there is nowhere to await the
+    /// tokio mutex. `try_lock` is the honest option: if it is momentarily contended we skip
+    /// stopping the audio rather than block the handover, and the process exit stops it a
+    /// beat later anyway.
+    pub fn try_engine(&self) -> Option<Arc<Engine>> {
+        self.0.try_lock().ok().and_then(|g| g.clone())
+    }
 }
 
 /// Start the engine from saved credentials at launch, or ask the UI for a login.
