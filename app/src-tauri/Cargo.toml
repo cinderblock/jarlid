@@ -1,6 +1,6 @@
 [package]
 name = "jarlid"
-version = "1.1.1"
+version = "1.2.0"
 description = "Jarlid — an unofficial desktop client for Pandora"
 authors = ["Cameron Tacklind <cameron@tacklind.com>"]
 edition = "2021"

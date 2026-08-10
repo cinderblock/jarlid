@@ -39,13 +39,19 @@ anywhere in it.
   it rebuilds where you were instead of going silent until you hit skip. Because it watches the
   *decoder* rather than the playhead, a stalled read is caught with the whole ring buffer still in
   hand — the re-open usually finishes before there is anything to hear.
-- **Export your station preferences**: select any or all of your stations in the picker and save
-  their thumbs up/down, seed artists & songs, and per-station settings to a single versioned JSON
-  file. Your listening history lives only in your Pandora account and has no official export;
-  this gives you a copy you own. The walk is deliberately serial and paced, and stops rather than
-  retrying if Pandora pushes back. Re-importing is not built yet — and note Pandora can only apply
-  a thumb to a track it has just served you, so thumbs will only ever be restorable
-  opportunistically; seeds and stations restore cleanly.
+- **Stations page**: the whole collection on one screen — search it, click to play, or switch to
+  Select mode to pick stations for export. QuickMix, Thumbprint and genre stations are tagged,
+  which matters because a QuickMix is a shuffle *over* other stations and so has no seeds or
+  thumbs of its own.
+- **Export your station preferences**: save any or all stations' thumbs up/down, seed artists &
+  songs, and per-station settings to a single versioned JSON file. Your listening history lives
+  only in your Pandora account and has no official export; this gives you a copy you own. The
+  walk is deliberately serial and paced, and stops rather than retrying if Pandora pushes back.
+  Re-importing is not built yet — and note Pandora only accepts a thumb for a track it has just
+  served you, so thumbs will only ever be restorable opportunistically; seeds and stations
+  restore cleanly.
+- **Settings**: which account is signed in, and a way to sign out (which clears the saved
+  password from the Windows Credential Manager).
 - **Auto-updates**: checks GitHub Releases (startup + every 4 h) and installs signed updates
   with one click from an in-app banner.
 - Full station collection searchable in the picker; Cover-Flow-style recently-played gallery;
@@ -145,8 +151,9 @@ releases are built by `.github/workflows/release.yml` on version tags).
 Daily-driver ready. Remaining ideas are tracked in `plans/pandora-desktop-app.md`.
 
 Station-preferences export is newly built. Its API layer is verified against a live account
-(`cargo run -p engine --example dump-station-shape`), but the end-to-end flow in the app —
-select, export, save — has not been exercised yet. See `plans/station-prefs-export.md`.
+(`cargo run -p engine --example dump-station-shape`) and the Stations/Settings pages render
+correctly, but the export button has not yet been clicked end-to-end in the app — select,
+export, save dialog, file on disk. Import is not started. See `plans/station-prefs-export.md`.
 
 ## Disclaimer
 
