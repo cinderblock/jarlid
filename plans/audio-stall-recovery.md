@@ -81,6 +81,26 @@ the webview in c8118d2 and nothing replaced it.
       interrupts whatever is actually playing for ~90 s. Needs the user's go-ahead.
 - [ ] Rebuild/install and confirm in the real app.
 
+## Recovery latency (asked about directly, 2026-08-10)
+
+"Do I have to wait for it to self-recover?" — worth stating per path, because the first cut had
+one bad answer:
+
+| What happened | How it's noticed | Silence before audio returns |
+|---|---|---|
+| Long pause, you press play | The player was already released *during* the pause | Re-open + seek + buffer, well under a second |
+| Connection dropped, MF returns an error | `decode_error`, immediately | None — the ring buffer covers the re-open |
+| MF hangs in `ReadSample` (half-open socket) | Decoded output stops advancing | None to ~1 s — caught with buffer still in hand |
+| Output device dies | cpal error callback | One poll, 50 ms |
+| Device stops without reporting an error | Queued audio not being consumed | ~4 s (no earlier signal exists) |
+
+The third row is the one that was wrong. The first version timed the **position**, which keeps
+advancing off the ring buffer for a further five seconds after a read hangs and only freezes once
+the buffer is dry — i.e. the clock started when the silence did, then added eight more seconds.
+Timing **decoded output** instead catches the hang the moment it happens, roughly five seconds of
+buffer before anyone could hear it, so recovery normally completes inaudibly. The position timer
+survives only as a backstop for the opposite failure — audio queued that nobody is consuming.
+
 ## Findings / gotchas
 
 - `windows` 0.61 exposes `SetCurrentPosition(*const GUID, *const PROPVARIANT)` only when both
@@ -92,6 +112,11 @@ the webview in c8118d2 and nothing replaced it.
   zero permanently and quietly stop detecting anything.
 - Stall detection must be armed from player creation, not from first motion: a track that never
   produces a single frame is the exact case worth catching.
+- Watch the decoder, not the playhead. The five-second ring buffer means the position is a
+  *lagging* indicator of a stalled read by exactly the margin you needed to fix it in.
+- A decoder that has legitimately reached the end of a track also stops producing and lets the
+  buffer drain, which is indistinguishable from a hang unless `end_of_stream` is checked. Without
+  that gate the watchdog would re-open every track a few seconds before it ended.
 - Unpausing must reset the stall clock, or a long pause is instantly misread as a stall.
 
 ## Things not to do

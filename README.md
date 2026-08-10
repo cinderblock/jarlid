@@ -36,7 +36,9 @@ anywhere in it.
   device rather than sitting on a connection that the far end will quietly drop, and pressing play
   re-opens the track and seeks back to the second you paused on. The same watchdog covers a stream
   that stalls mid-song or an output device that disappears (headphones unplugged, monitor asleep):
-  it rebuilds where you were instead of going silent until you hit skip.
+  it rebuilds where you were instead of going silent until you hit skip. Because it watches the
+  *decoder* rather than the playhead, a stalled read is caught with the whole ring buffer still in
+  hand — the re-open usually finishes before there is anything to hear.
 - **Export your station preferences**: select any or all of your stations in the picker and save
   their thumbs up/down, seed artists & songs, and per-station settings to a single versioned JSON
   file. Your listening history lives only in your Pandora account and has no official export;

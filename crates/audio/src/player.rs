@@ -332,6 +332,16 @@ impl Player {
         self.shared.decode_error.load(Ordering::Relaxed)
     }
 
+    /// True once the decoder has read the whole track, whether or not the listener has heard it
+    /// all yet.
+    ///
+    /// The difference from [`Player::is_finished`] matters to a watchdog: a decoder that has
+    /// legitimately reached the end also stops producing, and must not be mistaken for one that
+    /// has hung.
+    pub fn end_of_stream(&self) -> bool {
+        self.shared.decoder_finished.load(Ordering::Relaxed)
+    }
+
     /// Seconds of audio buffered ahead of the listener. Useful for spotting network stalls.
     pub fn buffered(&self) -> Duration {
         let samples = self.shared.queued.load(Ordering::Relaxed);

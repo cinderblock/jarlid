@@ -20,12 +20,23 @@ use std::time::{Duration, Instant};
 /// slow enough to be free.
 const POLL: Duration = Duration::from_millis(50);
 
-/// Playback that hasn't advanced by this much, while unpaused and not finished, is stalled.
+/// Decoding that has produced nothing new for this long has hung.
 ///
-/// Generous because it must never fire on an ordinary rebuffer: Media Foundation reads
-/// synchronously with no timeout, so a half-open socket blocks in `ReadSample` indefinitely and
-/// this timer is the only thing that will ever notice.
-const STALL_AFTER: Duration = Duration::from_secs(8);
+/// **Watch the decoder, not the listener.** Media Foundation reads synchronously with no timeout,
+/// so a half-open socket blocks in `ReadSample` indefinitely — but the ring buffer keeps feeding
+/// the device for seconds afterwards, so the *position* carries on moving as though nothing were
+/// wrong and only freezes once the buffer is dry, i.e. once the silence has already started.
+/// Decoded output stops the instant the read hangs, which buys the whole buffer's worth of time to
+/// re-open before anyone hears a gap.
+const DECODE_STALL: Duration = Duration::from_secs(3);
+
+/// Buffer depth below which a hung decoder is worth acting on. Above this there is enough audio in
+/// hand to ride out a slow read without doing anything drastic.
+const LOW_BUFFER: Duration = Duration::from_secs(2);
+
+/// Audio that is queued but not being consumed for this long means the device has stopped without
+/// reporting an error.
+const PLAYBACK_STALL: Duration = Duration::from_secs(4);
 
 /// How long a pause may hold the network connection and the audio device open.
 ///
@@ -97,10 +108,13 @@ impl AudioThread {
             let mut paused = false;
             let mut paused_since: Option<Instant> = None;
 
-            // Stall detection. Armed from player creation, not from first motion — a track that
-            // never produces a single frame is exactly the case worth catching.
+            // Stall detection, on both halves of the pipeline: what the decoder produces and what
+            // the device consumes. Armed from player creation, not from first motion — a track
+            // that never produces a single frame is exactly the case worth catching.
             let mut last_position = Duration::ZERO;
             let mut last_moved = Instant::now();
+            let mut last_decoded = Duration::ZERO;
+            let mut last_decode = Instant::now();
             let mut recoveries = 0u32;
             let mut recovered_at = Duration::ZERO;
 
@@ -118,6 +132,8 @@ impl AudioThread {
                             recovered_at = Duration::ZERO;
                             last_position = Duration::ZERO;
                             last_moved = Instant::now();
+                            last_decoded = Duration::ZERO;
+                            last_decode = Instant::now();
                             thread_state.paused.store(false, Ordering::Relaxed);
                             player = None; // stop the old device before opening a new one
                             current = Some(Current {
@@ -136,7 +152,9 @@ impl AudioThread {
                             } else {
                                 paused_since = None;
                                 // A pause is not a stall; don't let its duration count as one.
+                                // Both clocks, or resuming instantly looks like a hung decoder.
                                 last_moved = Instant::now();
+                                last_decode = Instant::now();
                             }
                             // If the player was released during a long pause, the build step below
                             // brings it back — which is what makes the play button able to start
@@ -169,6 +187,8 @@ impl AudioThread {
                                 new_player.set_volume(volume);
                                 last_position = new_player.started_at();
                                 last_moved = Instant::now();
+                                last_decoded = new_player.decoded();
+                                last_decode = Instant::now();
                                 recovered_at = new_player.started_at();
                                 thread_state
                                     .position_ms
@@ -210,10 +230,16 @@ impl AudioThread {
                         }
                     }
 
-                    // Three ways a player dies without saying so out loud, all recoverable the
-                    // same way: rebuild at the position actually reached. Only judged while
-                    // playing — a paused player is *supposed* to look motionless, and its buffer
-                    // is supposed to stay full.
+                    let decoded = active.decoded();
+                    if decoded != last_decoded {
+                        last_decoded = decoded;
+                        last_decode = Instant::now();
+                    }
+
+                    // Four ways a player dies without saying so out loud, all recoverable the same
+                    // way: rebuild at the position actually reached. Only judged while playing — a
+                    // paused player is *supposed* to look motionless, and its buffer is supposed to
+                    // stay full.
                     let reason = if paused {
                         None
                     } else if active.device_error() {
@@ -222,7 +248,18 @@ impl AudioThread {
                         // Whatever was already decoded has now been heard; the rest of the song
                         // is still out there.
                         Some("stream ended early")
-                    } else if last_moved.elapsed() > STALL_AFTER {
+                    } else if !active.end_of_stream()
+                        && active.buffered() < LOW_BUFFER
+                        && last_decode.elapsed() > DECODE_STALL
+                    {
+                        // Caught while there is still audio in the buffer, so re-opening usually
+                        // costs the listener nothing at all. `end_of_stream` matters here: a
+                        // decoder that has legitimately finished the track also stops producing
+                        // and drains, and must not be mistaken for a hung one.
+                        Some("decoding stalled")
+                    } else if !active.buffered().is_zero() && last_moved.elapsed() > PLAYBACK_STALL {
+                        // Audio queued and nobody consuming it: the device stopped without saying
+                        // so. Distinct from the case above, where the *supply* is what dried up.
                         Some("playback stalled")
                     } else {
                         None
