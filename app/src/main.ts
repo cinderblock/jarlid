@@ -406,7 +406,11 @@ async function loadLyricsFor(
 let lastPos = -1;
 let lastMoveAt = 0;
 function onPlayhead(ph: Playhead) {
+  const wasPaused = lastPlayhead.paused;
   lastPlayhead = ph;
+  // A staged update says "after this song" or "when playback resumes" depending on
+  // this, so the badge has to follow it.
+  if (wasPaused !== ph.paused && pendingVersion) renderVersion();
   const now = Date.now();
   const moved = Math.abs(ph.position - lastPos) > 0.05;
   if (moved) {
@@ -474,8 +478,22 @@ let pendingVersion: string | null = null;
 let versionBusy = false;
 function renderVersion() {
   versionEl.classList.toggle("update", !!pendingVersion);
-  versionEl.textContent = pendingVersion ? `update to v${pendingVersion}` : baseVersion;
+  if (!pendingVersion) {
+    versionEl.textContent = baseVersion;
+    return;
+  }
+  // Say what will happen and when. "update to vX" read like a button you had to press;
+  // it installs itself, and the only question is when. Paused matters because a paused
+  // app is deliberately never restarted — "after this song" would be a lie.
+  versionEl.textContent = lastPlayhead.paused
+    ? `updating to v${pendingVersion} when playback resumes`
+    : `updating to v${pendingVersion} after this song`;
 }
+attachTip(versionEl, () =>
+  pendingVersion
+    ? "Installs on its own at the end of a song. Click to update now instead."
+    : "Click to check for updates"
+);
 function flashVersion(text: string) {
   versionEl.textContent = text;
   setTimeout(() => {

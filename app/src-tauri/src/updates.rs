@@ -193,7 +193,7 @@ fn conditions(app: &tauri::AppHandle, playing: bool) -> Conditions {
 
 /// A track just ended — the moment we have been waiting for.
 pub fn on_track_boundary(app: &tauri::AppHandle) {
-    try_install(app, true, "track boundary");
+    try_install(app, true, "track boundary", false);
 }
 
 /// Install the staged update right now, because the user asked.
@@ -211,15 +211,23 @@ pub fn install_staged(app: &tauri::AppHandle) -> bool {
     if app.state::<crate::export::ExportCtl>().is_running() {
         return false;
     }
-    // `playing: true` skips only the paused check; the export check above already ran.
-    try_install(app, true, "user asked");
+    try_install(app, true, "user asked", true);
     // Reached only when the install failed, in which case the bytes were put back.
     true
 }
 
-fn try_install(app: &tauri::AppHandle, playing: bool, why: &str) {
+/// `force` is an explicit user request: it waives the guards that exist purely to avoid
+/// surprising the listener (paused, and a renderer owning playback), because a deliberate
+/// click is not a surprise. It does **not** waive the export guard, which protects work in
+/// progress rather than anyone's comfort.
+fn try_install(app: &tauri::AppHandle, playing: bool, why: &str, force: bool) {
     let ctl = app.state::<UpdateCtl>();
-    if let Err(h) = decide(conditions(app, playing)) {
+    let mut c = conditions(app, playing);
+    if force {
+        c.remote = false;
+        c.playing = true;
+    }
+    if let Err(h) = decide(c) {
         // Silent when there is simply nothing to install, or every track end would log.
         if h != Hold::NothingStaged {
             eprintln!("[updater] holding install ({why}): {}", h.reason());
@@ -279,7 +287,7 @@ pub fn spawn(app: &tauri::AppHandle) {
                     if waited >= MAX_WAIT {
                         // No boundary in six minutes of playback — something is stuck, and
                         // interrupting beats never updating.
-                        try_install(&app, true, "backstop (no track boundary)");
+                        try_install(&app, true, "backstop (no track boundary)", false);
                     }
                 }
             }
@@ -384,6 +392,44 @@ mod tests {
                 ..c
             }),
             Err(Hold::Remote)
+        );
+    }
+
+    /// An explicit click waives paused/remote but never the export guard. Mirrors what
+    /// `try_install(force: true)` builds, so the promise in its doc comment is checked.
+    #[test]
+    fn an_explicit_request_waives_only_the_courtesy_guards() {
+        let forced = |c: Conditions| Conditions {
+            remote: false,
+            playing: true,
+            ..c
+        };
+
+        let paused_remote = Conditions {
+            staged: true,
+            exporting: false,
+            remote: true,
+            playing: false,
+        };
+        assert_eq!(
+            decide(paused_remote),
+            Err(Hold::Remote),
+            "held automatically"
+        );
+        assert_eq!(
+            decide(forced(paused_remote)),
+            Ok(()),
+            "but a click goes through"
+        );
+
+        let exporting = Conditions {
+            exporting: true,
+            ..paused_remote
+        };
+        assert_eq!(
+            decide(forced(exporting)),
+            Err(Hold::Exporting),
+            "an export is never waived, even on request"
         );
     }
 

@@ -616,17 +616,17 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-/// On-demand update check (version-badge click). Returns the available
-/// version, or None when current.
+/// On-demand update check (version-badge click). Returns the available version, or None
+/// when current.
+///
+/// This **stages** rather than merely checking: it downloads and verifies, so the update
+/// is armed and will install itself at the next gap between songs. Checking without
+/// staging was actively misleading — the badge announced a pending update while the
+/// automatic path still saw nothing staged and held at every track boundary, and a second
+/// click fell through to the old download-and-restart-now path, cutting the song in half.
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    use tauri_plugin_updater::UpdaterExt;
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    Ok(updater
-        .check()
-        .await
-        .map_err(|e| e.to_string())?
-        .map(|u| u.version.clone()))
+    updates::stage(&app).await
 }
 
 /// Install now, because the badge was clicked.
