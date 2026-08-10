@@ -3,6 +3,7 @@ mod export;
 mod native;
 #[cfg(windows)]
 mod thumbbar;
+mod updates;
 mod upnp;
 
 use serde::{Deserialize, Serialize};
@@ -542,6 +543,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         let local_recent = r_local_move.lock().unwrap().elapsed() < Duration::from_secs(3);
         let active = playing && !title.is_empty() && !local_recent;
         let was_active = r_active.swap(active, Ordering::Relaxed);
+        REMOTE_ACTIVE.store(active, Ordering::Relaxed);
         if !active {
             if was_active {
                 r_last_meta.lock().unwrap().clear();
@@ -627,11 +629,18 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
         .map(|u| u.version.clone()))
 }
 
-/// Download and install a pending update, then restart. The startup check only
-/// notifies; this runs when the user clicks the banner.
+/// Install now, because the badge was clicked.
+///
+/// Updates normally install themselves at the next gap between songs (see `updates.rs`),
+/// so this only means "don't wait for the song to end". If one is already staged the
+/// install is immediate and needs no network; otherwise fall back to fetching it first.
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
+    // Does not return when it succeeds — the installer launches and the process exits.
+    if updates::install_staged(&app) {
+        return Err("install failed".into());
+    }
     let updater = app.updater().map_err(|e| e.to_string())?;
     if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
         update
@@ -641,6 +650,15 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
         app.restart();
     }
     Ok(())
+}
+
+/// Mirrors the network-player takeover flag for code outside `setup_media_controls`,
+/// which owns the `Arc` and threads it through a dozen closures. Read-only elsewhere.
+static REMOTE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Is a network renderer (WiiM/DLNA) currently driving playback?
+pub(crate) fn remote_active() -> bool {
+    REMOTE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Set by the panic hook, drained into diagnostics once the app is up.
@@ -694,6 +712,7 @@ pub fn run() {
         // Save dialog for the station-preferences export (driven from Rust).
         .plugin(tauri_plugin_dialog::init())
         .manage(export::ExportCtl::default())
+        .manage(updates::UpdateCtl::default())
         .manage(diagnostics::Diagnostics::default())
         // Remember main-window position/size across launches.
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -736,32 +755,10 @@ pub fn run() {
             // itself. `engine://needs-login` now means "ask for credentials in our own UI"
             // rather than "reveal the Pandora page".
 
-            // Update check (release builds): notify the UI when a newer GitHub
-            // release exists; the banner's button runs install_update.
+            // Updates stage themselves in the background and install at a track
+            // boundary, so an update never cuts a song in half. See `updates.rs`.
             #[cfg(not(debug_assertions))]
-            {
-                use tauri_plugin_updater::UpdaterExt;
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    // First check shortly after launch, then every 4 hours so
-                    // long-running instances still learn about new releases.
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    loop {
-                        if let Ok(updater) = handle.updater() {
-                            match updater.check().await {
-                                Ok(Some(update)) => {
-                                    eprintln!("[updater] v{} available", update.version);
-                                    let _ = handle
-                                        .emit("app://update-available", update.version.clone());
-                                }
-                                Ok(None) => {}
-                                Err(e) => eprintln!("[updater] check failed: {e}"),
-                            }
-                        }
-                        tokio::time::sleep(std::time::Duration::from_secs(4 * 3600)).await;
-                    }
-                });
-            }
+            updates::spawn(&app.handle().clone());
 
             // Network (UPnP/DLNA) player watcher — feeds remote-mode overlay and
             // SMTC remote routing (must be managed before SMTC setup).

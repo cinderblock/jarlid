@@ -187,7 +187,10 @@ async fn attach(
                             .record("engine", &message);
                         let _ = app.emit("engine://error", json!({ "message": message }));
                     }
-                    Event::TrackEnded | Event::Paused(_) => {}
+                    // The gap between songs is the one moment an update can install
+                    // without cutting anything off. Nothing happens unless one is staged.
+                    Event::TrackEnded => crate::updates::on_track_boundary(&app),
+                    Event::Paused(_) => {}
                 }
             }
             drop(engine);

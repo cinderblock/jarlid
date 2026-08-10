@@ -64,21 +64,62 @@ genuinely restarts. Setting that expectation honestly matters more than oversell
 
 ## Plan / steps
 
-1. [current] `installMode: "quiet"` in `tauri.conf.json`.
-2. Stage the download: on the existing 4h check, `download()` into Tauri state instead of
-   only reporting the version. Keep bytes in memory (~4MB NSIS).
-3. Arm the trigger once bytes are staged.
-4. Fire on `Event::TrackEnded`, subject to the guards below, calling `install(bytes)`.
-5. `on_before_exit`: stop the audio thread and flush window state.
-6. UI: brief "Updating to vX — back in a moment" on the version badge. No prompt.
-7. Verify: stage a build, confirm it fires at a boundary and not mid-track, and time the
-   real gap.
+1. [x] `installMode: "quiet"` — **note the key**: it is `plugins.updater.windows.installMode`,
+   NOT `bundle.windows.nsis.installMode`. The latter is install *scope*
+   (`currentUser`/`perMachine`/`both`) and setting `quiet` there is a hard config error:
+   `unknown variant 'quiet'`.
+2. [x] Stage the download in the background (`updates::stage`), holding bytes **and the
+   `Update` handle** so firing needs no network at all.
+3. [x] Fire on `Event::TrackEnded` (`native.rs` → `updates::on_track_boundary`).
+4. [x] Backstop while playing, `MAX_WAIT` = 6 min.
+5. [x] Guards as a pure `decide()` function with unit tests.
+6. [x] UI: `app://update-staged` sets the badge; `app://update-installing` paints
+   "updating to vX…" as the last thing before the process exits; clicking the badge only
+   skips the wait (`install_staged` reuses the staged bytes).
+7. [ ] **Not yet done:** `on_before_exit` to stop audio cleanly. The plugin exposes the
+   hook (`UpdaterBuilder::on_before_exit`) but it is set on the builder, and we currently
+   use `app.updater()` which builds a default one. Needs `updater_builder()` instead.
+8. [ ] Verify end-to-end — see the note below on why that is awkward.
+
+## ⚠️ How this can (and cannot) be verified
+
+The whole flow is **release-only** — `updates::spawn` is behind `#[cfg(not(debug_assertions))]`
+precisely so a dev build can never download a release over itself. So:
+
+- A debug build exercises none of it. `cargo check --release` is mandatory after touching
+  this file, since debug does not compile the call site that ships.
+- Observing a real seamless update needs a *newer* release to exist than the one running.
+  **The version that adds this feature cannot demonstrate it.** Shipping it as vX means the
+  vX → vX+1 update is the first one that can be seamless; the update *into* vX still uses
+  the old abrupt path.
+- What is tested now: `decide()` — the guard logic, where a mistake means restarting at a
+  bad moment — via 7 unit tests covering each hold and their precedence.
+
+## The waiting policy (user's rule)
+
+> *"If we have to, interrupting and resuming a running song is OK. But always prefer
+> waiting a couple of minutes to the end of the song, to avoid abrupt audio
+> interruptions."*
+
+So the track boundary is the **preference**, and interrupting is a bounded **fallback** —
+not a design choice to agonise over. Concretely:
+
+- Armed and playing → wait for `Event::TrackEnded`, then install. This is the normal path
+  and costs at most one track (typically 2–5 minutes).
+- **Backstop:** if no boundary arrives within `MAX_WAIT` (6 minutes — longer than almost
+  any track, so it only fires when something is wrong, e.g. a position that has stopped
+  advancing), install anyway. Interrupting is explicitly acceptable rather than waiting
+  forever.
+- The backstop timer **only runs while playing**. A paused app is never interrupted and
+  never restarted out from under the listener — it simply updates the next time it is
+  playing, or on the next launch check.
 
 ## Guards (must not restart at a bad moment)
 
 - **Never while an export is running.** `ExportCtl.running` already exists; check it.
-- **Never while paused.** A paused user is mid-something; a restart would resume audio
-  unexpectedly. Wait for playback to be running *and* a track to end.
+- **Never while paused.** Nothing is being interrupted, but a restart would come back
+  *playing* and start music at someone who deliberately stopped it. Trade-off accepted: an
+  app left paused indefinitely does not auto-update; the startup check catches it later.
 - **Never in remote mode** — the WiiM owns playback, there is no local track boundary to
   ride, and restarting would just drop the display.
 - Only fire once; disarm after triggering so a failed install cannot loop.

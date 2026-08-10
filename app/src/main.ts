@@ -488,15 +488,30 @@ getVersion()
     renderVersion();
   })
   .catch(() => {});
-listen<string>("app://update-available", (e) => {
+// An update has been downloaded and verified in the background; it installs on its own
+// at the next gap between songs. This is a notice, not a prompt — clicking only skips
+// the wait.
+listen<string>("app://update-staged", (e) => {
   pendingVersion = e.payload;
   renderVersion();
+});
+// The gap arrived and the process is about to be replaced. Whatever is painted now is
+// the last thing shown before the restart, so say something that explains the silence.
+listen<string>("app://update-installing", (e) => {
+  versionBusy = true;
+  versionEl.classList.add("update");
+  versionEl.textContent = `updating to v${e.payload}…`;
+});
+listen<string>("app://update-failed", () => {
+  versionBusy = false;
+  flashVersion("update failed");
 });
 versionEl.addEventListener("click", async () => {
   if (versionBusy) return;
   versionBusy = true;
   try {
     if (pendingVersion) {
+      // Already staged: this only forgoes waiting for the song to end.
       versionEl.textContent = "installing…";
       await invoke("install_update"); // restarts on success
       versionBusy = false;

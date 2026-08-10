@@ -31,7 +31,10 @@
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVCOTcxNjkxNkRGODlGMjkKUldRcG4vaHRrUmFYV3dXRTgvUEZOYkNGMGwwYUZQOXAvOUtsZXJjNFdSaUlVWVdCTUpLczZaVEIK",
       "endpoints": [
         "https://github.com/cinderblock/jarlid/releases/latest/download/latest.json"
-      ]
+      ],
+      "windows": {
+        "installMode": "quiet"
+      }
     }
   },
   "bundle": {

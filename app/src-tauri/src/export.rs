@@ -26,6 +26,14 @@ pub struct ExportCtl {
     running: AtomicBool,
 }
 
+impl ExportCtl {
+    /// Is a walk in progress? The updater asks, so it never restarts the app partway
+    /// through a deliberately slow pass over the collection.
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Seed {
