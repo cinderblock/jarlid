@@ -77,9 +77,12 @@ the webview in c8118d2 and nothing replaced it.
 - [x] `engine/examples/pause-resume.rs` — reproduces the reported bug against a live account:
       play, pause past the release threshold, press play, assert the same track resumes within
       2 s of where it stopped.
-- [ ] **Run that example.** Not yet done: Pandora allows one concurrent stream per account, so it
-      interrupts whatever is actually playing for ~90 s. Needs the user's go-ahead.
-- [ ] Rebuild/install and confirm in the real app.
+- [ ] **Run that example.** Still not run: Pandora allows one concurrent stream per account, so it
+      interrupts whatever is actually playing for ~90 s. Overtaken by events — the fix shipped and
+      has been in real use instead (below), so this is now a regression test for later rather than
+      the thing standing between us and confidence.
+- [x] Rebuild/install and confirm in the real app — shipped in **v1.2.0** ("Stations page,
+      Settings, audio stall recovery", 645b2a0) and running since. See Verification.
 
 ## Recovery latency (asked about directly, 2026-08-10)
 
@@ -129,6 +132,25 @@ survives only as a backstop for the opposite failure — audio queued that nobod
 
 ## Verification
 
-Rebuilt and installed, then: pause for >1 min and press play (must resume at the same second);
-pull the network mid-track (must recover or skip rather than go silent); change the default output
-device mid-track.
+**Status 2026-08-11: in use, no recurrence, not yet deliberately provoked.**
+
+- Landed in v1.2.0 (645b2a0). Nothing since has touched `audio_thread.rs`, `player.rs` or
+  `media_foundation.rs` — `git log 81db310..master --` on those three is empty, so what shipped is
+  what was written.
+- Cameron has been on v1.3.3 (installed 2026-08-10 17:25, running continuously since 17:45) and
+  reports no sign of the bug across roughly a day of normal listening. That is the original
+  symptom failing to reproduce over the interval it used to appear in — good evidence, but passive:
+  it does not confirm the recovery paths *fired* and worked, only that nothing broke visibly.
+- `Decoder::seek` is covered by a unit test (`seek_skips_ahead`).
+
+Still worth doing deliberately, in the app, when convenient — each takes under two minutes:
+
+1. Pause >1 min, press play. Must resume at the same second of the same track, not restart it and
+   not jump to a new one. This is the exact reported bug, and the one path with a visible tell.
+2. Kill the network mid-track (disable Wi-Fi ~10 s, re-enable). Must recover or skip, not go
+   silent forever.
+3. Unplug headphones / let the monitor sleep mid-track, exercising the device-error path.
+
+If a recovery ever does fire it prints its reason and position to stderr (`decoding stalled at
+Xs; reopening`), which the release build has nowhere to show — worth routing into the diagnostics
+report if this ever needs debugging in the wild.
