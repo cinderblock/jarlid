@@ -1194,3 +1194,13 @@ body.remote #remote-vol-wrap {
 .set-section + .set-section {
   margin-top: 28px;
 }
+/* Why an import would skip a station — the reason matters more than the fact. */
+.sp-why {
+  flex: 1 1 100%;
+  font-size: 0.72rem;
+  color: var(--faint);
+  line-height: 1.35;
+}
+.sp-row:has(.sp-why) {
+  flex-wrap: wrap;
+}

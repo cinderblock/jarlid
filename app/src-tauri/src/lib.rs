@@ -1,5 +1,6 @@
 mod diagnostics;
 mod export;
+mod import;
 mod native;
 mod settings;
 #[cfg(windows)]
@@ -685,6 +686,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             export::cancel_export,
             export::export_stations,
+            import::import_preview,
             fetch_lyrics,
             native::native_account,
             settings::get_settings,

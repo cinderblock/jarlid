@@ -24,6 +24,22 @@ interface ExportProgress {
   total: number;
   station: string;
 }
+interface StationPlan {
+  name: string;
+  exists: boolean;
+  seedsToAdd: number;
+  seedsAlreadyThere: number;
+  seedsUnusable: number;
+  thumbsNotRestorable: number;
+  blocked?: string;
+}
+interface ImportPlan {
+  exportedAt: string;
+  exportedBy: string;
+  stations: StationPlan[];
+  notes: string[];
+}
+
 interface ExportResult {
   path: string | null; // null = the save dialog was dismissed
   stations: number;
@@ -55,6 +71,7 @@ const selected = new Set<string>();
 /** Called by main.ts when the engine publishes a new station list. */
 export function setStations(next: StationInfo[], active: string) {
   stations = next;
+  if (previewing) return; // an import preview owns the list until dismissed
   if (active) activeName = active;
   // Forget selections for stations that no longer exist — but never mid-run, when
   // the export is already working from its own copy of the list.
@@ -258,12 +275,87 @@ cancelBtn.addEventListener("click", () => {
   invoke("cancel_export").catch(() => {});
 });
 
-importBtn.addEventListener("click", () => {
-  // Import lands in the next round. Saying so beats a button that looks broken.
+// Previewing an import takes over the list. Nothing is written to the account by this —
+// it reads the file and says what applying it *would* do.
+let previewing = false;
+
+function showPlan(plan: ImportPlan) {
+  previewing = true;
+  selectBtn.disabled = true;
+  search.disabled = true;
+  importBtn.textContent = "Back to stations";
+  listEl.innerHTML = "";
+
+  const create = plan.stations.filter((s) => !s.exists && !s.blocked).length;
+  const seeds = plan.stations
+    .filter((s) => !s.blocked)
+    .reduce((n, s) => n + s.seedsToAdd, 0);
+  const thumbs = plan.stations.reduce((n, s) => n + s.thumbsNotRestorable, 0);
+
+  for (const st of plan.stations) {
+    const row = document.createElement("div");
+    row.className = "sp-row";
+    const name = document.createElement("span");
+    name.className = "sp-name";
+    name.textContent = st.name;
+    row.appendChild(name);
+
+    const what = document.createElement("span");
+    what.className = "sp-tag";
+    what.textContent = st.blocked
+      ? "skipped"
+      : st.exists
+        ? st.seedsToAdd
+          ? `+${st.seedsToAdd} seeds`
+          : "up to date"
+        : "create";
+    row.appendChild(what);
+    // The reason a station is skipped matters more than the fact — put it on the row.
+    if (st.blocked) {
+      const why = document.createElement("span");
+      why.className = "sp-why";
+      why.textContent = st.blocked;
+      row.appendChild(why);
+    }
+    listEl.appendChild(row);
+  }
+
   setStatus(
-    "Import isn't built yet. Note that Pandora only accepts a thumb for a track it has just " +
-      "served you, so thumbs will be re-applied as songs come up; seeds and stations restore directly."
+    [
+      `From ${plan.exportedBy || "an export"}${plan.exportedAt ? ` (${plan.exportedAt.slice(0, 10)})` : ""}:`,
+      `${create} station(s) to create, ${seeds} seed(s) to add.`,
+      thumbs ? `${thumbs} thumbs cannot be restored.` : "",
+      "Nothing has been changed — applying is not built yet.",
+    ]
+      .filter(Boolean)
+      .join(" ")
   );
+}
+
+function endPreview() {
+  previewing = false;
+  selectBtn.disabled = false;
+  search.disabled = false;
+  importBtn.textContent = "Import…";
+  setStatus("");
+  render();
+}
+
+importBtn.addEventListener("click", async () => {
+  if (busy) return;
+  if (previewing) {
+    endPreview();
+    return;
+  }
+  importBtn.disabled = true;
+  try {
+    const plan = await invoke<ImportPlan | null>("import_preview");
+    if (plan) showPlan(plan);
+  } catch (err) {
+    setStatus(String(err), "err");
+  } finally {
+    importBtn.disabled = false;
+  }
 });
 
 // Escape closes the page, unless an export is mid-flight.

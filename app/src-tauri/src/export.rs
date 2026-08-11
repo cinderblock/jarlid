@@ -18,7 +18,7 @@ use tauri::{Emitter, Manager};
 /// Gap between stations. Slow on purpose; see the module note.
 const STATION_GAP: std::time::Duration = std::time::Duration::from_millis(700);
 
-const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Default)]
 pub struct ExportCtl {
@@ -119,15 +119,20 @@ pub struct Station {
     pub warnings: Vec<String>,
 }
 
-#[derive(Serialize)]
+/// Also `Deserialize` so the importer reads back exactly what the exporter wrote —
+/// one struct, so the two halves cannot drift apart.
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct ExportFile {
+pub struct ExportFile {
     /// Bump when the shape changes incompatibly; an importer should refuse a
     /// version it doesn't know rather than guess.
-    jarlid_export: u32,
-    exported_at: String,
-    exported_by: String,
-    stations: Vec<Station>,
+    pub jarlid_export: u32,
+    #[serde(default)]
+    pub exported_at: String,
+    #[serde(default)]
+    pub exported_by: String,
+    #[serde(default)]
+    pub stations: Vec<Station>,
 }
 
 #[derive(Serialize, Clone)]
