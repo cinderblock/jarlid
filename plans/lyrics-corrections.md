@@ -157,6 +157,21 @@ fills as a countdown to the first line. Three things that are easy to get wrong 
 - It keeps its space when spent (`opacity: 0`, not removed) so the scroll geometry
   doesn't shift under the first line.
 
+## Findings — review pass, before running anything (2026-08-11)
+
+- **The editor goes stale when the song changes.** Editing takes minutes; songs are
+  minutes. The words are fine — the editor holds its own copy and files it under the
+  track it was opened on — but the *playhead* isn't, so stamping across a track change
+  would write the next song's times into this song's file with nothing on screen saying
+  so. A track change now calls `notePlaybackMoved()`: drop to Words, disable the Timing
+  tab and its transport, and name the track the words still save to.
+- A failed fetch left the pencil live while `lastMeta` still described the previous
+  track, so an edit would have been filed against the wrong song. It now clears
+  `lastLyrics` and hides the pencil.
+- Static check worth repeating after any markup change: every `$("...")` in
+  `main.ts` and `lyric-editor.ts` is resolved at *import* time, so one wrong id throws
+  and blanks the whole app. All 81 currently resolve against `index.html`.
+
 ## Things not to do
 
 - Don't key a publish off Pandora's now-playing metadata when a matched LRCLIB record
@@ -182,8 +197,13 @@ fills as a countdown to the first line. Three things that are easy to get wrong 
       opt-level = 3` is what keeps that from being minutes, since `tauri dev` is a debug build.
 - [x] 2026-08-11 — UI: pencil affordance, full-page editor, tap-to-sync, intro countdown.
       `bun run build` (tsc + vite) clean.
+- [x] 2026-08-11 — Review pass found the stale-editor hazard and two smaller state bugs
+      (see Findings). Fixed. Static id cross-check added and passing.
+- [x] 2026-08-11 — Committed: `65d396f` (feature + intro countdown), `ef97707` (this
+      plan), `440f425` (stale-editor guard).
 - [ ] **Not yet done: run the app and drive it end to end.** Nothing here has been
-      exercised against a live track — see "Still to verify".
+      exercised against a live track — see "Still to verify". This needs Cameron: it
+      wants a Pandora login and a playing track, and the app is a native window.
 
 ## Still to verify (nothing below has been run in the real app)
 
