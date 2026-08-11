@@ -19,8 +19,58 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use windows::core::w;
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::Threading::{
+    AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, GetCurrentThread,
+    SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+};
 
 use crate::{Decoder, Error, Format, Result};
+
+/// Tells Windows this thread feeds an audio stream, for as long as the guard lives.
+///
+/// cpal already runs the device callback at `THREAD_PRIORITY_TIME_CRITICAL`, so the callback is
+/// never the thread that loses a CPU race. The **decode** thread is the one that matters here: it
+/// fills the ring buffer the callback drains, and at ordinary priority a busy machine — a big
+/// compile, a render, a game — can deschedule it long enough for the buffer to run dry. The
+/// callback then dutifully emits silence, which is heard as a dropout even though it never missed
+/// a deadline of its own. Raising the *callback* would not have helped at all.
+///
+/// MMCSS is the sanctioned mechanism: the scheduler guarantees a registered thread a share of each
+/// period rather than leaving it to compete on priority alone. The `Audio` task is the right one —
+/// `Pro Audio` is for low-latency render threads, which this is not.
+///
+/// Deregistration must happen on the same thread, hence the guard rather than a bare call.
+struct AudioPriority(Option<HANDLE>);
+
+impl AudioPriority {
+    fn raise() -> Self {
+        unsafe {
+            let mut index = 0u32;
+            if let Ok(handle) = AvSetMmThreadCharacteristicsW(w!("Audio"), &mut index) {
+                if !handle.is_invalid() {
+                    return Self(Some(handle));
+                }
+            }
+            // MMCSS can be disabled by policy, and the service can fail to start. A plain priority
+            // bump is weaker — it buys no scheduling guarantee — but it beats running at the same
+            // priority as the workload that is causing the trouble.
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+            Self(None)
+        }
+    }
+}
+
+impl Drop for AudioPriority {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            unsafe {
+                let _ = AvRevertMmThreadCharacteristics(handle);
+            }
+        }
+    }
+}
 
 /// How much audio to keep buffered: enough to ride out a network stall, short enough that
 /// pause and skip feel immediate.
@@ -46,6 +96,13 @@ struct Shared {
     /// the default endpoint changing under us. The callback stops running at that point, so
     /// nothing else would ever notice; the owner watches this and rebuilds.
     device_error: AtomicBool,
+    /// Samples of silence the callback had to invent because the queue was dry. This is the
+    /// dropout, measured at the only place it is unambiguous — nowhere else can distinguish
+    /// "audio was late" from "audio was quiet".
+    starved: AtomicU64,
+    /// Set once the callback has filled a whole buffer, i.e. playback reached steady state. Before
+    /// that an empty queue is just the pipeline priming, not a dropout.
+    delivered: AtomicBool,
     /// Fixed-point volume (1024 = unity), keeping the callback free of float state.
     volume: AtomicU64,
 }
@@ -120,6 +177,8 @@ impl Player {
             queued: AtomicU64::new(0),
             decoder_finished: AtomicBool::new(false),
             decode_error: AtomicBool::new(false),
+            starved: AtomicU64::new(0),
+            delivered: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             device_error: AtomicBool::new(false),
@@ -135,6 +194,9 @@ impl Player {
         // it. Anything that doesn't fit stays in `pending` until there is room.
         let decode_shared = Arc::clone(&shared);
         std::thread::spawn(move || {
+            // Held for the life of the thread: this is the thread whose starvation is audible.
+            let _priority = AudioPriority::raise();
+
             let mut pending: Vec<i16> = Vec::new();
             let mut cursor = 0usize;
 
@@ -229,6 +291,27 @@ impl Player {
                     // memory as a buzz.
                     for slot in output.iter_mut().skip(written) {
                         *slot = $convert(0i16);
+                    }
+
+                    // Silence we were forced to invent because the queue ran dry: the dropout,
+                    // counted. Two exclusions, both cases where an empty queue is expected rather
+                    // than a fault — the end of a track, and the priming gap before the first
+                    // sample of one (which also covers the gap after a stall rebuild).
+                    // A completely filled buffer is the definition of keeping up; from the first
+                    // one onwards, any shortfall is a real dropout. Partial fills are the common
+                    // case of one, so the two branches must not be exclusive on `written`.
+                    let short = output.len() - written;
+                    if short == 0 && written > 0 {
+                        callback_shared.delivered.store(true, Ordering::Relaxed);
+                    }
+                    if short > 0
+                        && !paused
+                        && callback_shared.delivered.load(Ordering::Relaxed)
+                        && !callback_shared.decoder_finished.load(Ordering::Relaxed)
+                    {
+                        callback_shared
+                            .starved
+                            .fetch_add(short as u64, Ordering::Relaxed);
                     }
 
                     callback_shared
@@ -332,6 +415,18 @@ impl Player {
         self.shared.decode_error.load(Ordering::Relaxed)
     }
 
+    /// How much silence has been played because the decoder could not keep up.
+    ///
+    /// The honest measure of a dropout: counted in the callback, where "the queue was empty and I
+    /// had to invent samples" is the literal definition. Should be zero. Anything non-zero on a
+    /// healthy network means the decode thread is losing CPU — which is what the MMCSS
+    /// registration on that thread exists to prevent.
+    pub fn starved(&self) -> Duration {
+        let samples = self.shared.starved.load(Ordering::Relaxed);
+        let frames = samples / self.format.channels.max(1) as u64;
+        Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
+    }
+
     /// True once the decoder has read the whole track, whether or not the listener has heard it
     /// all yet.
     ///
@@ -370,6 +465,28 @@ impl Player {
 
     pub fn format(&self) -> Format {
         self.format
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The registration has to actually succeed, and it fails silently: a wrong task name, a
+    /// missing `Win32_System_Threading` feature or a disabled MMCSS service all just return an
+    /// error that the fallback swallows, leaving the decode thread at the priority it was already
+    /// dropping audio at. Only a runtime check tells them apart.
+    #[test]
+    fn mmcss_registration_succeeds() {
+        // On its own thread, exactly as the decode thread uses it — MMCSS is per-thread state.
+        let registered = std::thread::spawn(|| AudioPriority::raise().0.is_some())
+            .join()
+            .expect("thread");
+        assert!(
+            registered,
+            "MMCSS registration failed; the decode thread would silently fall back to a plain \
+             priority bump and keep losing CPU under load"
+        );
     }
 }
 

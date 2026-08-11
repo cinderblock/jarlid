@@ -50,8 +50,9 @@ const RELEASE_AFTER_PAUSE: Duration = Duration::from_secs(45);
 const MAX_RECOVERIES: u32 = 3;
 
 /// Playing for this long without further trouble clears the recovery count — otherwise three
-/// stalls spread across an evening would retire a track that is simply on a flaky connection.
-const RECOVERY_FORGIVENESS: Duration = Duration::from_secs(30);
+/// stalls spread across an evening would retire a track that is simply on a flaky connection, and
+/// a spell of heavy CPU load could cost a song rather than a few seconds of audio.
+const RECOVERY_FORGIVENESS: Duration = Duration::from_secs(10);
 
 enum Command {
     Play(String),
@@ -66,6 +67,9 @@ struct Published {
     position_ms: AtomicU64,
     buffered_ms: AtomicU64,
     drift_ms: AtomicU64,
+    /// Silence played because the decoder could not keep up. Accumulates across tracks, so it
+    /// answers "is this machine dropping audio?" rather than "did this song".
+    starved_ms: AtomicU64,
     /// Set when a track reaches its natural end, so the engine can advance. Cleared on the next
     /// `Play`; deliberately *not* set by `Stop`, which is a deliberate act rather than an ending.
     track_ended: AtomicBool,
@@ -115,6 +119,8 @@ impl AudioThread {
             let mut last_moved = Instant::now();
             let mut last_decoded = Duration::ZERO;
             let mut last_decode = Instant::now();
+            // Per-player, so it resets with each rebuild; the published total does not.
+            let mut last_starved = Duration::ZERO;
             let mut recoveries = 0u32;
             let mut recovered_at = Duration::ZERO;
 
@@ -189,6 +195,7 @@ impl AudioThread {
                                 last_moved = Instant::now();
                                 last_decoded = new_player.decoded();
                                 last_decode = Instant::now();
+                                last_starved = Duration::ZERO;
                                 recovered_at = new_player.started_at();
                                 thread_state
                                     .position_ms
@@ -220,6 +227,17 @@ impl AudioThread {
                     thread_state
                         .drift_ms
                         .store(millis(active.drift()), Ordering::Relaxed);
+
+                    // Accumulated as a delta rather than folded in when a player is dropped, so
+                    // the total survives every rebuild path without each one having to remember.
+                    let starved = active.starved();
+                    let fresh = starved.saturating_sub(last_starved);
+                    if !fresh.is_zero() {
+                        thread_state
+                            .starved_ms
+                            .fetch_add(millis(fresh), Ordering::Relaxed);
+                    }
+                    last_starved = starved;
 
                     if position != last_position {
                         last_position = position;
@@ -340,6 +358,13 @@ impl AudioThread {
     /// Lost-audio detector; see `audio::Player::drift`. Should stay at zero.
     pub fn drift(&self) -> Duration {
         Duration::from_millis(self.published.drift_ms.load(Ordering::Relaxed))
+    }
+
+    /// Total silence played because the decoder could not keep up, across every track this
+    /// session. Distinct from `drift`: drift is audio we *lost*, this is audio that arrived too
+    /// late to play. Non-zero means the decode thread is losing CPU to something.
+    pub fn starved(&self) -> Duration {
+        Duration::from_millis(self.published.starved_ms.load(Ordering::Relaxed))
     }
 
     pub fn is_paused(&self) -> bool {

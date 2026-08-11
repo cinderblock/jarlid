@@ -420,6 +420,12 @@ impl Engine {
         self.audio.drift()
     }
 
+    /// Total silence played because decoding fell behind — the audible dropout, measured.
+    /// Should stay at zero; anything else means the decode thread is losing CPU.
+    pub fn starved(&self) -> Duration {
+        self.audio.starved()
+    }
+
     pub fn is_paused(&self) -> bool {
         self.audio.is_paused()
     }

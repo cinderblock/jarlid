@@ -290,10 +290,14 @@ pub async fn native_report_issue(
     // Playback detail, when the engine is running. Never the audio URL: it is a live credential.
     let playback = match app.state::<crate::native::NativeEngine>().engine().await {
         Ok(engine) => format!(
-            "position {:.0}s, buffered {:.1}s, drift {:.2}s{}",
+            // `starved` is the one a dropout report turns on: it is silence the device actually
+            // played because decoding fell behind, so a non-zero value settles "is it the app or
+            // is it my machine" without anyone having to reproduce it live.
+            "position {:.0}s, buffered {:.1}s, drift {:.2}s, starved {:.2}s{}",
             engine.position().as_secs_f64(),
             engine.buffered().as_secs_f64(),
             engine.drift().as_secs_f64(),
+            engine.starved().as_secs_f64(),
             if engine.is_paused() { ", paused" } else { "" }
         ),
         Err(_) => "engine not running".to_string(),

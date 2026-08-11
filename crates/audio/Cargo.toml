@@ -23,6 +23,9 @@ windows = { version = "0.61", features = [
     # simply does not exist. Seeking is what lets a stalled stream resume where it left off.
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Variant",
+    # MMCSS (`AvSetMmThreadCharacteristicsW`) and `SetThreadPriority`, so the decode thread can
+    # tell Windows it feeds an audio stream instead of competing for CPU on nice-ness alone.
+    "Win32_System_Threading",
 ] }
 
 # The decode probe lives in examples/ rather than src/bin/ so that fetching a real stream to test
