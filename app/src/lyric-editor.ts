@@ -66,10 +66,16 @@ const confirmMsg = $("le-confirm-msg");
 const confirmGo = $<HTMLButtonElement>("le-confirm-go");
 const reasonEl = $<HTMLInputElement>("le-reason");
 
+const timingTab = document.querySelector<HTMLInputElement>(
+  'input[name="le-mode"][value="timing"]'
+)!;
+
 let ctx: EditorContext | null = null;
 let cursor = 0;
 let clockTimer: number | undefined;
 let busy = false;
+/// Set when playback has moved off the track being edited — see notePlaybackMoved.
+let stale = false;
 
 /** True while the editor owns the screen — the player's own key bindings stand down. */
 export function isOpen() {
@@ -142,8 +148,8 @@ export function open(context: EditorContext) {
       : "Nothing was found for this track. Paste the words in, and add timings if you want to.";
 
   revertBtn.hidden = !lyrics.overridden;
-  playPauseBtn.disabled = !context.canTransport;
-  restartBtn.disabled = !context.canTransport;
+  stale = false;
+  refreshTiming();
   setMode("words");
   setBusy(false);
   setStatus(lyrics.overridden ? "Showing your local edit." : "");
@@ -158,6 +164,29 @@ export function close() {
   page.hidden = true;
   window.clearInterval(clockTimer);
   ctx = null;
+}
+
+/// Playback has moved to another track while the editor is open. The words on screen
+/// still belong to the track that was opened, and still save to it — but the playhead
+/// does not any more, so stamping against it would write times from a different song,
+/// and "Restart track" would restart one nobody opened.
+export function notePlaybackMoved() {
+  if (!isOpen() || stale || !ctx) return;
+  stale = true;
+  setMode("words");
+  refreshTiming();
+  setStatus(
+    `Playback moved on. These words still save to ${ctx.meta.artist} — ${ctx.meta.title}, but timing needs the track playing.`,
+    "err"
+  );
+}
+
+/// Timing needs a playhead that belongs to these lyrics, and a local engine to drive.
+function refreshTiming() {
+  const usable = !stale && !!ctx?.canTransport;
+  for (const b of [playPauseBtn, restartBtn]) b.disabled = !usable;
+  for (const b of [stampBtn, backBtn]) b.disabled = stale;
+  timingTab.disabled = stale;
 }
 
 $("le-close").addEventListener("click", close);
@@ -222,7 +251,7 @@ function renderLines() {
 }
 
 function stampCurrent() {
-  if (!ctx) return;
+  if (!ctx || stale) return;
   const lines = parseLines(textEl.value);
   if (cursor >= lines.length) return;
   lines[cursor].t = Math.max(0, ctx.playhead().position - TAP_LATENCY);

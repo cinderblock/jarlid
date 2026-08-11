@@ -227,6 +227,9 @@ async function onNowPlaying(np: NowPlaying) {
     syncedLines = null;
     activeLineIdx = NO_LINE;
     syncOffset = parseFloat(localStorage.getItem(`syncoff:${key}`) || "0") || 0;
+    // An editor left open is still editing the previous track — which is right — but
+    // the playhead it was timing against now belongs to this one.
+    lyricEditor.notePlaybackMoved();
     pushHistory(np);
     await loadLyrics(np);
   }
@@ -418,6 +421,12 @@ async function loadLyricsFor(
     lastMeta = meta;
     applyLyrics(res);
   } catch (e) {
+    // Don't leave the pencil pointing at the last track's lyrics: `lastMeta` was not
+    // updated, so editing now would file the edit against the wrong song.
+    lastLyrics = null;
+    lyricsEditBtn.hidden = true;
+    syncedLines = null;
+    introEl = introBar = null;
     lyricsEl.innerHTML = `<div class="line empty">Lyrics unavailable</div>`;
     lyricsStatus.textContent = "Lyrics";
   }
@@ -444,6 +453,7 @@ function applyLyrics(res: Lyrics) {
     lyricsStatus.textContent = `Lyrics${edited}`;
   } else {
     syncedLines = null;
+    introEl = introBar = null;
     lyricsEl.innerHTML = `<div class="line empty">No lyrics found</div>`;
     lyricsStatus.textContent = "Lyrics";
   }
