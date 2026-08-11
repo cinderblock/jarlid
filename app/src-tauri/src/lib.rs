@@ -617,42 +617,6 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-/// On-demand update check (version-badge click). Returns the available version, or None
-/// when current.
-///
-/// This **stages** rather than merely checking: it downloads and verifies, so the update
-/// is armed and will install itself at the next gap between songs. Checking without
-/// staging was actively misleading — the badge announced a pending update while the
-/// automatic path still saw nothing staged and held at every track boundary, and a second
-/// click fell through to the old download-and-restart-now path, cutting the song in half.
-#[tauri::command]
-async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    updates::stage(&app).await
-}
-
-/// Install now, because the badge was clicked.
-///
-/// Updates normally install themselves at the next gap between songs (see `updates.rs`),
-/// so this only means "don't wait for the song to end". If one is already staged the
-/// install is immediate and needs no network; otherwise fall back to fetching it first.
-#[tauri::command]
-async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_updater::UpdaterExt;
-    // Does not return when it succeeds — the installer launches and the process exits.
-    if updates::install_staged(&app) {
-        return Err("install failed".into());
-    }
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
-        update
-            .download_and_install(|_, _| {}, || {})
-            .await
-            .map_err(|e| e.to_string())?;
-        app.restart();
-    }
-    Ok(())
-}
-
 /// Mirrors the network-player takeover flag for code outside `setup_media_controls`,
 /// which owns the `Arc` and threads it through a dozen closures. Read-only elsewhere.
 static REMOTE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -719,14 +683,14 @@ pub fn run() {
         // Remember main-window position/size across launches.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
-            check_update,
             export::cancel_export,
             export::export_stations,
             fetch_lyrics,
-            install_update,
             native::native_account,
             settings::get_settings,
-            settings::set_auto_update,
+            settings::set_settings,
+            updates::update_action,
+            updates::update_status,
             native::native_cmd,
             native::native_is_signed_in,
             native::native_play_station,

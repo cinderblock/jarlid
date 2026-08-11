@@ -80,16 +80,56 @@
         </section>
 
         <section class="set-section">
-          <h3>Updates</h3>
-          <label class="set-check">
-            <input id="set-auto-update" type="checkbox" />
-            <span>Install updates automatically</span>
-          </label>
-          <p class="set-note">Updates download quietly in the background and install in the
-            gap between two songs, so one never interrupts a track. Jarlid restarts itself
-            and picks the station back up — expect a slightly longer pause than usual.
-            Turn this off and the version number at the bottom right becomes a manual
-            check instead.</p>
+          <h3>When a new version is available</h3>
+          <div id="set-policy">
+            <label class="set-radio">
+              <input type="radio" name="update-policy" value="afterSong" />
+              <span class="set-radio-text">
+                <b>Install after the current song</b>
+                Downloads quietly, then restarts in the gap between two tracks. Nothing is
+                ever cut off mid-song.
+              </span>
+            </label>
+            <label class="set-radio">
+              <input type="radio" name="update-policy" value="instant" />
+              <span class="set-radio-text">
+                <b>Install immediately</b>
+                Restarts as soon as the download finishes, interrupting whatever is playing.
+              </span>
+            </label>
+            <label class="set-radio">
+              <input type="radio" name="update-policy" value="manualInstall" />
+              <span class="set-radio-text">
+                <b>Download, but ask before installing</b>
+                Ready to go the moment you want it. Click the version number to schedule it
+                for the end of the current song; click again to install right now.
+              </span>
+            </label>
+            <label class="set-radio">
+              <input type="radio" name="update-policy" value="notifyOnly" />
+              <span class="set-radio-text">
+                <b>Only tell me</b>
+                Downloads nothing. The version number turns into a notice; clicking it
+                fetches the update.
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="set-section">
+          <h3>Check for updates</h3>
+          <div class="set-row-inline">
+            <select id="set-check-schedule">
+              <option value="never">Never</option>
+              <option value="30">Every 30 minutes</option>
+              <option value="240">Every 4 hours</option>
+              <option value="1440">Every 24 hours</option>
+              <option value="daily">Once a day, at…</option>
+            </select>
+            <input id="set-check-time" type="time" value="03:00" hidden />
+          </div>
+          <p class="set-note">A daily check uses the clock rather than an interval, so you
+            can put the restart at an hour you are not listening.</p>
         </section>
       </div>
     </div>

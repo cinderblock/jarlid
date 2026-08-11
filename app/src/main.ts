@@ -410,7 +410,7 @@ function onPlayhead(ph: Playhead) {
   lastPlayhead = ph;
   // A staged update says "after this song" or "when playback resumes" depending on
   // this, so the badge has to follow it.
-  if (wasPaused !== ph.paused && pendingVersion) renderVersion();
+  if (wasPaused !== ph.paused && status.armed) renderVersion();
   const now = Date.now();
   const moved = Math.abs(ph.position - lastPos) > 0.05;
   if (moved) {
@@ -470,71 +470,75 @@ window.addEventListener("keydown", (e) => {
     togglePlayback();
   }
 });
-// The version badge is the entire (unobtrusive) update UI: shows the running
-// version; turns into "update to vX" when one exists; click checks/installs.
+// The version badge is the entire (unobtrusive) update UI: shows the running version,
+// then what is about to happen to it. Clicking walks the known -> staged -> armed -> now
+// ladder one step per click; how far the app walks on its own is the Settings policy.
 const versionEl = $("version");
 let baseVersion = "";
-let pendingVersion: string | null = null;
 let versionBusy = false;
-// Mirrors the Settings checkbox. The badge must not promise "after this song" when
-// nothing is going to happen on its own.
-let autoUpdate = true;
-invoke<{ autoUpdate: boolean }>("get_settings")
-  .then((s) => {
-    autoUpdate = s.autoUpdate;
-    renderVersion();
-  })
-  .catch(() => {});
-window.addEventListener("jarlid:auto-update", (e) => {
-  autoUpdate = (e as CustomEvent<boolean>).detail;
-  renderVersion();
-});
+
+type Policy = "instant" | "afterSong" | "manualInstall" | "notifyOnly";
+interface UpdateStatus {
+  available: string | null;
+  staged: boolean;
+  armed: boolean;
+  policy: Policy;
+}
+let status: UpdateStatus = { available: null, staged: false, armed: false, policy: "afterSong" };
+
 function renderVersion() {
-  versionEl.classList.toggle("update", !!pendingVersion);
-  if (!pendingVersion) {
+  const v = status.available;
+  versionEl.classList.toggle("update", !!v);
+  if (!v) {
     versionEl.textContent = baseVersion;
     return;
   }
-  // Say what will happen and when. "update to vX" read like a button you had to press;
-  // when it is automatic it installs itself and the only question is when. Paused matters
-  // because a paused app is deliberately never restarted — "after this song" would be a
-  // lie. With automatic updates off, nothing happens until this is clicked, so it goes
-  // back to naming the action.
-  if (!autoUpdate) {
-    versionEl.textContent = `update to v${pendingVersion}`;
+  if (!status.staged) {
+    // Known about but not downloaded (notify-only, or a download that hasn't run yet).
+    versionEl.textContent = `v${v} available`;
     return;
   }
+  if (!status.armed) {
+    // Downloaded and waiting to be asked.
+    versionEl.textContent = `v${v} ready to install`;
+    return;
+  }
+  // Armed: say when. Paused matters because a paused app is deliberately never
+  // restarted, so "after this song" would be a lie.
   versionEl.textContent = lastPlayhead.paused
-    ? `updating to v${pendingVersion} when playback resumes`
-    : `updating to v${pendingVersion} after this song`;
+    ? `updating to v${v} when playback resumes`
+    : `updating to v${v} after this song`;
 }
+
 attachTip(versionEl, () => {
-  if (!pendingVersion) return "Click to check for updates";
-  return autoUpdate
-    ? "Installs on its own at the end of a song. Click to update now instead."
-    : "Click to install now. Automatic updates are off in Settings.";
+  const v = status.available;
+  if (!v) return "Click to check for updates";
+  if (!status.staged) return `Click to download v${v}`;
+  if (!status.armed) return "Click to install after this song";
+  return "Click to install now instead of waiting";
 });
-function flashVersion(text: string) {
-  versionEl.textContent = text;
-  setTimeout(() => {
-    if (!versionBusy) renderVersion();
-  }, 2200);
-}
+
 getVersion()
   .then((v) => {
     baseVersion = `v${v}`;
     renderVersion();
   })
   .catch(() => {});
-// An update has been downloaded and verified in the background; it installs on its own
-// at the next gap between songs. This is a notice, not a prompt — clicking only skips
-// the wait.
-listen<string>("app://update-staged", (e) => {
-  pendingVersion = e.payload;
+
+invoke<UpdateStatus>("update_status")
+  .then((s) => {
+    status = s;
+    renderVersion();
+  })
+  .catch(() => {});
+
+listen<UpdateStatus>("app://update-status", (e) => {
+  status = e.payload;
   renderVersion();
 });
-// The gap arrived and the process is about to be replaced. Whatever is painted now is
-// the last thing shown before the restart, so say something that explains the silence.
+
+// The last thing painted before the process is replaced, so it should explain the
+// silence that follows.
 listen<string>("app://update-installing", (e) => {
   versionBusy = true;
   versionEl.classList.add("update");
@@ -542,32 +546,28 @@ listen<string>("app://update-installing", (e) => {
 });
 listen<string>("app://update-failed", () => {
   versionBusy = false;
-  flashVersion("update failed");
+  versionEl.textContent = "update failed";
+  setTimeout(renderVersion, 2500);
 });
+
 versionEl.addEventListener("click", async () => {
   if (versionBusy) return;
   versionBusy = true;
+  const wasKnown = !!status.available;
+  versionEl.textContent = status.staged ? "installing…" : "checking…";
   try {
-    if (pendingVersion) {
-      // Already staged: this only forgoes waiting for the song to end.
-      versionEl.textContent = "installing…";
-      await invoke("install_update"); // restarts on success
-      versionBusy = false;
-      flashVersion("update failed");
+    status = await invoke<UpdateStatus>("update_action");
+    versionBusy = false;
+    if (!status.available && !wasKnown) {
+      versionEl.textContent = "up to date";
+      setTimeout(renderVersion, 2200);
     } else {
-      versionEl.textContent = "checking…";
-      const v = await invoke<string | null>("check_update");
-      versionBusy = false;
-      if (v) {
-        pendingVersion = v;
-        renderVersion();
-      } else {
-        flashVersion("up to date");
-      }
+      renderVersion();
     }
   } catch {
     versionBusy = false;
-    flashVersion(pendingVersion ? "update failed" : "check failed");
+    versionEl.textContent = "check failed";
+    setTimeout(renderVersion, 2200);
   }
 });
 $("skip").addEventListener("click", () =>

@@ -1139,20 +1139,57 @@ body.remote #remote-vol-wrap {
   line-height: 1.5;
   margin: 10px 0 0;
 }
-.set-check {
+.set-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  padding: 10px;
+  border-radius: 10px;
+}
+.set-radio:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.set-radio input {
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 2px 0 0;
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+/* Each option explains itself inline: the difference between "after this song" and
+   "immediately" is the whole decision, and a bare label doesn't carry it. */
+.set-radio-text {
+  display: block;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--faint);
+}
+.set-radio-text b {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 2px;
+}
+.set-row-inline {
   display: flex;
   align-items: center;
   gap: 10px;
-  cursor: pointer;
-  font-size: 0.92rem;
-  color: var(--fg);
 }
-.set-check input {
-  accent-color: var(--accent);
-  cursor: pointer;
-  margin: 0;
-  width: 16px;
-  height: 16px;
+#set-check-schedule,
+#set-check-time {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 0.86rem;
+  padding: 8px 10px;
+}
+#set-check-time[hidden] {
+  display: none;
 }
 .set-section + .set-section {
   margin-top: 28px;

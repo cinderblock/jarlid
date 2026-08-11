@@ -31,7 +31,8 @@ tauri-plugin-process = "2"
 # so no JS package or capability permission is needed).
 tauri-plugin-dialog = "2"
 # RFC3339 timestamp + date-stamped default filename for the export file.
-time = { version = "0.3", features = ["formatting"] }
+# local-offset: the daily update check is a wall-clock time, so it needs the local zone.
+time = { version = "0.3", features = ["formatting", "local-offset"] }
 tokio = { version = "1", features = ["time", "sync"] }
 if-addrs = "0.13"
 socket2 = "0.5"

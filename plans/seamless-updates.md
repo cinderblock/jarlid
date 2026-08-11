@@ -15,11 +15,17 @@ starts and it almost feels like nothing happened."*
 
 ## Decisions already made (don't re-ask)
 
-- **Fully automatic, with an off switch.** No prompt: download silently, restart at the
-  next song boundary, show a brief "updating…" note as it happens. Settings → Updates →
-  "Install updates automatically" turns it off (default ON — it is opt-*out*). The setting
-  lives in `app_config_dir/settings.json`, NOT `localStorage`, because the update loop
-  reads it from Rust long before the UI is involved.
+- **Four policies, not a checkbox.** The axes are *when do we download* and *when do we
+  install*, which a boolean cannot express. Settings → "When a new version is available":
+  `afterSong` (default), `instant`, `manualInstall` (download, then the first click
+  schedules it for the end of the song and a second means now), `notifyOnly` (no download).
+- **A separate check schedule:** never / 30 min / 4 h / 24 h / daily at a wall-clock time.
+  Daily is a clock time rather than an interval so the restart lands at a predictable hour.
+- Both live in `app_config_dir/settings.json`, NOT `localStorage`, because the update loop
+  reads them from Rust long before (and sometimes without) the UI being involved.
+- **State model:** *known* → *staged* → *armed*. The policy decides how far a new version
+  travels on its own; the badge walks the rest, one click per step. `armed` is deliberately
+  separate from `staged` — `manualInstall` downloads ahead of time but waits to be asked.
 - **Simple version first.** Ship staged-download + fire-at-boundary + quiet install, and
   live with the resulting gap before optimising further.
 - **Pre-buffered resume is DEFERRED** (see "Deferred" below) — the user chose to feel the
@@ -124,9 +130,9 @@ not a design choice to agonise over. Concretely:
 
 ## Guards (must not restart at a bad moment)
 
-- **Never when the Settings checkbox is off** — and the background loop does not even
-  download in that case. An explicit badge click still installs: a click is a request, not
-  automation.
+- **Never while unarmed** — which is how `manualInstall` and `notifyOnly` hold. Under
+  `notifyOnly` the background loop does not download at all. An explicit click waives it:
+  a click is a request, not automation.
 - **Never while an export is running.** `ExportCtl.running` already exists; check it.
 - **Never while paused.** Nothing is being interrupted, but a restart would come back
   *playing* and start music at someone who deliberately stopped it. Trade-off accepted: an
