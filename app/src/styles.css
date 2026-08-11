@@ -726,12 +726,46 @@ body.remote #remote-vol-wrap {
   flex-direction: column;
   padding: 2vh 0;
 }
+.lyrics-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+/* Deliberately almost invisible until wanted: the now-playing screen is for listening,
+   and an always-bright edit affordance would compete with the words. */
+.lyric-edit {
+  background: none;
+  border: none;
+  padding: 2px;
+  line-height: 0;
+  color: var(--faint);
+  opacity: 0.45;
+  cursor: pointer;
+  transition: opacity 0.15s, color 0.15s;
+}
+.lyric-edit svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.lyrics-pane:hover .lyric-edit {
+  opacity: 0.8;
+}
+.lyric-edit:hover,
+.lyric-edit:focus-visible {
+  opacity: 1;
+  color: var(--fg);
+}
 #lyrics-status {
   text-transform: uppercase;
   letter-spacing: 0.14em;
   font-size: 0.7rem;
   color: var(--faint);
-  margin-bottom: 14px;
   transform-origin: left center;
 }
 #lyrics-status.flash {
@@ -790,6 +824,34 @@ body.remote #remote-vol-wrap {
   color: var(--faint);
   font-weight: 500;
   font-size: 1.1rem;
+}
+
+/* The intro countdown. Stands in for the line that doesn't exist yet, so the pane has
+   something to centre on before the first timestamp — and shows the wait draining, which
+   an empty pane cannot. Sized like a line so the scroll lands where a line would. */
+.lyric-intro {
+  width: min(190px, 45%);
+  height: 5px;
+  margin: 16px 0;
+  border-radius: 999px;
+  background: rgba(var(--wash), 0.14);
+  overflow: hidden;
+  transition: opacity 0.5s ease;
+}
+.lyric-intro i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+  transform: scaleX(0);
+  transform-origin: left center;
+  /* The playhead ticks about four times a second; without this the bar steps. */
+  transition: transform 0.25s linear;
+}
+/* Once the words start, the countdown has said everything it has to say. */
+.lyric-intro.past {
+  opacity: 0;
 }
 
 /* ---- history detail modal ---- */
@@ -905,6 +967,13 @@ body.remote #remote-vol-wrap {
     text-align: center;
     padding-top: 0;
   }
+  .lyrics-head {
+    justify-content: center;
+  }
+  /* text-align cannot centre a fixed-width block */
+  .lyric-intro {
+    margin-inline: auto;
+  }
   #lyrics {
     padding: 22vh 0;
   }
@@ -965,7 +1034,8 @@ body.remote #remote-vol-wrap {
    station at a time, so it needs room for a list, progress and results, and it
    must not vanish because a click landed outside a popover. */
 #stations-page,
-#settings-page {
+#settings-page,
+#lyric-page {
   position: fixed;
   inset: 0;
   z-index: 8;
@@ -975,7 +1045,8 @@ body.remote #remote-vol-wrap {
   backdrop-filter: blur(24px);
 }
 #stations-page[hidden],
-#settings-page[hidden] {
+#settings-page[hidden],
+#lyric-page[hidden] {
   display: none;
 }
 .page-head {
@@ -1360,6 +1431,17 @@ input[type="checkbox"]:focus-visible {
   color: var(--faint);
   cursor: default;
 }
+/* The one action a row of buttons is actually about. */
+.btn.primary:not(:disabled) {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.btn.primary:not(:disabled):hover {
+  background: var(--accent);
+  color: var(--on-accent);
+  filter: brightness(1.08);
+}
 
 .field {
   background: rgba(var(--wash), 0.08);
@@ -1550,4 +1632,161 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
 }
 .sp-row:has(.sp-why) {
   flex-wrap: wrap;
+}
+
+/* ---- lyric editor -------------------------------------------------------
+   A full page like Stations and Settings: retiming a song means watching a list
+   scroll past while the track plays, which wants the whole window. */
+#le-track {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#lyric-page .page-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+#lyric-page .set-section {
+  max-width: 760px;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#le-text {
+  flex: 1;
+  min-height: 240px;
+  resize: none;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  padding: 12px 14px;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+#le-transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+#le-clock {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.95rem;
+  color: var(--dim);
+}
+#le-lines {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid rgba(var(--wash), 0.08);
+  padding-top: 8px;
+}
+.le-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 3px 6px;
+  border-radius: 7px;
+  color: var(--faint);
+}
+.le-line.stamped {
+  color: var(--dim);
+}
+/* The line you are about to stamp. It has to be findable at a glance while the song
+   is running, so it gets the accent rather than a subtle shade. */
+.le-line.at {
+  background: rgba(var(--wash), 0.1);
+  color: var(--fg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.le-time {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+  flex: none;
+  width: 5.2em;
+  text-align: right;
+}
+.le-line.stamped .le-time {
+  color: var(--accent);
+}
+.le-time:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.le-words-cell {
+  min-width: 0;
+  font-size: 0.9rem;
+}
+#le-status {
+  font-size: 0.8rem;
+  color: var(--faint);
+  flex: 1;
+  min-width: 0;
+  min-height: 1em;
+}
+#le-status.ok {
+  color: var(--accent);
+}
+#le-status.err {
+  color: var(--bad);
+}
+
+/* Publishing and flagging are public and one-way, so they interrupt rather than
+   happening on a stray click. */
+#le-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(3px);
+}
+#le-confirm[hidden] {
+  display: none;
+}
+.le-confirm-card {
+  max-width: 440px;
+  padding: 22px 24px;
+  border-radius: 16px;
+  background: var(--page);
+  border: 1px solid rgba(var(--wash), 0.12);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+.le-confirm-card h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+}
+.le-confirm-card p {
+  margin: 0 0 14px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.le-confirm-card .field {
+  width: 100%;
+  padding: 9px 12px;
+  margin-bottom: 14px;
+}
+.le-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

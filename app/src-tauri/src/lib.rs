@@ -1,6 +1,7 @@
 mod diagnostics;
 mod export;
 mod import;
+mod lyrics;
 mod native;
 mod settings;
 #[cfg(windows)]
@@ -8,207 +9,7 @@ mod thumbbar;
 mod updates;
 mod upnp;
 
-use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Listener, Manager};
-
-#[derive(Serialize, Deserialize, Default)]
-struct Lyrics {
-    synced: Option<String>,
-    plain: Option<String>,
-    source: String,
-}
-
-/// Disk cache for LRCLIB responses (the service is slow). One JSON file per
-/// track under the app cache dir, keyed by FNV-1a of artist|track|album.
-fn lyrics_cache_path(app: &tauri::AppHandle, key: &str) -> Option<std::path::PathBuf> {
-    let dir = app.path().app_cache_dir().ok()?.join("lyrics");
-    std::fs::create_dir_all(&dir).ok()?;
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in key.bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    Some(dir.join(format!("{h:016x}.json")))
-}
-
-/// Collapse a string that is exactly one part repeated 2-4 times (Pandora's
-/// marquee clones its content while scrolling: "AbcAbcAbc" -> "Abc").
-fn undouble(s: &str) -> String {
-    let t = s.trim();
-    let n = t.len();
-    for k in (2..=4).rev() {
-        if n >= k && n % k == 0 {
-            let part = &t[..n / k];
-            if !part.is_empty() && t.as_bytes().chunks(n / k).all(|c| c == part.as_bytes()) {
-                return undouble(part);
-            }
-        }
-    }
-    t.to_string()
-}
-
-/// Strip trailing parentheticals / descriptors that hurt matching, e.g.
-/// "Song (I Just Wanna Fall in Love)" -> "Song", "Song - Single" -> "Song".
-fn simplify_title(s: &str) -> String {
-    let mut t = s.to_string();
-    if let Some(i) = t.find('(') {
-        t.truncate(i);
-    }
-    if let Some(i) = t.find(" - ") {
-        t.truncate(i);
-    }
-    t.trim().to_string()
-}
-
-/// Fetch lyrics from LRCLIB. Tries an exact `get`, then progressively looser
-/// `search`es, choosing the best synced result by closest duration.
-#[tauri::command]
-async fn fetch_lyrics(
-    app: tauri::AppHandle,
-    artist: String,
-    track: String,
-    album: Option<String>,
-    duration: Option<f64>,
-) -> Result<Lyrics, String> {
-    let artist = undouble(&artist);
-    let track = undouble(&track);
-    let album = album.map(|a| undouble(&a));
-
-    // Cache first — LRCLIB is slow and lyrics for a given track don't change.
-    let cache_key = format!(
-        "{}|{}|{}",
-        artist.to_lowercase(),
-        track.to_lowercase(),
-        album.as_deref().unwrap_or("").to_lowercase()
-    );
-    let cache_file = lyrics_cache_path(&app, &cache_key);
-    if let Some(ref p) = cache_file {
-        if let Ok(bytes) = std::fs::read(p) {
-            if let Ok(mut hit) = serde_json::from_slice::<Lyrics>(&bytes) {
-                hit.source = format!("{} (cached)", hit.source);
-                return Ok(hit);
-            }
-        }
-    }
-
-    let client = reqwest::Client::builder()
-        .user_agent("PandoraDesktop (personal; https://github.com/cinderblock/pandora-desktop)")
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    // 1) exact match via /get (needs duration)
-    if let Some(dur) = duration {
-        let mut q: Vec<(&str, String)> = vec![
-            ("artist_name", artist.clone()),
-            ("track_name", track.clone()),
-            ("duration", (dur.round() as i64).to_string()),
-        ];
-        if let Some(al) = album.clone() {
-            if !al.is_empty() {
-                q.push(("album_name", al));
-            }
-        }
-        if let Ok(resp) = client
-            .get("https://lrclib.net/api/get")
-            .query(&q)
-            .send()
-            .await
-        {
-            if resp.status().is_success() {
-                if let Ok(v) = resp.json::<serde_json::Value>().await {
-                    return Ok(cache_and_return(from_lrclib(&v, "lrclib/get"), &cache_file));
-                }
-            }
-        }
-    }
-
-    // 2) search — full title first, then simplified title
-    let mut candidates: Vec<(&str, String)> = vec![("full", track.clone())];
-    let simple = simplify_title(&track);
-    if simple != track && !simple.is_empty() {
-        candidates.push(("simple", simple));
-    }
-    for (label, t) in candidates {
-        if let Ok(resp) = client
-            .get("https://lrclib.net/api/search")
-            .query(&[("track_name", t.as_str()), ("artist_name", artist.as_str())])
-            .send()
-            .await
-        {
-            if resp.status().is_success() {
-                if let Ok(arr) = resp.json::<serde_json::Value>().await {
-                    if let Some(best) = pick_best(&arr, duration) {
-                        return Ok(cache_and_return(
-                            from_lrclib(best, &format!("lrclib/search/{label}")),
-                            &cache_file,
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(Lyrics {
-        source: "none".into(),
-        ..Default::default()
-    })
-}
-
-/// From a search-results array, prefer entries with synced lyrics and the closest
-/// duration to what's playing.
-fn pick_best<'a>(
-    arr: &'a serde_json::Value,
-    duration: Option<f64>,
-) -> Option<&'a serde_json::Value> {
-    let items = arr.as_array()?;
-    if items.is_empty() {
-        return None;
-    }
-    let target = duration.unwrap_or(0.0);
-    let score = |v: &serde_json::Value| -> (i32, f64) {
-        let has_synced = v
-            .get("syncedLyrics")
-            .and_then(|x| x.as_str())
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        let dur = v.get("duration").and_then(|x| x.as_f64()).unwrap_or(0.0);
-        let dur_gap = if target > 0.0 && dur > 0.0 {
-            (dur - target).abs()
-        } else {
-            9999.0
-        };
-        // synced first (lower rank better), then smallest duration gap
-        (if has_synced { 0 } else { 1 }, dur_gap)
-    };
-    items.iter().min_by(|a, b| {
-        let (sa, ga) = score(a);
-        let (sb, gb) = score(b);
-        sa.cmp(&sb)
-            .then(ga.partial_cmp(&gb).unwrap_or(std::cmp::Ordering::Equal))
-    })
-}
-
-/// Persist found lyrics to the cache (misses are not cached so they retry).
-fn cache_and_return(l: Lyrics, path: &Option<std::path::PathBuf>) -> Lyrics {
-    if l.synced.is_some() || l.plain.is_some() {
-        if let Some(p) = path {
-            if let Ok(json) = serde_json::to_vec(&l) {
-                let _ = std::fs::write(p, json);
-            }
-        }
-    }
-    l
-}
-
-fn from_lrclib(v: &serde_json::Value, source: &str) -> Lyrics {
-    let s = v.get("syncedLyrics").and_then(|x| x.as_str());
-    let p = v.get("plainLyrics").and_then(|x| x.as_str());
-    Lyrics {
-        synced: s.filter(|x| !x.is_empty()).map(|x| x.to_string()),
-        plain: p.filter(|x| !x.is_empty()).map(|x| x.to_string()),
-        source: source.to_string(),
-    }
-}
 
 /// Fire-and-forget transport for callers that aren't async (media keys, taskbar toolbar).
 ///
@@ -687,7 +488,11 @@ pub fn run() {
             export::cancel_export,
             export::export_stations,
             import::import_preview,
-            fetch_lyrics,
+            lyrics::fetch_lyrics,
+            lyrics::save_lyrics_override,
+            lyrics::clear_lyrics_override,
+            lyrics::publish_lyrics,
+            lyrics::flag_lyrics,
             native::native_account,
             settings::get_settings,
             settings::set_settings,

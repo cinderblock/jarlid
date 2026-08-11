@@ -170,6 +170,75 @@
       </div>
     </div>
 
+    <!-- Lyric editor. LRCLIB has no edit or delete: a correction is a republish of the
+         same record, and the four metadata fields are its identity. So the record being
+         edited is shown, and Publish reuses its wording rather than Pandora's. -->
+    <div id="lyric-page" hidden>
+      <header class="page-head">
+        <h2>Lyrics</h2>
+        <div id="le-track"></div>
+        <button id="le-close" class="page-close" aria-label="Close">×</button>
+      </header>
+
+      <div class="page-body">
+        <div class="segmented" id="le-tabs" role="radiogroup" aria-label="What to edit">
+          <label class="seg">
+            <input type="radio" name="le-mode" value="words" checked />
+            <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h9"/></svg>
+            <span>Words</span>
+          </label>
+          <label class="seg">
+            <input type="radio" name="le-mode" value="timing" />
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+            <span>Timing</span>
+          </label>
+        </div>
+
+        <section id="le-words" class="set-section">
+          <textarea id="le-text" class="field" spellcheck="false" rows="18"></textarea>
+          <p class="set-note" id="le-words-note"></p>
+        </section>
+
+        <section id="le-timing" class="set-section" hidden>
+          <div id="le-transport">
+            <button id="le-stamp" class="btn primary">Stamp line</button>
+            <button id="le-back" class="btn">Back one</button>
+            <button id="le-playpause" class="btn">Pause</button>
+            <button id="le-restart" class="btn">Restart track</button>
+            <span id="le-clock">0:00</span>
+          </div>
+          <p class="set-note">Let the song play and stamp each line as it starts singing.
+            <b>Space</b> stamps the highlighted line and moves on; <b>Backspace</b> steps back
+            one. Stamps land a third of a second before your tap, to cover reaction time.</p>
+          <div id="le-lines"></div>
+        </section>
+      </div>
+
+      <footer class="page-foot">
+        <div id="le-status"></div>
+        <div class="page-foot-actions">
+          <button id="le-flag" class="btn">Report these lyrics…</button>
+          <button id="le-revert" class="btn" hidden>Discard my edit</button>
+          <button id="le-publish" class="btn">Publish to LRCLIB…</button>
+          <button id="le-save" class="btn primary">Save</button>
+        </div>
+      </footer>
+
+      <!-- Publishing and flagging are public, one-way actions, so they get an explicit
+           confirm rather than firing on the first click. -->
+      <div id="le-confirm" hidden>
+        <div class="le-confirm-card">
+          <h3 id="le-confirm-title"></h3>
+          <p id="le-confirm-msg"></p>
+          <input id="le-reason" class="field" type="text" placeholder="What is wrong with them? (optional)" hidden />
+          <div class="le-confirm-actions">
+            <button id="le-confirm-cancel" class="btn">Cancel</button>
+            <button id="le-confirm-go" class="btn primary"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="hist-modal" hidden>
       <div class="hm-card">
         <img id="hm-art" alt="Album art" />
@@ -262,7 +331,15 @@
       </section>
 
       <section class="lyrics-pane">
-        <div id="lyrics-status">Lyrics</div>
+        <!-- The status and the edit button are siblings in a row rather than the button
+             living inside the status: #lyrics-status animates with a scale() when the
+             sync offset is nudged, and the button must not be dragged along with it. -->
+        <div class="lyrics-head">
+          <div id="lyrics-status">Lyrics</div>
+          <button id="lyrics-edit" class="lyric-edit" aria-label="Edit lyrics" hidden>
+            <svg viewBox="0 0 24 24"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>
+          </button>
+        </div>
         <div id="lyrics"></div>
       </section>
     </main>

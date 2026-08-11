@@ -4,6 +4,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import * as stationsPage from "./stations-page";
 import type { StationInfo } from "./stations-page";
 import * as settingsPage from "./settings-page";
+import * as lyricEditor from "./lyric-editor";
+import type { Lyrics } from "./lyric-editor";
 
 // ---- types -------------------------------------------------------------
 interface NowPlaying {
@@ -23,11 +25,6 @@ interface Playhead {
   duration: number;
   paused: boolean;
   volume: number;
-}
-interface Lyrics {
-  synced: string | null;
-  plain: string | null;
-  source: string;
 }
 interface LyricLine {
   t: number;
@@ -71,6 +68,7 @@ const thumbUpBtn = $("thumbUp");
 const thumbDownBtn = $("thumbDown");
 const lyricsEl = $("lyrics");
 const lyricsStatus = $("lyrics-status");
+const lyricsEditBtn = $("lyrics-edit");
 
 const fmt = (s: number) => {
   if (!isFinite(s) || s < 0) s = 0;
@@ -82,13 +80,21 @@ const fmt = (s: number) => {
 // ---- state -------------------------------------------------------------
 let currentKey = "";
 let syncedLines: LyricLine[] | null = null;
+// What the lyrics pane is currently showing, and the track naming it was fetched under —
+// both needed to edit, and to file the edit against the right track.
+let lastLyrics: Lyrics | null = null;
+let lastMeta = { title: "", artist: "", album: "" };
 // remote (network player) mode
 let remote: RemoteState | null = null;
 let remoteAt = 0; // Date.now() when the last remote state arrived
 let remoteMode = false;
 let lastLocalPlayingAt = 0;
 let lastLocalNp: NowPlaying | null = null;
-let activeLineIdx = -1;
+/// `activeLineIdx` before anything has been highlighted. It cannot be -1, because -1 is
+/// a real state now — "playing, but the first line hasn't come round yet" — and the
+/// highlighter skips work when the index is unchanged.
+const NO_LINE = -2;
+let activeLineIdx = NO_LINE;
 let lastPlayhead: Playhead = { position: 0, duration: 0, paused: true, volume: 1 };
 
 // ---- LRC parsing -------------------------------------------------------
@@ -112,9 +118,28 @@ function parseLrc(lrc: string): LyricLine[] {
   return out;
 }
 
+// Songs rarely start singing at 0:00, and until the first timestamp there is no line to
+// highlight — so the pane had nothing to scroll to, sat at the top, and then jumped when
+// the first line finally landed. This synthetic row is the scroll target for that gap,
+// and it doubles as a countdown so the wait doesn't read as "the lyrics didn't load".
+// It is deliberately NOT a `.line`: highlightLine indexes `.line` nodes positionally.
+const INTRO_MIN = 2;
+let introEl: HTMLElement | null = null;
+let introBar: HTMLElement | null = null;
+
 function renderSyncedLyrics(lines: LyricLine[]) {
   lyricsEl.innerHTML = "";
   lyricsEl.classList.add("synced");
+  introEl = introBar = null;
+
+  if ((lines[0]?.t ?? 0) >= INTRO_MIN) {
+    introEl = document.createElement("div");
+    introEl.className = "lyric-intro";
+    introBar = document.createElement("i");
+    introEl.appendChild(introBar);
+    lyricsEl.appendChild(introEl);
+  }
+
   lines.forEach((ln, i) => {
     const div = document.createElement("div");
     div.className = "line";
@@ -127,6 +152,7 @@ function renderSyncedLyrics(lines: LyricLine[]) {
 function renderPlainLyrics(text: string) {
   lyricsEl.classList.remove("synced");
   lyricsEl.innerHTML = "";
+  introEl = introBar = null;
   for (const raw of text.split(/\r?\n/)) {
     const div = document.createElement("div");
     div.className = "line plain";
@@ -146,6 +172,15 @@ function highlightLine(position: number) {
     if (syncedLines[i].t <= p + 0.15) idx = i;
     else break;
   }
+
+  // The countdown has to move on every tick, so it is updated before the
+  // nothing-changed shortcut below.
+  if (introEl && introBar) {
+    introEl.classList.toggle("past", idx >= 0);
+    const until = syncedLines[0].t;
+    introBar.style.transform = `scaleX(${Math.max(0, Math.min(1, p / until))})`;
+  }
+
   if (idx === activeLineIdx) return;
   activeLineIdx = idx;
   const nodes = lyricsEl.querySelectorAll<HTMLElement>(".line");
@@ -154,7 +189,9 @@ function highlightLine(position: number) {
     n.classList.toggle("past", i < idx);
     n.classList.toggle("active", i === idx);
   });
-  const active = nodes[idx];
+  // Before the first line, the countdown row is what the pane centres on — otherwise
+  // there is no target and the first line arrives with a jump.
+  const active = idx < 0 ? introEl : nodes[idx];
   if (active) active.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
@@ -188,7 +225,7 @@ async function onNowPlaying(np: NowPlaying) {
   if (key !== currentKey) {
     currentKey = key;
     syncedLines = null;
-    activeLineIdx = -1;
+    activeLineIdx = NO_LINE;
     syncOffset = parseFloat(localStorage.getItem(`syncoff:${key}`) || "0") || 0;
     pushHistory(np);
     await loadLyrics(np);
@@ -378,26 +415,54 @@ async function loadLyricsFor(
     // Ignore if the track changed while we were fetching.
     if (key !== currentKey) return;
 
-    if (res.synced) {
-      syncedLines = parseLrc(res.synced);
-      renderSyncedLyrics(syncedLines);
-      lyricsStatus.textContent = "Synced lyrics";
-      activeLineIdx = -1;
-      highlightLine(lastPlayhead.position);
-    } else if (res.plain) {
-      syncedLines = null;
-      renderPlainLyrics(res.plain);
-      lyricsStatus.textContent = "Lyrics";
-    } else {
-      syncedLines = null;
-      lyricsEl.innerHTML = `<div class="line empty">No lyrics found</div>`;
-      lyricsStatus.textContent = "Lyrics";
-    }
+    lastMeta = meta;
+    applyLyrics(res);
   } catch (e) {
     lyricsEl.innerHTML = `<div class="line empty">Lyrics unavailable</div>`;
     lyricsStatus.textContent = "Lyrics";
   }
 }
+
+/// Paint a set of lyrics into the pane. Separate from fetching because the editor hands
+/// back replacements that never went near the network.
+function applyLyrics(res: Lyrics) {
+  lastLyrics = res;
+  // Even "nothing found" is worth an edit button — that is exactly when contributing
+  // the words is most useful.
+  lyricsEditBtn.hidden = false;
+  const edited = res.overridden ? " · edited" : "";
+
+  if (res.synced) {
+    syncedLines = parseLrc(res.synced);
+    renderSyncedLyrics(syncedLines);
+    lyricsStatus.textContent = `Synced lyrics${edited}`;
+    activeLineIdx = NO_LINE;
+    highlightLine(lastPlayhead.position);
+  } else if (res.plain) {
+    syncedLines = null;
+    renderPlainLyrics(res.plain);
+    lyricsStatus.textContent = `Lyrics${edited}`;
+  } else {
+    syncedLines = null;
+    lyricsEl.innerHTML = `<div class="line empty">No lyrics found</div>`;
+    lyricsStatus.textContent = "Lyrics";
+  }
+}
+
+lyricsEditBtn.addEventListener("click", () => {
+  if (!lastLyrics) return;
+  lyricEditor.open({
+    meta: lastMeta,
+    lyrics: lastLyrics,
+    playhead: () => lastPlayhead,
+    transport: (c) => void cmd(c),
+    canTransport: !remoteMode,
+    onApplied: applyLyrics,
+  });
+});
+attachTip(lyricsEditBtn, () =>
+  lastLyrics?.overridden ? "Edit lyrics (showing your local edit)" : "Fix or time these lyrics"
+);
 
 // ---- playhead ----------------------------------------------------------
 // Playing/paused is derived from whether the position is actually moving —
@@ -798,7 +863,7 @@ function nudgeSync(delta: number) {
   }
   syncOffset = Math.round((syncOffset + delta) * 100) / 100;
   localStorage.setItem(`syncoff:${currentKey}`, String(syncOffset));
-  activeLineIdx = -1; // force re-highlight
+  activeLineIdx = NO_LINE; // force re-highlight
   highlightLine(lastPlayhead.position);
   flashStatus(
     syncOffset === 0
@@ -807,7 +872,11 @@ function nudgeSync(delta: number) {
   );
 }
 window.addEventListener("keydown", (e) => {
-  if ((e.target as HTMLElement).tagName === "INPUT") return;
+  const tag = (e.target as HTMLElement).tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") return;
+  // The editor binds Space and Backspace, and nudging the offset of lyrics you are in
+  // the middle of retiming makes no sense.
+  if (lyricEditor.isOpen()) return;
   if (e.key === "[" || e.code === "BracketLeft") nudgeSync(-0.25);
   else if (e.key === "]" || e.code === "BracketRight") nudgeSync(0.25);
 });
@@ -840,7 +909,7 @@ function renderRemote(r: RemoteState) {
   if (r.art) setArt(r.art, "");
   currentKey = key;
   syncedLines = null;
-  activeLineIdx = -1;
+  activeLineIdx = NO_LINE;
   syncOffset = parseFloat(localStorage.getItem(`syncoff:${key}`) || "0") || 0;
   loadLyricsFor({ title: r.title, artist: r.artist, album: r.album }, r.duration || null, key);
 }

@@ -23,6 +23,8 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Proof-of-work for LRCLIB's publish/flag tokens (see lyrics::solve_challenge).
+sha2 = "0.10"
 souvlaki = "0.8"
 tauri-plugin-window-state = "2"
 tauri-plugin-updater = "2"
@@ -40,6 +42,11 @@ socket2 = "0.5"
 engine = { path = "../../crates/engine" }
 pandora = { path = "../../crates/pandora" }
 tauri-plugin-single-instance = "2.4.3"
+
+# The LRCLIB publish token costs ~2^24 SHA-256 hashes. Unoptimised that is minutes
+# rather than seconds, which would make publishing unusable in a `tauri dev` build.
+[profile.dev.package.sha2]
+opt-level = 3
 
 [target."cfg(windows)".dependencies]
 resvg = { version = "0.45", default-features = false }
