@@ -93,7 +93,32 @@ genuinely restarts. Setting that expectation honestly matters more than oversell
    blocking the handover if momentarily contended); and this matters more than it first
    appears, because `advance()` has already started the *next* track by the time
    `TrackEnded` reaches us — so there really is audio playing at the moment we install.
-8. [ ] Verify end-to-end — see the note below on why that is awkward.
+8. [x] **VERIFIED END-TO-END 2026-08-10** — v1.3.2 updated itself to v1.3.3 with no user
+   interaction at all. See the evidence below.
+
+## ✅ Verified in the wild (2026-08-10)
+
+A running v1.3.2 took v1.3.3 entirely on its own, observed by polling the process every
+20s from outside the app:
+
+    [17:28:10] 1.3.2 pid=22220 started=16:43:15
+    [17:45:12] NOT RUNNING
+    [17:45:32] 1.3.3 pid=15300 started=17:45:12
+
+What the timing establishes, beyond "it updated":
+
+- v1.3.2 launched 16:43 and checks every 30 min, so its checks fall at ~16:43 / ~17:13 /
+  ~17:43. v1.3.3 was published ~17:27, so the **17:43 check** is the one that found it.
+- The install landed at **17:45** — roughly two minutes later. That is the important
+  number: `MAX_WAIT` is six minutes, so the backstop cannot have fired. The only other
+  trigger is `Event::TrackEnded`, which means **the track-boundary path is what fired**.
+  A mid-song install would have shown up as a restart within seconds of the check.
+- Downtime was under the 20s poll granularity — the replacement process reports
+  `started=17:45:12`, the same second the old one was gone. NSIS quiet install plus
+  relaunch is fast; the earlier 7–17s estimate was pessimistic.
+- The app came back healthy (responding, 40 threads) and resumed its station.
+
+No prompt, no click, no dialog. Exactly the intended behaviour.
 
 ## ⚠️ How this can (and cannot) be verified
 
