@@ -50,10 +50,16 @@ anywhere in it.
   Re-importing is not built yet — and note Pandora only accepts a thumb for a track it has just
   served you, so thumbs will only ever be restorable opportunistically; seeds and stations
   restore cleanly.
-- **Settings**: which account is signed in, and a way to sign out (which clears the saved
-  password from the Windows Credential Manager).
-- **Auto-updates**: checks GitHub Releases (startup + every 4 h) and installs signed updates
-  with one click from an in-app banner.
+- **Settings**: which account is signed in and a way to sign out (which clears the saved
+  password from the Windows Credential Manager), plus how updates should arrive.
+- **Updates that land between songs**: the installer is downloaded and signature-verified in
+  the background, then installed in the gap *after* a track rather than through the middle
+  of one. Jarlid restarts itself and picks the station back up, so an update costs a
+  slightly longer pause rather than an interruption. You choose the behaviour — install
+  after the current song (default), install immediately, download but ask first, or just be
+  told a version exists — and how often to look, from every 30 minutes to once a day at a
+  wall-clock hour you are not listening at. It will not restart during a station export,
+  while a network player owns playback, or while paused.
 - Full station collection searchable in the picker; Cover-Flow-style recently-played gallery;
   WiiM volume slider in remote mode; window position/size persist across launches (kill-safe).
 
