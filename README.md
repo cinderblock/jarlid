@@ -50,8 +50,11 @@ anywhere in it.
   Re-importing is not built yet — and note Pandora only accepts a thumb for a track it has just
   served you, so thumbs will only ever be restorable opportunistically; seeds and stations
   restore cleanly.
-- **Settings**: which account is signed in and a way to sign out (which clears the saved
-  password from the Windows Credential Manager), plus how updates should arrive.
+- **Settings**: light, dark, or follow Windows (the window frame follows too, and "system"
+  keeps following when Windows switches at sunset); which account is signed in and a way to
+  sign out (which clears the saved password from the Windows Credential Manager); and how
+  updates should arrive. Every control on the page is drawn by the app rather than by the
+  platform, so the dropdowns and radios belong to the same UI as everything else.
 - **Updates that land between songs**: the installer is downloaded and signature-verified in
   the background, then installed in the gap *after* a track rather than through the middle
   of one. Jarlid restarts itself and picks the station back up, so an update costs a

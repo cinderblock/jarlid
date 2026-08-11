@@ -2,6 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Resolve the theme before the first paint. Everything else about settings is
+         read from Rust, but that is a round trip, and a light-theme user would watch
+         the app open dark and then flip. The webview's localStorage is a cache of the
+         stored preference; settings.json is still what decides (see theme.ts). -->
+    <script>
+      try {
+        var pref = localStorage.getItem("jarlid.theme") || "system";
+        document.documentElement.dataset.theme =
+          pref === "system"
+            ? matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light"
+            : pref;
+      } catch (e) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    </script>
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Jarlid</title>
@@ -58,9 +75,9 @@
       <footer class="page-foot">
         <div id="sp-status"></div>
         <div class="page-foot-actions">
-          <button id="sp-import">Import…</button>
-          <button id="sp-export" disabled>Export…</button>
-          <button id="sp-cancel" hidden>Cancel</button>
+          <button id="sp-import" class="btn">Import…</button>
+          <button id="sp-export" class="btn" disabled>Export…</button>
+          <button id="sp-cancel" class="btn" hidden>Cancel</button>
         </div>
       </footer>
     </div>
@@ -72,9 +89,32 @@
       </header>
       <div class="page-body">
         <section class="set-section">
+          <h3>Appearance</h3>
+          <div class="segmented" id="set-theme" role="radiogroup" aria-label="Theme">
+            <label class="seg">
+              <input type="radio" name="theme" value="system" />
+              <svg viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8.5 21h7M12 17v4"/></svg>
+              <span>System</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="theme" value="light" />
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.6M12 19.4V22M2 12h2.6M19.4 12H22M4.9 4.9l1.9 1.9M17.2 17.2l1.9 1.9M19.1 4.9l-1.9 1.9M6.8 17.2l-1.9 1.9"/></svg>
+              <span>Light</span>
+            </label>
+            <label class="seg">
+              <input type="radio" name="theme" value="dark" />
+              <svg viewBox="0 0 24 24"><path d="M20.5 14.6A8.6 8.6 0 0 1 9.4 3.5a8.6 8.6 0 1 0 11.1 11.1z"/></svg>
+              <span>Dark</span>
+            </label>
+          </div>
+          <p class="set-note">System follows the Windows app-colour setting, including when
+            Windows switches it for you. The window frame follows too.</p>
+        </section>
+
+        <section class="set-section">
           <h3>Account</h3>
           <div id="set-account" class="set-row">Checking…</div>
-          <button id="set-signout">Sign out</button>
+          <button id="set-signout" class="btn">Sign out</button>
           <p class="set-note">Your password is stored in the Windows Credential Manager,
             encrypted for your user. Signing out removes it from this machine.</p>
         </section>
@@ -118,15 +158,11 @@
 
         <section class="set-section">
           <h3>Check for updates</h3>
+          <!-- The options live in settings-page.ts, not here: an interval this build
+               doesn't offer still has to be shown truthfully. -->
           <div class="set-row-inline">
-            <select id="set-check-schedule">
-              <option value="never">Never</option>
-              <option value="30">Every 30 minutes</option>
-              <option value="240">Every 4 hours</option>
-              <option value="1440">Every 24 hours</option>
-              <option value="daily">Once a day, at…</option>
-            </select>
-            <input id="set-check-time" type="time" value="03:00" hidden />
+            <div class="select" id="set-check-schedule"></div>
+            <input id="set-check-time" class="field" type="time" value="03:00" hidden />
           </div>
           <p class="set-note">A daily check uses the clock rather than an interval, so you
             can put the restart at an hour you are not listening.</p>

@@ -96,11 +96,29 @@ fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
     (h < 24 && m < 60).then_some((h, m))
 }
 
+/// Which colours the app draws itself in.
+///
+/// Nothing in Rust reads this — the webview does the painting — but it lives here
+/// with the rest of the settings so there is one file that *is* the preferences,
+/// rather than one file and a webview storage bucket that has to agree with it.
+/// The webview keeps a copy in `localStorage` purely so it can paint the first
+/// frame without waiting for a round trip; this is what decides.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum Theme {
+    /// Follow the Windows app-colour setting, and keep following it when it changes.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub update_policy: Policy,
     pub check_schedule: CheckSchedule,
+    pub theme: Theme,
 }
 
 /// Cached so the update loop can read settings without touching disk every tick.
@@ -236,7 +254,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30}}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system"}"#
         );
 
         let daily = Settings {
@@ -244,6 +262,7 @@ mod tests {
             check_schedule: CheckSchedule::DailyAt {
                 time: "03:30".into(),
             },
+            theme: Theme::Light,
         };
         let text = serde_json::to_string(&daily).unwrap();
         assert!(text.contains(r#""updatePolicy":"notifyOnly""#), "{text}");
@@ -261,6 +280,9 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"updatePolicy":"instant"}"#).unwrap();
         assert_eq!(s.update_policy, Policy::Instant);
         assert_eq!(s.check_schedule, CheckSchedule::default());
+        // Written before the theme setting existed: follow the system, as a fresh
+        // install would, rather than refusing to load the file.
+        assert_eq!(s.theme, Theme::System);
 
         let empty: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, Settings::default());

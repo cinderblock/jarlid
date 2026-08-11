@@ -1,13 +1,93 @@
+/* ---- theme -------------------------------------------------------------
+   Two themes from one set of rules. `--wash` is the trick that makes it cheap:
+   almost every surface here is a translucent overlay on the blurred album art,
+   so flipping the overlay's *ink* from white to near-black converts the whole
+   UI while keeping the per-surface alphas the original design was tuned with.
+
+   `data-theme` on <html> is always the RESOLVED theme (dark or light) — the
+   "system" preference is resolved in theme.ts, so CSS never has to duplicate
+   these blocks under a media query. It is set by an inline script in index.html
+   before first paint, so a light-theme user never sees a dark flash.
+
+   Shadows are the one thing the wash flip can't carry: black at 0.55 reads as
+   dirt on a light surface, so they get their own three tokens. */
 :root {
+  color-scheme: dark;
+
+  --wash: 255, 255, 255;
+
+  --bg: #0a0a0c;
+  --scrim: 10, 10, 12;
+  --page: rgba(14, 14, 18, 0.96);
+  --panel: rgba(22, 22, 28, 0.92);
+  --glass: rgba(20, 20, 24, 0.7);
+  --overlay: rgba(8, 8, 10, 0.55);
+
   --fg: #f4f4f6;
   --dim: rgba(244, 244, 246, 0.62);
   --faint: rgba(244, 244, 246, 0.34);
+
   --accent: #6ec1ff;
+  --accent-soft: rgba(110, 193, 255, 0.14);
+  --accent-line: rgba(110, 193, 255, 0.5);
+  --accent-glow: rgba(110, 193, 255, 0.25);
+  --on-accent: #0b1520;
+
+  --good: #6effa8;
+  --good-soft: rgba(110, 255, 168, 0.14);
+  --bad: #ff8f8f;
+  --bad-soft: rgba(255, 120, 120, 0.18);
+  --bad-ink: #ffb4b4;
+
+  --sh-soft: rgba(0, 0, 0, 0.45);
+  --sh: rgba(0, 0, 0, 0.55);
+  --sh-deep: rgba(0, 0, 0, 0.6);
+
+  --art-filter: blur(64px) saturate(1.4) brightness(0.55);
+
   font-family: "Inter", "Segoe UI", system-ui, Avenir, Helvetica, Arial, sans-serif;
   color: var(--fg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --wash: 18, 22, 32;
+
+  --bg: #eef0f4;
+  --scrim: 248, 249, 252;
+  --page: rgba(247, 248, 251, 0.97);
+  --panel: rgba(253, 253, 255, 0.95);
+  --glass: rgba(255, 255, 255, 0.76);
+  --overlay: rgba(24, 28, 38, 0.35);
+
+  --fg: #14171e;
+  --dim: rgba(20, 23, 30, 0.68);
+  --faint: rgba(20, 23, 30, 0.45);
+
+  /* The dark theme's sky blue has nothing like enough contrast on a white
+     surface, and this accent is used as text and as a button fill. */
+  --accent: #1372c4;
+  --accent-soft: rgba(19, 114, 196, 0.12);
+  --accent-line: rgba(19, 114, 196, 0.45);
+  --accent-glow: rgba(19, 114, 196, 0.22);
+  --on-accent: #ffffff;
+
+  --good: #0f7a43;
+  --good-soft: rgba(15, 122, 67, 0.13);
+  --bad: #c22f2f;
+  --bad-soft: rgba(194, 47, 47, 0.13);
+  --bad-ink: #a32222;
+
+  --sh-soft: rgba(22, 27, 40, 0.1);
+  --sh: rgba(22, 27, 40, 0.14);
+  --sh-deep: rgba(22, 27, 40, 0.18);
+
+  /* Brighten rather than darken the art wash, or the page turns muddy. */
+  --art-filter: blur(64px) saturate(1.25) brightness(1.3);
 }
 
 * {
@@ -25,7 +105,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #0a0a0c;
+  background: var(--bg);
   user-select: none;
   cursor: default;
 }
@@ -36,7 +116,7 @@ body {
   inset: -8%;
   background-size: cover;
   background-position: center;
-  filter: blur(64px) saturate(1.4) brightness(0.55);
+  filter: var(--art-filter);
   transform: scale(1.15);
   transition: background-image 0.8s ease;
   z-index: 0;
@@ -46,10 +126,10 @@ body {
   inset: 0;
   background: radial-gradient(
       120% 90% at 30% 20%,
-      rgba(10, 10, 12, 0.35),
-      rgba(10, 10, 12, 0.82) 70%
+      rgba(var(--scrim), 0.35),
+      rgba(var(--scrim), 0.82) 70%
     ),
-    linear-gradient(rgba(10, 10, 12, 0.4), rgba(10, 10, 12, 0.75));
+    linear-gradient(rgba(var(--scrim), 0.4), rgba(var(--scrim), 0.75));
   z-index: 1;
 }
 
@@ -82,8 +162,8 @@ body {
   aspect-ratio: 1;
   border-radius: 18px;
   overflow: hidden;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.04);
+  box-shadow: 0 30px 80px var(--sh-deep), 0 0 0 1px rgba(var(--wash), 0.06);
+  background: rgba(var(--wash), 0.04);
 }
 #art {
   width: 100%;
@@ -147,13 +227,13 @@ body.remote #history {
   max-height: 320px;
   display: flex;
   flex-direction: column;
-  background: rgba(22, 22, 28, 0.92);
+  background: var(--panel);
   backdrop-filter: blur(18px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--wash), 0.1);
   border-radius: 12px;
   padding: 8px;
   z-index: 7;
-  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 16px 50px var(--sh);
 }
 /* Selection mode needs room for a checkbox column and a footer button. */
 #station-panel.selecting {
@@ -161,7 +241,7 @@ body.remote #history {
   max-height: 420px;
 }
 #station-search {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--wash), 0.08);
   border: none;
   outline: none;
   border-radius: 8px;
@@ -173,7 +253,7 @@ body.remote #history {
 }
 #station-all-link {
   margin-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(var(--wash), 0.08);
   padding: 8px 10px 2px;
   background: none;
   border-left: none;
@@ -204,7 +284,7 @@ body.remote #history {
   text-align: left;
 }
 .station-item:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--wash), 0.1);
   color: var(--fg);
 }
 .station-item.active {
@@ -224,7 +304,7 @@ body.remote #history {
   margin-top: 4px;
 }
 #mode-btn {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--wash), 0.08);
   border: none;
   outline: none;
   border-radius: 999px;
@@ -236,7 +316,7 @@ body.remote #history {
   cursor: pointer;
 }
 #mode-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(var(--wash), 0.14);
   color: var(--fg);
 }
 #mode-panel {
@@ -248,13 +328,13 @@ body.remote #history {
   max-height: 340px;
   overflow-y: auto;
   scrollbar-width: thin;
-  background: rgba(22, 22, 28, 0.92);
+  background: var(--panel);
   backdrop-filter: blur(18px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--wash), 0.1);
   border-radius: 12px;
   padding: 8px;
   z-index: 7;
-  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 16px 50px var(--sh);
 }
 .mode-item {
   padding: 8px 10px;
@@ -263,7 +343,7 @@ body.remote #history {
   text-align: left;
 }
 .mode-item:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--wash), 0.1);
 }
 .mode-name {
   font-size: 0.88rem;
@@ -289,8 +369,8 @@ body.remote #history {
   position: fixed;
   z-index: 9;
   pointer-events: none;
-  background: rgba(20, 20, 26, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--panel);
+  border: 1px solid rgba(var(--wash), 0.12);
   border-radius: 8px;
   padding: 5px 10px;
   font-size: 0.75rem;
@@ -299,7 +379,7 @@ body.remote #history {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 24px var(--sh-soft);
 }
 
 /* Version badge doubles as the (unobtrusive) update control: faint version
@@ -343,7 +423,7 @@ body.remote #history {
   height: 34px;
   border-radius: 50%;
   border: none;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--wash), 0.07);
   color: var(--faint);
   display: grid;
   place-items: center;
@@ -352,7 +432,7 @@ body.remote #history {
 }
 #topbar button:hover {
   color: var(--fg);
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(var(--wash), 0.14);
 }
 #topbar button svg {
   width: 18px;
@@ -374,12 +454,12 @@ body.remote #history {
   max-height: 380px;
   display: flex;
   flex-direction: column;
-  background: rgba(22, 22, 28, 0.92);
+  background: var(--panel);
   backdrop-filter: blur(18px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(var(--wash), 0.1);
   border-radius: 12px;
   padding: 10px;
-  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 16px 50px var(--sh);
 }
 #speakers-head {
   text-transform: uppercase;
@@ -401,7 +481,7 @@ body.remote #history {
   cursor: pointer;
 }
 .preset-item:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--wash), 0.1);
 }
 .preset-art {
   width: 36px;
@@ -409,7 +489,7 @@ body.remote #history {
   border-radius: 6px;
   object-fit: cover;
   flex: 0 0 auto;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--wash), 0.06);
 }
 .preset-name {
   font-size: 0.88rem;
@@ -474,7 +554,7 @@ body.remote #history {
   flex: 1;
   height: 5px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(var(--wash), 0.14);
   overflow: hidden;
 }
 #bar {
@@ -530,27 +610,27 @@ button.icon:active {
 button.icon.big {
   width: 72px;
   height: 72px;
-  color: #0a0a0c;
+  color: var(--bg);
   background: var(--fg);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 10px 30px var(--sh-soft);
 }
 button.icon.big svg {
   width: 30px;
   height: 30px;
 }
 button.icon.big:hover {
-  color: #0a0a0c;
+  color: var(--bg);
   transform: scale(1.04);
 }
 /* An active thumb fills its glyph and gets a tinted disc — a colour change
    alone on a thin outline glyph was too easy to miss. */
 #thumbUp.active {
-  color: #6effa8;
-  background: rgba(110, 255, 168, 0.14);
+  color: var(--good);
+  background: var(--good-soft);
 }
 #thumbDown.active {
-  color: #ff8f8f;
-  background: rgba(255, 143, 143, 0.14);
+  color: var(--bad);
+  background: var(--bad-soft);
 }
 #thumbUp.active svg,
 #thumbDown.active svg {
@@ -585,7 +665,7 @@ body.remote #remote-vol-wrap {
   -webkit-appearance: none;
   height: 4px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(var(--wash), 0.16);
   outline: none;
   cursor: pointer;
 }
@@ -630,7 +710,7 @@ body.remote #remote-vol-wrap {
   display: block;
   transition: transform 0.15s;
   cursor: default;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 6px 16px var(--sh-soft);
 }
 .hist-item:hover {
   transform: scale(1.4);
@@ -699,7 +779,7 @@ body.remote #remote-vol-wrap {
   color: var(--fg);
   transform: scale(1.02);
   transform-origin: left center;
-  text-shadow: 0 2px 30px rgba(110, 193, 255, 0.25);
+  text-shadow: 0 2px 30px var(--accent-glow);
 }
 .line.plain {
   color: var(--dim);
@@ -719,19 +799,19 @@ body.remote #remote-vol-wrap {
   z-index: 8;
   display: grid;
   place-items: center;
-  background: rgba(8, 8, 10, 0.55);
+  background: var(--overlay);
   backdrop-filter: blur(6px);
 }
 .hm-card {
   display: flex;
   gap: 22px;
   align-items: center;
-  background: rgba(22, 22, 28, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--panel);
+  border: 1px solid rgba(var(--wash), 0.1);
   border-radius: 16px;
   padding: 24px;
   max-width: min(560px, 86vw);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 24px 70px var(--sh-deep);
 }
 #hm-art {
   width: 180px;
@@ -771,9 +851,9 @@ body.remote #remote-vol-wrap {
   place-items: center;
 }
 #login-hint .card {
-  background: rgba(20, 20, 24, 0.7);
+  background: var(--glass);
   backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(var(--wash), 0.08);
   border-radius: 18px;
   padding: 34px 40px;
   text-align: center;
@@ -789,7 +869,7 @@ body.remote #remote-vol-wrap {
 }
 #login-hint button {
   background: var(--fg);
-  color: #0a0a0c;
+  color: var(--bg);
   border: none;
   border-radius: 10px;
   padding: 12px 22px;
@@ -848,10 +928,10 @@ body.remote #remote-vol-wrap {
   max-width: min(520px, 90vw);
   padding: 10px 12px 10px 16px;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(24, 24, 30, 0.94);
+  border: 1px solid rgba(var(--wash), 0.14);
+  background: var(--panel);
   backdrop-filter: blur(16px);
-  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 14px 44px var(--sh-soft);
   font-size: 0.85rem;
   color: var(--fg);
 }
@@ -860,7 +940,7 @@ body.remote #remote-vol-wrap {
   line-height: 1.4;
 }
 #toast button {
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(var(--wash), 0.2);
   background: transparent;
   color: var(--dim);
   font: inherit;
@@ -872,7 +952,7 @@ body.remote #remote-vol-wrap {
 }
 #toast button:hover {
   color: var(--fg);
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(var(--wash), 0.12);
 }
 #toast-close {
   padding: 4px 8px;
@@ -891,7 +971,7 @@ body.remote #remote-vol-wrap {
   z-index: 8;
   display: flex;
   flex-direction: column;
-  background: rgba(14, 14, 18, 0.96);
+  background: var(--page);
   backdrop-filter: blur(24px);
 }
 #stations-page[hidden],
@@ -903,7 +983,7 @@ body.remote #remote-vol-wrap {
   align-items: center;
   gap: 12px;
   padding: 16px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(var(--wash), 0.08);
 }
 .page-head h2 {
   margin: 0;
@@ -915,7 +995,7 @@ body.remote #remote-vol-wrap {
 #sp-search {
   flex: 1;
   min-width: 0;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--wash), 0.08);
   border: none;
   outline: none;
   border-radius: 8px;
@@ -926,7 +1006,7 @@ body.remote #remote-vol-wrap {
 }
 #sp-select {
   flex: none;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--wash), 0.08);
   border: none;
   border-radius: 8px;
   color: var(--dim);
@@ -937,7 +1017,7 @@ body.remote #remote-vol-wrap {
 }
 #sp-select[aria-pressed="true"] {
   background: var(--accent);
-  color: #111;
+  color: var(--on-accent);
   font-weight: 600;
 }
 .page-close {
@@ -949,14 +1029,14 @@ body.remote #remote-vol-wrap {
   height: 32px;
   border-radius: 50%;
   border: none;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--wash), 0.07);
   color: var(--dim);
   font-size: 1.2rem;
   line-height: 1;
   cursor: pointer;
 }
 .page-close:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(var(--wash), 0.14);
   color: var(--fg);
 }
 
@@ -967,7 +1047,7 @@ body.remote #remote-vol-wrap {
   padding: 10px 20px;
   font-size: 0.82rem;
   color: var(--dim);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(var(--wash), 0.08);
 }
 .sp-check {
   display: flex;
@@ -975,11 +1055,7 @@ body.remote #remote-vol-wrap {
   gap: 8px;
   cursor: pointer;
 }
-.sp-check input {
-  accent-color: var(--accent);
-  cursor: pointer;
-  margin: 0;
-}
+/* the box itself is styled with every other checkbox, under "form controls" */
 #sp-count {
   color: var(--faint);
   font-variant-numeric: tabular-nums;
@@ -1013,17 +1089,15 @@ body.remote #remote-vol-wrap {
   min-width: 0;
 }
 .sp-row:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--wash), 0.08);
   color: var(--fg);
 }
 .sp-row.active {
   color: var(--fg);
   font-weight: 600;
 }
+/* The whole row is the click target, so the box must not eat the click. */
 .sp-row input {
-  accent-color: var(--accent);
-  flex: none;
-  margin: 0;
   pointer-events: none;
 }
 /* Shrink-to-fit, not flex:1 — a growing name would shove the tag to the far edge of
@@ -1043,7 +1117,7 @@ body.remote #remote-vol-wrap {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--faint);
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(var(--wash), 0.16);
   border-radius: 999px;
   padding: 1px 6px;
 }
@@ -1053,35 +1127,23 @@ body.remote #remote-vol-wrap {
   align-items: center;
   gap: 12px;
   padding: 12px 20px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(var(--wash), 0.08);
 }
 .page-foot-actions {
   margin-left: auto;
   display: flex;
   gap: 8px;
 }
-.page-foot button {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--dim);
-  border: none;
-  border-radius: 8px;
-  font-family: inherit;
-  font-size: 0.84rem;
-  padding: 9px 16px;
-  cursor: pointer;
-}
-.page-foot button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.16);
-  color: var(--fg);
-}
+/* The buttons themselves are `.btn`, under "form controls". */
 #sp-export:not(:disabled) {
   background: var(--accent);
-  color: #111;
+  color: var(--on-accent);
   font-weight: 600;
 }
-.page-foot button:disabled {
-  color: var(--faint);
-  cursor: default;
+#sp-export:not(:disabled):hover {
+  background: var(--accent);
+  color: var(--on-accent);
+  filter: brightness(1.08);
 }
 #sp-status {
   font-size: 0.8rem;
@@ -1091,7 +1153,7 @@ body.remote #remote-vol-wrap {
   min-width: 0;
 }
 #sp-status.err {
-  color: #ff8f8f;
+  color: var(--bad);
 }
 #sp-status.ok {
   color: var(--accent);
@@ -1103,11 +1165,17 @@ body.remote #remote-vol-wrap {
   overflow-y: auto;
   padding: 20px;
 }
+/* Each setting is its own card. The page is a list of unrelated decisions, and a
+   flat run of headings made it read as one long form. */
 .set-section {
-  max-width: 520px;
+  max-width: 560px;
+  padding: 16px 18px;
+  border: 1px solid rgba(var(--wash), 0.08);
+  border-radius: 14px;
+  background: rgba(var(--wash), 0.03);
 }
 .set-section h3 {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.14em;
@@ -1119,19 +1187,15 @@ body.remote #remote-vol-wrap {
   color: var(--fg);
   margin-bottom: 12px;
 }
-#set-signout {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--dim);
-  border: none;
-  border-radius: 8px;
-  font-family: inherit;
-  font-size: 0.84rem;
-  padding: 9px 16px;
-  cursor: pointer;
-}
 #set-signout:hover {
-  background: rgba(255, 120, 120, 0.18);
-  color: #ffb4b4;
+  background: var(--bad-soft);
+  color: var(--bad-ink);
+}
+/* Armed by the first click; the colour is the warning, the label is the question. */
+#set-signout[data-armed="1"] {
+  background: var(--bad-soft);
+  color: var(--bad-ink);
+  box-shadow: inset 0 0 0 1px var(--bad);
 }
 .set-note {
   font-size: 0.78rem;
@@ -1142,21 +1206,34 @@ body.remote #remote-vol-wrap {
 .set-radio {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 12px;
   cursor: pointer;
-  padding: 10px;
-  border-radius: 10px;
+  padding: 12px 14px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: rgba(var(--wash), 0.03);
+  transition: background 0.15s, border-color 0.15s;
+}
+.set-radio + .set-radio {
+  margin-top: 8px;
 }
 .set-radio:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(var(--wash), 0.07);
+}
+/* The card, not just the dot, shows which one is chosen — at this size a 7px dot is
+   not enough signal for a decision this consequential. */
+.set-radio:has(:checked) {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+.set-radio:has(:checked) .set-radio-text {
+  color: var(--dim);
+}
+.set-radio:has(:focus-visible) {
+  border-color: var(--accent);
 }
 .set-radio input {
-  accent-color: var(--accent);
-  cursor: pointer;
-  margin: 2px 0 0;
-  width: 16px;
-  height: 16px;
-  flex: none;
+  margin-top: 2px;
 }
 /* Each option explains itself inline: the difference between "after this song" and
    "immediately" is the whole decision, and a bare label doesn't carry it. */
@@ -1177,22 +1254,292 @@ body.remote #remote-vol-wrap {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
-#set-check-schedule,
-#set-check-time {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+.set-section + .set-section {
+  margin-top: 16px;
+}
+
+/* ---- form controls -----------------------------------------------------
+   Native radios, checkboxes and dropdowns are drawn by the platform and land in
+   this UI looking like they were pasted in from another program — the wrong
+   size, the wrong corner radius, and (before `color-scheme`) the wrong colour
+   entirely. So they are all drawn here instead. `color-scheme` in :root covers
+   what CSS cannot reach: the caret, the time field's spinners, scrollbars,
+   autofill and the native focus ring. */
+input[type="radio"],
+input[type="checkbox"] {
+  appearance: none;
+  margin: 0;
+  flex: none;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid rgba(var(--wash), 0.3);
+  background: rgba(var(--wash), 0.05);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+input[type="radio"] {
+  border-radius: 50%;
+}
+input[type="checkbox"] {
+  border-radius: 5px;
+}
+input[type="radio"]:hover,
+input[type="checkbox"]:hover {
+  border-color: rgba(var(--wash), 0.55);
+  background: rgba(var(--wash), 0.1);
+}
+input[type="radio"]::after,
+input[type="checkbox"]::after {
+  content: "";
+  background: var(--on-accent);
+  transform: scale(0);
+  transition: transform 0.16s cubic-bezier(0.2, 0.9, 0.3, 1.5);
+}
+input[type="radio"]::after {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+input[type="checkbox"]::after {
+  width: 11px;
+  height: 11px;
+  clip-path: polygon(14% 44%, 0 60%, 39% 100%, 100% 22%, 84% 6%, 39% 68%);
+}
+input[type="radio"]:checked,
+input[type="checkbox"]:checked,
+input[type="checkbox"]:indeterminate {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* "Some of them" — Select all uses this when part of the list is picked. Drawing
+   the box ourselves means drawing this state too, or it looks simply unchecked. */
+input[type="checkbox"]:indeterminate::after {
+  width: 9px;
+  height: 2px;
+  border-radius: 1px;
+  clip-path: none;
+  transform: scale(1);
+}
+input[type="radio"]:checked::after,
+input[type="checkbox"]:checked::after {
+  transform: scale(1);
+}
+input[type="radio"]:disabled,
+input[type="checkbox"]:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+input[type="radio"]:focus-visible,
+input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 0 0 1px var(--accent);
+}
+
+/* Buttons that read as buttons: the sign-out button and the page footer used to
+   carry two near-identical copies of this. */
+.btn {
+  background: rgba(var(--wash), 0.1);
+  color: var(--dim);
+  border: none;
   border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.84rem;
+  padding: 9px 16px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.btn:hover:not(:disabled) {
+  background: rgba(var(--wash), 0.16);
+  color: var(--fg);
+}
+.btn:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.field {
+  background: rgba(var(--wash), 0.08);
+  border: 1px solid rgba(var(--wash), 0.12);
+  border-radius: 9px;
   color: var(--fg);
   font-family: inherit;
   font-size: 0.86rem;
   padding: 8px 10px;
 }
-#set-check-time[hidden] {
-  display: none;
+.field:hover:not(:disabled) {
+  border-color: rgba(var(--wash), 0.22);
 }
-.set-section + .set-section {
-  margin-top: 28px;
+.field:disabled {
+  color: var(--faint);
+}
+/* The clock button inside a time field is a UA glyph — it takes a colour from
+   `color-scheme` but not ours, so tint it to match the rest of the row. */
+input[type="time"]::-webkit-calendar-picker-indicator {
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+input[type="time"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* Anything focused by keyboard gets the same ring; nothing gets one from a click. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- segmented control (Theme) ----
+   Three mutually exclusive choices that are short enough to show all at once, so
+   a dropdown would hide two thirds of the answer behind a click. */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: rgba(var(--wash), 0.07);
+  border: 1px solid rgba(var(--wash), 0.08);
+}
+.seg {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 0.83rem;
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.seg:hover {
+  background: rgba(var(--wash), 0.08);
+  color: var(--fg);
+}
+/* The real radio stays in the DOM, just not visible: it keeps arrow-key
+   navigation, the radiogroup semantics and form-change events for free. */
+.seg input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.seg:has(:checked) {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.seg:has(:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.seg svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+
+/* ---- our own dropdown ----
+   A native <select> popup cannot be styled at all — only told which colour
+   scheme to use — so it is the one control that has to be rebuilt rather than
+   restyled. Shaped like the station and mode panels, which is what a list of
+   choices already looks like in this app. See select.ts for the behaviour. */
+.select {
+  position: relative;
+  display: inline-block;
+}
+.select-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 200px;
+  text-align: left;
+  cursor: pointer;
+}
+.select-btn:disabled {
+  cursor: default;
+}
+.select-value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-chevron {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.55;
+  transition: transform 0.18s ease;
+}
+.select[data-open="true"] .select-chevron {
+  transform: rotate(180deg);
+}
+.select-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  z-index: 9;
+  max-height: 300px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 6px;
+  background: var(--panel);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(var(--wash), 0.1);
+  border-radius: 12px;
+  box-shadow: 0 16px 50px var(--sh);
+}
+.select-opt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 0.86rem;
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* One highlight, driven by the keyboard: a separate :hover style would light up
+   two rows at once when the mouse happens to rest over the list. */
+.select-opt.hl {
+  background: rgba(var(--wash), 0.1);
+  color: var(--fg);
+}
+.select-opt[aria-selected="true"] {
+  color: var(--fg);
+  font-weight: 600;
+}
+.select-tick {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  visibility: hidden;
+}
+.select-opt[aria-selected="true"] .select-tick {
+  visibility: visible;
 }
 /* Why an import would skip a station — the reason matters more than the fact. */
 .sp-why {

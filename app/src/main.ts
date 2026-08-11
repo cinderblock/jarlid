@@ -671,6 +671,9 @@ $("settings-btn").addEventListener("click", (e) => {
   e.stopPropagation();
   settingsPage.open();
 });
+// index.html paints from a cached preference before the first frame; this is the
+// authoritative answer arriving a moment later.
+void settingsPage.applyStoredTheme();
 attachTip($("stations-btn"), () => "All stations — browse, export");
 attachTip($("settings-btn"), () => "Settings");
 
