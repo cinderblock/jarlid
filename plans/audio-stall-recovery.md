@@ -132,7 +132,10 @@ survives only as a backstop for the opposite failure — audio queued that nobod
 
 ## Verification
 
-**Status 2026-08-11: in use, no recurrence, not yet deliberately provoked.**
+**Status 2026-08-11: fixed and confirmed. Pause → play resumes correctly (Cameron, in the app).**
+
+The reported bug is closed. Below is what backs that up, and what remains merely untested rather
+than known-good.
 
 - Landed in v1.2.0 (645b2a0). Nothing since has touched `audio_thread.rs`, `player.rs` or
   `media_foundation.rs` — `git log 81db310..master --` on those three is empty, so what shipped is
@@ -143,12 +146,14 @@ survives only as a backstop for the opposite failure — audio queued that nobod
   it does not confirm the recovery paths *fired* and worked, only that nothing broke visibly.
 - `Decoder::seek` is covered by a unit test (`seek_skips_ahead`).
 
-Still worth doing deliberately, in the app, when convenient — each takes under two minutes:
+1. **Pause, wait, press play — done, works.** The exact reported failure, and the path with the
+   visible tell: it resumed rather than sitting silent until skip.
 
-1. Pause >1 min, press play. Must resume at the same second of the same track, not restart it and
-   not jump to a new one. This is the exact reported bug, and the one path with a visible tell.
-2. Kill the network mid-track (disable Wi-Fi ~10 s, re-enable). Must recover or skip, not go
-   silent forever.
+Two paths remain untested. Neither is suspected — they share the rebuild code that path 1 just
+exercised — but nobody has provoked them, so treat them as unproven if one ever misbehaves:
+
+2. Kill the network mid-track (disable Wi-Fi ~10 s, re-enable). Should recover or skip, not go
+   silent forever. This is the `DECODE_STALL` path, the one with the subtlest logic.
 3. Unplug headphones / let the monitor sleep mid-track, exercising the device-error path.
 
 If a recovery ever does fire it prints its reason and position to stderr (`decoding stalled at
