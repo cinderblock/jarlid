@@ -192,8 +192,15 @@ is explicitly *not* to be committed as-is.
       the real breakpoint at runtime (`rule.media.mediaText`) rather than faking narrow rules,
       because Chrome would not shrink the viewport below ~862 px however small the *window*
       was set — `innerWidth` and `outerWidth` disagree, and the media query follows the former.
-- [ ] **Not yet verified in the real app**: the audio ramp, the `f32` gain path on a live
-      device, the settings round trip, and the device-follow rebuild.
+- [x] **Settings round trip verified in the real app**, from `settings.json` on disk
+      (`%APPDATA%\com.camer.pandora-desktop\settings.json`): the user's chosen `"volume": 46`
+      reached the file, and `"outputDevice": null` is written for "follow the default". The
+      same file had been written by the *harness* build with a `volumeCurve` key; the stripped
+      build read it, ignored the unknown field and rewrote it clean — so removing the harness
+      needed no migration, which was worth confirming rather than assuming.
+- [ ] **Still not verified**: the ~15 ms gain ramp and the `f32` path by ear, and the
+      device-follow rebuild (needs an actual default-device switch while playing). Both need
+      a person; neither is claimed.
 - [x] Committed.
 
 ## Gotcha that cost the user a working app
