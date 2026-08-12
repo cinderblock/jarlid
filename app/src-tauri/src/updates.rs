@@ -153,14 +153,18 @@ struct Waiting {
 
 impl Waiting {
     /// `ready` means every condition except the moment itself is satisfied.
-    fn tick(&mut self, ready: bool, playing: bool, dt: Duration) {
-        if !ready {
-            *self = Self::default();
-        } else if playing {
-            self.playing += dt;
-            self.paused = Duration::ZERO;
-        } else {
-            self.paused += dt;
+    fn tick(&mut self, ready: bool, playback: Playback, dt: Duration) {
+        match (ready, playback) {
+            (false, _) => *self = Self::default(),
+            (true, Playback::Playing) => {
+                self.playing += dt;
+                self.paused = Duration::ZERO;
+            }
+            (true, Playback::Paused) => self.paused += dt,
+            // Neither clock may advance on a guess. Holding rather than resetting means a
+            // blind spot — a sign-out, a moment mid-login — does not quietly discard a
+            // legitimate wait that was already under way.
+            (true, Playback::Unknown) => {}
         }
     }
 }
@@ -235,7 +239,7 @@ pub async fn stage(app: &tauri::AppHandle) -> Result<Option<String>, String> {
     // "Instant" means exactly that: do not wait for a boundary. It still comes back the way
     // it was left, so "instant" while paused is silent rather than merely fast.
     if policy == Policy::Instant {
-        try_install(app, playing(app).await, true, "instant policy", true);
+        try_install(app, playback(app).await, true, "instant policy", true);
     }
     Ok(Some(version))
 }
@@ -268,6 +272,7 @@ enum Hold {
     Exporting,
     Remote,
     MidSong,
+    Unknown,
 }
 
 impl Hold {
@@ -278,6 +283,7 @@ impl Hold {
             Hold::Exporting => "an export is running",
             Hold::Remote => "a network player owns playback",
             Hold::MidSong => "a song is playing",
+            Hold::Unknown => "there is no engine to ask what playback is doing",
         }
     }
 }
@@ -292,6 +298,25 @@ enum Resume {
     Paused,
 }
 
+/// What local playback is doing — including "we cannot tell".
+///
+/// The third case is the whole point. There is no engine to ask before sign-in finishes at
+/// launch, or at any time while signed out, and `engine()` reports that as an error. Folding
+/// that into "paused" was a real bug: the loop counted [`PAUSE_SETTLE`] against a listener
+/// who had never touched the play button, installed, and armed the silent restart — so a
+/// network hiccup at launch meant the *next* successful launch came up silent for no reason.
+/// It compounded, too, because an app that comes back paused really is paused, so every
+/// later update legitimately came back paused as well.
+///
+/// Only [`Playback::Paused`] — a genuine, observed pause — may arm a silent restart.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Playback {
+    Playing,
+    Paused,
+    /// No engine to ask: signed out, or still logging in. Deliberately *not* paused.
+    Unknown,
+}
+
 /// What the world looks like when we consider installing.
 #[derive(Debug, Clone, Copy)]
 struct Conditions {
@@ -300,9 +325,9 @@ struct Conditions {
     armed: bool,
     exporting: bool,
     remote: bool,
-    /// Local playback is actually running. Polled, not assumed — the one caller that still
-    /// asserts it is the track boundary, where a track having just ended is proof.
-    playing: bool,
+    /// What playback is doing. Polled, not assumed — the one caller that still asserts it is
+    /// the track boundary, where a track having just ended is proof.
+    playback: Playback,
     /// The caller has a mandate to cut off a running song: a track just ended, the backstop
     /// expired, or the user asked for it. Without one, playing audio is left alone.
     may_interrupt: bool,
@@ -329,48 +354,57 @@ fn decide(c: Conditions) -> Result<Resume, Hold> {
     if c.remote {
         return Err(Hold::Remote);
     }
-    // Paused needs no mandate at all: nothing is being cut off, and `Resume::Paused` means
-    // the app comes back exactly as it was left. Audible playback is the case that has to
-    // justify itself.
-    if c.playing && !c.may_interrupt {
-        return Err(Hold::MidSong);
+    match c.playback {
+        // Needs no mandate at all: nothing is being cut off, and `Resume::Paused` means the
+        // app comes back exactly as it was left.
+        Playback::Paused => Ok(Resume::Paused),
+        // Audible playback is the case that has to justify itself.
+        Playback::Playing if c.may_interrupt => Ok(Resume::Playing),
+        Playback::Playing => Err(Hold::MidSong),
+        // Nothing audible, but nothing *known* either, so this is not the silent moment the
+        // paused path is allowed to use. An explicit request still goes through — and comes
+        // back playing, because being signed out is not somebody asking for silence.
+        Playback::Unknown if c.may_interrupt => Ok(Resume::Playing),
+        Playback::Unknown => Err(Hold::Unknown),
     }
-    Ok(if c.playing {
-        Resume::Playing
-    } else {
-        Resume::Paused
-    })
 }
 
-fn conditions(app: &tauri::AppHandle, playing: bool, may_interrupt: bool) -> Conditions {
+fn conditions(app: &tauri::AppHandle, playback: Playback, may_interrupt: bool) -> Conditions {
     let ctl = app.state::<UpdateCtl>();
     Conditions {
         staged: ctl.is_staged(),
         armed: ctl.is_armed(),
         exporting: app.state::<crate::export::ExportCtl>().is_running(),
         remote: crate::remote_active(),
-        playing,
+        playback,
         may_interrupt,
     }
 }
 
 /// A track just ended — a moment we are allowed to use.
 ///
-/// The only place `playing: true` is asserted rather than polled, and it is earned: the
-/// engine has already started the next track by the time this event arrives, so there
-/// genuinely is audio running.
+/// The only place playback is asserted rather than polled, and it is earned: the engine has
+/// already started the next track by the time this event arrives, so there genuinely is
+/// audio running.
 pub fn on_track_boundary(app: &tauri::AppHandle) {
-    try_install(app, true, true, "track boundary", false);
+    try_install(app, Playback::Playing, true, "track boundary", false);
 }
 
 /// `force` is an explicit request: it waives the guards that exist purely to avoid
 /// surprising the listener (not armed, a renderer owning playback, and the requirement of a
 /// mandate to interrupt), because a deliberate request is not a surprise. It does **not**
 /// waive the export guard, which protects work in progress rather than anyone's comfort —
-/// nor does it override `playing`, because "install now" is not a request to start music.
-fn try_install(app: &tauri::AppHandle, playing: bool, may_interrupt: bool, why: &str, force: bool) {
+/// nor does it override `playback`, because "install now" is not a request to start music —
+/// nor, when we cannot tell what playback is doing, a request for silence.
+fn try_install(
+    app: &tauri::AppHandle,
+    playback: Playback,
+    may_interrupt: bool,
+    why: &str,
+    force: bool,
+) {
     let ctl = app.state::<UpdateCtl>();
-    let mut c = conditions(app, playing, may_interrupt);
+    let mut c = conditions(app, playback, may_interrupt);
     if force {
         c.armed = true;
         c.remote = false;
@@ -526,7 +560,7 @@ pub async fn update_action(app: tauri::AppHandle) -> Result<Status, String> {
 
     if staged && armed {
         // Already going to happen on its own — so this means now.
-        try_install(&app, playing(&app).await, true, "user asked", true);
+        try_install(&app, playback(&app).await, true, "user asked", true);
         return Ok(status(&app)); // only reached when the install failed
     }
     if staged {
@@ -602,34 +636,44 @@ pub fn spawn(app: &tauri::AppHandle) {
 
             tokio::time::sleep(TICK).await;
 
-            let playing = playing(&app).await;
+            let playback = playback(&app).await;
             // Everything except the moment: staged, armed, no export, no network player.
             // Asking `decide` with a mandate leaves exactly those guards standing, so this
             // cannot drift out of step with the real rules.
-            let ready = decide(conditions(&app, playing, true)).is_ok();
-            waiting.tick(ready, playing, TICK);
+            let ready = decide(conditions(&app, playback, true)).is_ok();
+            waiting.tick(ready, playback, TICK);
 
-            if !playing {
-                // The preferred moment. Nothing is cut off and the app comes back paused,
-                // so from the listener's side the update simply never happened.
-                if waiting.paused >= PAUSE_SETTLE {
-                    try_install(&app, false, false, "paused", false);
+            match playback {
+                // The preferred moment. Nothing is cut off and the app comes back paused, so
+                // from the listener's side the update simply never happened.
+                Playback::Paused if waiting.paused >= PAUSE_SETTLE => {
+                    try_install(&app, playback, false, "paused", false);
                 }
-            } else if waiting.playing >= MAX_WAIT {
                 // Backstop: playing this long with no track boundary means one is not
                 // coming, so interrupting is the lesser evil.
-                try_install(&app, true, true, "backstop (no track boundary)", false);
+                Playback::Playing if waiting.playing >= MAX_WAIT => {
+                    try_install(&app, playback, true, "backstop (no track boundary)", false);
+                }
+                // Unknown never triggers an install on its own. Waiting costs nothing: the
+                // boundary path picks it up as soon as anything is playing, and the paused
+                // path as soon as playback is genuinely stopped.
+                _ => {}
             }
         }
     });
 }
 
-/// Is local playback actually running? The engine owns the answer, so there is no need to
-/// infer it from playhead motion the way the DOM-scraping era had to.
-async fn playing(app: &tauri::AppHandle) -> bool {
+/// What local playback is doing. The engine owns the answer, so there is no need to infer it
+/// from playhead motion the way the DOM-scraping era had to.
+///
+/// The error case is [`Playback::Unknown`], never `Paused`: `engine()` fails when there is no
+/// engine at all — signed out, or still logging in — which says nothing whatsoever about what
+/// the listener wants.
+async fn playback(app: &tauri::AppHandle) -> Playback {
     match app.state::<crate::native::NativeEngine>().engine().await {
-        Ok(engine) => !engine.is_paused(),
-        Err(_) => false,
+        Ok(engine) if engine.is_paused() => Playback::Paused,
+        Ok(_) => Playback::Playing,
+        Err(_) => Playback::Unknown,
     }
 }
 
@@ -644,7 +688,7 @@ mod tests {
             armed: true,
             exporting: false,
             remote: false,
-            playing: true,
+            playback: Playback::Playing,
             may_interrupt: true,
         }
     }
@@ -711,7 +755,7 @@ mod tests {
     fn a_paused_app_installs_without_needing_a_mandate() {
         assert_eq!(
             decide(Conditions {
-                playing: false,
+                playback: Playback::Paused,
                 may_interrupt: false,
                 ..ready()
             }),
@@ -727,7 +771,7 @@ mod tests {
         for may_interrupt in [true, false] {
             assert_eq!(
                 decide(Conditions {
-                    playing: false,
+                    playback: Playback::Paused,
                     may_interrupt,
                     ..ready()
                 }),
@@ -736,6 +780,56 @@ mod tests {
             );
         }
         assert_eq!(decide(ready()), Ok(Resume::Playing));
+    }
+
+    /// The v1.4.1 regression.
+    ///
+    /// Before the third state existed, "no engine to ask" arrived here as `playing: false`
+    /// and was indistinguishable from a deliberate pause. So a signed-out app — or one
+    /// merely still logging in — banked `PAUSE_SETTLE`, installed, and armed the silent
+    /// restart. The listener had never touched the play button, and the next launch came up
+    /// silent with nothing to explain it.
+    #[test]
+    fn not_knowing_is_never_mistaken_for_a_pause() {
+        let blind = Conditions {
+            playback: Playback::Unknown,
+            may_interrupt: false,
+            ..ready()
+        };
+        assert_eq!(
+            decide(blind),
+            Err(Hold::Unknown),
+            "must not install on its own while blind — that path arms a silent restart"
+        );
+
+        // And when it does go ahead, it must never be silently. Nobody asked for that.
+        assert_eq!(
+            decide(Conditions {
+                may_interrupt: true,
+                ..blind
+            }),
+            Ok(Resume::Playing),
+            "an explicit request while signed out comes back playing, not paused"
+        );
+    }
+
+    /// Only an observed pause may arm the silent restart. Stated as an exhaustive match so
+    /// adding a fourth state forces a decision here rather than defaulting to silence.
+    #[test]
+    fn only_a_real_pause_arms_a_silent_restart() {
+        for playback in [Playback::Playing, Playback::Paused, Playback::Unknown] {
+            let outcome = decide(Conditions {
+                playback,
+                may_interrupt: true,
+                ..ready()
+            });
+            let silent = outcome == Ok(Resume::Paused);
+            assert_eq!(
+                silent,
+                playback == Playback::Paused,
+                "{playback:?} must not decide to come back silent"
+            );
+        }
     }
 
     /// Audible playback is the case that has to justify itself. Without a mandate — no
@@ -759,7 +853,7 @@ mod tests {
             armed: true,
             exporting: true,
             remote: true,
-            playing: true,
+            playback: Playback::Playing,
             may_interrupt: false,
         };
         assert_eq!(decide(c), Err(Hold::Exporting));
@@ -798,7 +892,7 @@ mod tests {
             armed: false,
             exporting: false,
             remote: true,
-            playing: false,
+            playback: Playback::Paused,
             may_interrupt: false,
         };
         assert_eq!(decide(held), Err(Hold::NotArmed), "held automatically");
@@ -856,7 +950,7 @@ mod tests {
     fn a_long_pause_does_not_expire_the_backstop() {
         let mut w = Waiting::default();
         for _ in 0..(3600 / TICK.as_secs()) {
-            w.tick(true, false, TICK);
+            w.tick(true, Playback::Paused, TICK);
         }
         assert!(w.paused >= Duration::from_secs(3600 - TICK.as_secs()));
         assert_eq!(
@@ -866,7 +960,7 @@ mod tests {
         );
 
         // And the very next tick after pressing play must not trip it either.
-        w.tick(true, true, TICK);
+        w.tick(true, Playback::Playing, TICK);
         assert!(w.playing < MAX_WAIT);
     }
 
@@ -875,10 +969,10 @@ mod tests {
     #[test]
     fn resuming_resets_the_pause_streak() {
         let mut w = Waiting::default();
-        w.tick(true, false, TICK);
-        w.tick(true, false, TICK);
+        w.tick(true, Playback::Paused, TICK);
+        w.tick(true, Playback::Paused, TICK);
         assert_eq!(w.paused, TICK * 2);
-        w.tick(true, true, TICK);
+        w.tick(true, Playback::Playing, TICK);
         assert_eq!(w.paused, Duration::ZERO);
         assert_eq!(w.playing, TICK);
     }
@@ -888,9 +982,9 @@ mod tests {
     #[test]
     fn the_playing_clock_survives_a_pause() {
         let mut w = Waiting::default();
-        w.tick(true, true, TICK);
-        w.tick(true, false, TICK);
-        w.tick(true, true, TICK);
+        w.tick(true, Playback::Playing, TICK);
+        w.tick(true, Playback::Paused, TICK);
+        w.tick(true, Playback::Playing, TICK);
         assert_eq!(w.playing, TICK * 2);
     }
 
@@ -899,9 +993,9 @@ mod tests {
     #[test]
     fn losing_the_staged_update_resets_both_clocks() {
         let mut w = Waiting::default();
-        w.tick(true, true, TICK);
-        w.tick(true, false, TICK);
-        w.tick(false, false, TICK);
+        w.tick(true, Playback::Playing, TICK);
+        w.tick(true, Playback::Paused, TICK);
+        w.tick(false, Playback::Paused, TICK);
         assert_eq!(w, Waiting::default());
     }
 
@@ -916,13 +1010,13 @@ mod tests {
         let mut w = Waiting::default();
         // Six minutes of listening while something other than timing holds the install.
         for _ in 0..(MAX_WAIT.as_secs() / TICK.as_secs() + 1) {
-            w.tick(false, true, TICK);
+            w.tick(false, Playback::Playing, TICK);
         }
         assert_eq!(w, Waiting::default());
 
         // Now it is armed. The backstop starts from zero, so the track boundary that is
         // moments away gets to be the trigger, exactly as promised.
-        w.tick(true, true, TICK);
+        w.tick(true, Playback::Playing, TICK);
         assert_eq!(w.playing, TICK);
         assert!(w.playing < MAX_WAIT);
     }

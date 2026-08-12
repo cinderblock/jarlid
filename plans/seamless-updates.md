@@ -250,6 +250,48 @@ restarting at a bad moment.
 4. **The stand-down path** (playback changing inside the 250 ms paint window) and the
    version-mismatch marker rejection. Both are error paths with no test.
 
+### v1.4.1 — "can't tell" is not "paused"
+
+Reported as *"does the restart after update always start paused? that seems like a bug."*
+Not always — a track-boundary install passes `playing: true`, so it comes back playing, and
+`arm_resume_paused` is called in exactly one place. But the instinct was right, because
+**how "paused" was decided was wrong**:
+
+```rust
+async fn playing(app) -> bool {
+    match app.state::<NativeEngine>().engine().await {
+        Ok(engine) => !engine.is_paused(),
+        Err(_) => false,          // "not signed in" silently became "paused"
+    }
+}
+```
+
+`engine()` errors whenever the engine is absent — signed out, or the window before login
+finishes at launch. That arrived at `decide` as `playing: false`, indistinguishable from a
+deliberate pause, so the loop banked `PAUSE_SETTLE` against a listener who had never touched
+the play button, installed, and armed the silent restart. A network hiccup at launch meant
+the *next* successful launch came up silent with nothing to explain it. `paused_now` — the
+last-moment re-check that exists for exactly this — returns `None` in the same situation, so
+`is_some_and` is false and it could not intervene.
+
+It also **compounded**: an app that comes back paused genuinely *is* paused, so every later
+update legitimately came back paused too. That is why it looked like "always".
+
+Fixed by giving the answer three states instead of two — `Playback::{Playing, Paused,
+Unknown}` — where only an observed `Paused` may arm a silent restart. `Unknown` holds
+(`Hold::Unknown`) rather than installing on its own; an explicit click still goes through and
+comes back **playing**, because being signed out is not somebody asking for silence. Neither
+wait clock advances while blind, and it holds rather than resets so a sign-out does not
+discard a legitimate wait already under way.
+
+Two tests pin it: `not_knowing_is_never_mistaken_for_a_pause`, and
+`only_a_real_pause_arms_a_silent_restart`, which loops every state so a fourth one forces a
+decision here rather than defaulting to silence.
+
+**The general lesson, third time in this file:** a two-valued answer to a three-valued
+question puts the missing case somewhere, and it is never where you want it. Same shape as
+the wall-clock backstop and the countdown behind a shut gate.
+
 ### Things this deliberately does not do
 
 - It does not persist playback *position*. Coming back paused at the top of a fresh track is
