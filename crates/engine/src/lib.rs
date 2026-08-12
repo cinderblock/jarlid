@@ -17,6 +17,10 @@ use audio_thread::AudioThread;
 use pandora::Track;
 use tokio::sync::{mpsc, Mutex};
 
+/// Re-exported so a caller can pick an output device without taking a direct dependency on
+/// the audio crate — the engine is meant to be the whole audio-facing API for the app.
+pub use audio::{output_devices, Output};
+
 /// Keep at least this many tracks queued; fetch more when we drop below it. Pandora returns
 /// roughly four per request, so this refills well before the queue runs dry.
 const MIN_QUEUED: usize = 2;
@@ -451,6 +455,18 @@ impl Engine {
 
     pub fn set_volume(&self, volume: f32) {
         self.audio.set_volume(volume);
+    }
+
+    /// Choose which output endpoint to play on. Moves the current song there rather than
+    /// waiting for the next one.
+    pub fn set_output(&self, output: audio::Output) {
+        self.audio.set_output(output);
+    }
+
+    /// The endpoint audio is actually going to, or `None` when nothing is open. Distinct from
+    /// what was *chosen* — an absent device falls back to the default.
+    pub fn output_device(&self) -> Option<String> {
+        self.audio.output_device()
     }
 
     /// Where the listener actually is in the current track — the right clock for synced lyrics.

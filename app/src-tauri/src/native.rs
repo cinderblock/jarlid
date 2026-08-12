@@ -127,6 +127,13 @@ async fn attach(
     let engine = Arc::new(started);
     *app.state::<NativeEngine>().0.lock().await = Some(Arc::clone(&engine));
 
+    // The saved level and endpoint, applied before anything can be heard. The engine starts
+    // every player at unity on the default device, so without this a restart — including the one
+    // an update performs between songs — would come back at full volume on the wrong speakers.
+    let saved = crate::settings::get(app);
+    engine.set_volume(saved.volume.amplitude());
+    engine.set_output(output_of(saved.output_device.as_deref()));
+
     // Station list for the picker and the Stations page. Tokens go with it (switching
     // station and exporting one both need the token), and so do Pandora's special-station
     // flags — the Stations page marks them, because a QuickMix has no seeds or thumbs of
@@ -491,13 +498,66 @@ pub async fn native_cmd(
     Ok(())
 }
 
+/// Apply a volume without saving it, so a slider can be dragged without writing the settings
+/// file on every pixel. The UI persists the value it settles on through `set_settings`.
+///
+/// Takes the percentage the user sees rather than a gain, so the taper is defined in exactly
+/// one place ([`crate::settings::Volume::amplitude`]) instead of being reimplemented in
+/// TypeScript and drifting.
 #[tauri::command]
 pub async fn native_volume(
     state: tauri::State<'_, NativeEngine>,
-    volume: f32,
+    percent: u8,
 ) -> Result<(), String> {
-    state.get().await?.set_volume(volume);
+    state
+        .get()
+        .await?
+        .set_volume(crate::settings::Volume::new(percent).amplitude());
     Ok(())
+}
+
+/// A stored device name to the engine's choice. `None`, and any name that is blank, means
+/// follow the Windows default.
+fn output_of(name: Option<&str>) -> engine::Output {
+    match name {
+        Some(n) if !n.is_empty() => engine::Output::Named(n.to_string()),
+        _ => engine::Output::Default,
+    }
+}
+
+/// Every output endpoint present right now, for the Settings page to list.
+///
+/// Free of the engine on purpose: the list is worth showing before anyone signs in, and
+/// enumeration asks Windows rather than the player.
+#[tauri::command]
+pub fn native_output_devices() -> Vec<String> {
+    engine::output_devices()
+}
+
+/// Play on a chosen endpoint, or follow the Windows default when `device` is `None`.
+///
+/// Applied without saving, exactly like [`native_volume`] — the UI persists through
+/// `set_settings` — so that picking a device is heard immediately and can be undone by
+/// picking another rather than by a failed write.
+#[tauri::command]
+pub async fn native_set_output(
+    state: tauri::State<'_, NativeEngine>,
+    device: Option<String>,
+) -> Result<(), String> {
+    state.get().await?.set_output(output_of(device.as_deref()));
+    Ok(())
+}
+
+/// The endpoint audio is actually going to, or `None` when nothing is playing.
+///
+/// The Settings page shows this next to the choice because the two genuinely differ: a chosen
+/// device that is unplugged falls back to the default, and "following the default" says
+/// nothing about *which* device that currently is.
+#[tauri::command]
+pub async fn native_output_device(
+    state: tauri::State<'_, NativeEngine>,
+) -> Result<Option<String>, String> {
+    Ok(state.get().await?.output_device())
 }
 
 #[cfg(test)]

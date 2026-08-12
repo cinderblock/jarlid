@@ -50,11 +50,27 @@ anywhere in it.
   Re-importing is not built yet — and note Pandora only accepts a thumb for a track it has just
   served you, so thumbs will only ever be restorable opportunistically; seeds and stations
   restore cleanly.
+- **Its own volume**: a level for Jarlid alone, separate from the Windows one, so the radio
+  can sit *under* the rest of the machine — turn Windows up and notifications, calls and
+  video land above the music instead of competing with it. It is a constant-dB fader over a
+  60 dB range, so every 1% of travel is the same 0.6 dB and the slider feels identical
+  wherever you grab it — a power law, by contrast, is imperceptible at the top and twitchy at
+  the bottom. The gain is applied in floating point before the samples are quantised, so
+  turning down costs no resolution at all, and every change is ramped over ~15 ms so a
+  dragged slider is never heard as a click. Windows' per-app mixer can do something similar,
+  but it is three dialogs away, invisible from here, and forgets itself when the output
+  device changes.
+- **Output device**: play on whatever Windows currently calls the default *and keep following
+  it* — change the default mid-song and playback moves within a second, rather than carrying
+  on to the speakers you just switched away from. Or pin Jarlid to one device and leave it
+  there. A chosen device that gets unplugged falls back to the default without forgetting the
+  choice, so plugging it back in restores it.
 - **Settings**: light, dark, or follow Windows (the window frame follows too, and "system"
-  keeps following when Windows switches at sunset); which account is signed in and a way to
-  sign out (which clears the saved password from the Windows Credential Manager); and how
-  updates should arrive. Every control on the page is drawn by the app rather than by the
-  platform, so the dropdowns and radios belong to the same UI as everything else.
+  keeps following when Windows switches at sunset); Jarlid's own volume; which account is
+  signed in and a way to sign out (which clears the saved password from the Windows
+  Credential Manager); and how updates should arrive. Every control on the page is drawn by
+  the app rather than by the platform, so the dropdowns, radios and sliders belong to the
+  same UI as everything else.
 - **Updates that never interrupt anything**: the installer is downloaded and
   signature-verified in the background, then installed at a moment that costs you nothing.
   If the music is paused it goes in immediately and silently, and Jarlid comes back *still

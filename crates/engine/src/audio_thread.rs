@@ -13,7 +13,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How often the thread refreshes its published state. Fast enough for smooth lyric sync,
@@ -54,6 +54,13 @@ const MAX_RECOVERIES: u32 = 3;
 /// a spell of heavy CPU load could cost a song rather than a few seconds of audio.
 const RECOVERY_FORGIVENESS: Duration = Duration::from_secs(10);
 
+/// How often to ask Windows which output is default, while following it.
+///
+/// Deliberately far slower than [`POLL`]: it is a COM round trip rather than an atomic load, and
+/// nobody switches audio devices twice a second. A switch costs up to this long to notice, which
+/// is well inside the time it takes to walk to the speakers and wonder why they are silent.
+const DEFAULT_DEVICE_POLL: Duration = Duration::from_secs(1);
+
 enum Command {
     /// `paused: true` records the track without ever opening the device — see
     /// [`AudioThread::play_paused`].
@@ -63,6 +70,9 @@ enum Command {
     },
     SetPaused(bool),
     SetVolume(f32),
+    /// Play on a different endpoint, moving the current track there rather than waiting for
+    /// the next one.
+    SetOutput(audio::Output),
     /// Move the playhead. Re-opens the stream at the new offset — see [`AudioThread::seek`].
     Seek(Duration),
     Stop,
@@ -86,6 +96,11 @@ struct Published {
     /// instead of stalling forever. Covers both "never opened" and "stalled and would not come
     /// back", which the engine treats the same way.
     failed: AtomicBool,
+    /// The endpoint the live player actually opened, so the UI can report what is being used
+    /// rather than what was requested — they differ whenever a chosen device is unplugged.
+    /// A `Mutex` rather than an atomic because it is a string, and it is read by the UI at
+    /// human pace, never from the audio callback.
+    device: Mutex<Option<String>>,
 }
 
 /// The track the thread is responsible for. Present whenever there is something to (re)build a
@@ -116,6 +131,10 @@ impl AudioThread {
 
             // Volume is remembered here rather than only in the player, so it survives a rebuild.
             let mut volume = 1.0f32;
+            // As is the chosen endpoint — every rebuild has to land on the same device the
+            // listener picked, including the ones they never asked for.
+            let mut output = audio::Output::default();
+            let mut last_device_check = Instant::now();
             let mut paused = false;
             let mut paused_since: Option<Instant> = None;
 
@@ -208,10 +227,38 @@ impl AudioThread {
                                 player.set_volume(v);
                             }
                         }
+                        Ok(Command::SetOutput(next)) => {
+                            // Same shape as `Seek`: park where we are, drop the player, and let
+                            // the build step below re-open — this time somewhere else. Choosing
+                            // a device is a deliberate act, so it moves the *current* song
+                            // rather than taking effect at the next one, and it costs no
+                            // recovery budget: a device change is not evidence of a bad track.
+                            if next != output {
+                                output = next;
+                                if let Some(active) = player.take() {
+                                    let at = active.position();
+                                    drop(active); // stop the old device before opening another
+                                    if let Some(track) = &mut current {
+                                        track.resume_at = at;
+                                    }
+                                    last_position = at;
+                                    recovered_at = at;
+                                }
+                                recoveries = 0;
+                                last_moved = Instant::now();
+                                last_decode = Instant::now();
+                                last_device_check = Instant::now();
+                            }
+                        }
                         Ok(Command::Stop) => {
                             player = None; // dropping stops the device and the decode thread
                             current = None;
                             thread_state.playing.store(false, Ordering::Relaxed);
+                            // Nothing is open, so nothing is "in use" — saying otherwise would
+                            // leave the Settings page naming a device we let go of.
+                            if let Ok(mut slot) = thread_state.device.lock() {
+                                *slot = None;
+                            }
                         }
                         Ok(Command::Shutdown) => return,
                         Err(mpsc::TryRecvError::Empty) => break,
@@ -224,9 +271,15 @@ impl AudioThread {
                 // `current` in place.
                 if !paused && player.is_none() {
                     if let Some(track) = &current {
-                        match audio::Player::play_at(&track.url, track.resume_at) {
+                        match audio::Player::play_on(&track.url, track.resume_at, &output) {
                             Ok(new_player) => {
                                 new_player.set_volume(volume);
+                                // What was actually opened, which is not always what was asked
+                                // for — a chosen device that is unplugged falls back.
+                                if let Ok(mut slot) = thread_state.device.lock() {
+                                    *slot = Some(new_player.device_name().to_string());
+                                }
+                                last_device_check = Instant::now();
                                 last_position = new_player.started_at();
                                 last_moved = Instant::now();
                                 last_decoded = new_player.decoded();
@@ -246,6 +299,9 @@ impl AudioThread {
                                 eprintln!("could not play track: {e}");
                                 thread_state.failed.store(true, Ordering::Relaxed);
                                 thread_state.playing.store(false, Ordering::Relaxed);
+                                if let Ok(mut slot) = thread_state.device.lock() {
+                                    *slot = None;
+                                }
                                 current = None;
                             }
                         }
@@ -288,6 +344,22 @@ impl AudioThread {
                     if decoded != last_decoded {
                         last_decoded = decoded;
                         last_decode = Instant::now();
+                    }
+
+                    // Following the system default means noticing when Windows moves it, and
+                    // nothing tells us. cpal binds an endpoint when the stream opens; if the old
+                    // device is still present the stream neither errors nor stops, so playback
+                    // carries on to the speakers you just switched away from and every branch
+                    // below reports perfect health. Polling the default's name is the only
+                    // signal there is.
+                    let mut default_moved = false;
+                    if output == audio::Output::Default
+                        && last_device_check.elapsed() > DEFAULT_DEVICE_POLL
+                    {
+                        last_device_check = Instant::now();
+                        if let Some(now_default) = audio::default_output_name() {
+                            default_moved = now_default != active.device_name();
+                        }
                     }
 
                     // Four ways a player dies without saying so out loud, all recoverable the same
@@ -341,6 +413,21 @@ impl AudioThread {
                             }
                         }
                         player = None; // rebuilt on the next pass, or dropped for good
+                    } else if default_moved {
+                        // Not a fault, so it spends no recovery budget — switching output
+                        // devices four times in an evening must not retire the song. Handled
+                        // after `reason` so a genuinely broken device still wins.
+                        eprintln!(
+                            "default output moved to {:?}; following it at {:.1}s",
+                            audio::default_output_name().unwrap_or_default(),
+                            position.as_secs_f64()
+                        );
+                        if let Some(track) = &mut current {
+                            track.resume_at = position;
+                        }
+                        recoveries = 0;
+                        recovered_at = position;
+                        player = None;
                     } else if paused
                         && (active.device_error()
                             || paused_since
@@ -394,6 +481,19 @@ impl AudioThread {
 
     pub fn set_volume(&self, volume: f32) {
         let _ = self.commands.send(Command::SetVolume(volume));
+    }
+
+    /// Choose the output endpoint. Takes effect on the current song, not the next one.
+    pub fn set_output(&self, output: audio::Output) {
+        let _ = self.commands.send(Command::SetOutput(output));
+    }
+
+    /// The endpoint audio is actually going to, or `None` when nothing is open.
+    ///
+    /// Not the same question as "which device is selected": a selected device that is absent
+    /// falls back to the default, and this is the one that answers what you are hearing.
+    pub fn output_device(&self) -> Option<String> {
+        self.published.device.lock().ok()?.clone()
     }
 
     /// Move the playhead to `to`.

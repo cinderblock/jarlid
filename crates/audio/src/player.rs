@@ -14,7 +14,7 @@
 //! been decoded. Decoding runs seconds ahead of what the listener hears, so tracking decode
 //! progress would run synced lyrics early.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,6 +76,63 @@ impl Drop for AudioPriority {
 /// pause and skip feel immediate.
 const TARGET_BUFFER: Duration = Duration::from_secs(5);
 
+/// Which endpoint to play on.
+///
+/// `Default` is not resolved once and remembered — the owner re-checks it while playing and
+/// rebuilds when Windows' default moves, because nothing else would notice. cpal binds an
+/// endpoint when the stream is opened and a stream on a still-present device never errors, so
+/// changing the default output mid-song leaves the music playing happily to the old speakers.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum Output {
+    /// Whatever Windows currently calls the default output, and keep following it.
+    #[default]
+    Default,
+    /// One specific endpoint, by the name [`output_devices`] reports.
+    Named(String),
+}
+
+/// Every output endpoint currently present, by name.
+///
+/// Names are the identity used throughout: cpal exposes no stable device id, and the name is
+/// what a person picked from a list anyway. A renamed or absent device therefore reads as a
+/// different one — which is why choosing a device that has gone away falls back rather than
+/// failing (see [`resolve_device`]).
+pub fn output_devices() -> Vec<String> {
+    cpal::default_host()
+        .output_devices()
+        .map(|ds| ds.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// The name Windows currently gives the default output, if there is one.
+pub fn default_output_name() -> Option<String> {
+    cpal::default_host()
+        .default_output_device()
+        .and_then(|d| d.name().ok())
+}
+
+/// Find the endpoint an [`Output`] asks for.
+///
+/// A named device that is not present right now falls back to the default instead of
+/// erroring. Unplugging the chosen DAC should cost you the *choice*, not the music — and the
+/// setting is deliberately left pointing at the absent device so plugging it back in restores
+/// it rather than silently rewriting what was asked for.
+fn resolve_device(output: &Output) -> Result<cpal::Device> {
+    let host = cpal::default_host();
+    if let Output::Named(want) = output {
+        if let Ok(mut devices) = host.output_devices() {
+            if let Some(found) =
+                devices.find(|d| d.name().map(|have| &have == want).unwrap_or(false))
+            {
+                return Ok(found);
+            }
+        }
+        eprintln!("output device {want:?} is not available; falling back to the system default");
+    }
+    host.default_output_device()
+        .ok_or_else(|| Error::Unsupported("no audio output device".into()))
+}
+
 struct Shared {
     frames_played: AtomicU64,
     /// Every sample ever handed to the queue. Exists as a correctness invariant:
@@ -103,8 +160,11 @@ struct Shared {
     /// Set once the callback has filled a whole buffer, i.e. playback reached steady state. Before
     /// that an empty queue is just the pipeline priming, not a dropout.
     delivered: AtomicBool,
-    /// Fixed-point volume (1024 = unity), keeping the callback free of float state.
-    volume: AtomicU64,
+    /// Output gain as `f32` bits (1.0 = the decoded signal untouched).
+    ///
+    /// Stored as bits because there is no `AtomicF32`. It is the *target*, not what is
+    /// currently being applied — the callback ramps towards it; see `callback!`.
+    volume: AtomicU32,
 }
 
 /// Plays one track. Create a [`Player`] per track; the caller sequences them.
@@ -113,12 +173,16 @@ pub struct Player {
     format: Format,
     /// Where in the track this player started; zero unless it was built to resume a stalled one.
     started_at: Duration,
+    /// The endpoint actually opened — not necessarily the one asked for, since a named device
+    /// that has gone away falls back to the default. The owner compares this against the
+    /// current default to notice when Windows moves it.
+    device_name: String,
     // Dropping the stream stops the device, so it must outlive playback.
     _stream: cpal::Stream,
 }
 
 impl Player {
-    /// Open `url` and begin playing immediately.
+    /// Open `url` and begin playing immediately on the default output.
     pub fn play(url: &str) -> Result<Self> {
         Self::play_at(url, Duration::ZERO)
     }
@@ -133,10 +197,17 @@ impl Player {
     /// reports `0` — the position must describe what is actually being heard, or synced lyrics
     /// would run confidently wrong for the whole track.
     pub fn play_at(url: &str, offset: Duration) -> Result<Self> {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| Error::Unsupported("no audio output device".into()))?;
+        Self::play_on(url, offset, &Output::Default)
+    }
+
+    /// As [`Player::play_at`], but on a chosen endpoint.
+    ///
+    /// The choice is honoured once, here. A [`Player`] never migrates between devices — the
+    /// owner throws it away and builds another, which is the same disposable-player pattern
+    /// every other recovery path uses.
+    pub fn play_on(url: &str, offset: Duration, output: &Output) -> Result<Self> {
+        let device = resolve_device(output)?;
+        let device_name = device.name().unwrap_or_else(|_| "unknown".into());
         let config = device
             .default_output_config()
             .map_err(|e| Error::Unsupported(format!("no output config: {e}")))?;
@@ -182,7 +253,7 @@ impl Player {
             paused: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             device_error: AtomicBool::new(false),
-            volume: AtomicU64::new(1024),
+            volume: AtomicU32::new(1.0f32.to_bits()),
         });
 
         // Decode thread: keep the queue topped up, backing off when full so a track is streamed
@@ -268,21 +339,41 @@ impl Player {
             error_shared.device_error.store(true, Ordering::Relaxed);
         };
 
+        // A volume change arrives as a step: the callback reads a new target between one buffer
+        // and the next, and moving a waveform's amplitude discontinuously is heard as a click.
+        // Ramping to the target with a one-pole filter over roughly 15 ms makes any change —
+        // including a slider dragged as fast as the UI can send events — inaudible as anything
+        // but a change in level. Derived from the device's own rate so the ramp is 15 ms of
+        // sound rather than 15 ms at some assumed 48 kHz. The ramp advances once per *sample*
+        // and the stream is interleaved, so the rate it is derived from has to include the
+        // channel count — using the frame rate would make it 7.5 ms on stereo.
+        const VOLUME_RAMP: f32 = 0.015;
+        let samples_per_second = config.sample_rate().0 as f32 * config.channels() as f32;
+        let gain_step = 1.0 - (-1.0 / (VOLUME_RAMP * samples_per_second)).exp();
+
         // Runs on the audio thread: no allocation, no locks, no blocking.
         macro_rules! callback {
-            ($sample:ty, $convert:expr) => {
+            ($sample:ty, $convert:expr) => {{
+                // The ramp's current value, owned by the callback and carried between calls.
+                // Seeded at the target so opening a stream — including the rebuild after a stall
+                // — starts at the right level instead of fading up from silence.
+                let mut gain = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
                 move |output: &mut [$sample], _: &cpal::OutputCallbackInfo| {
                     let paused = callback_shared.paused.load(Ordering::Relaxed);
-                    let volume = callback_shared.volume.load(Ordering::Relaxed) as i32;
+                    let target = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
 
                     let mut written = 0usize;
                     if !paused {
                         for slot in output.iter_mut() {
                             let Ok(sample) = consumer.pop() else { break };
-                            let scaled = (sample as i32 * volume / 1024)
-                                .clamp(i16::MIN as i32, i16::MAX as i32)
-                                as i16;
-                            *slot = $convert(scaled);
+                            // A one-pole approaches its target without ever arriving; snap when
+                            // the remainder is below a 16-bit LSB so that "muted" is really zero
+                            // and the filter isn't left grinding on denormals forever.
+                            gain += (target - gain) * gain_step;
+                            if (target - gain).abs() < 1.0 / 65536.0 {
+                                gain = target;
+                            }
+                            *slot = $convert(sample as f32 * gain);
                             written += 1;
                         }
                     }
@@ -290,7 +381,7 @@ impl Player {
                     // Anything unfilled must be explicit silence, or the device replays stale
                     // memory as a buzz.
                     for slot in output.iter_mut().skip(written) {
-                        *slot = $convert(0i16);
+                        *slot = $convert(0.0f32);
                     }
 
                     // Silence we were forced to invent because the queue ran dry: the dropout,
@@ -321,25 +412,33 @@ impl Player {
                         .frames_played
                         .fetch_add(written as u64 / channels, Ordering::Relaxed);
                 }
-            };
+            }};
         }
 
+        // Attenuation happens in `f32`, before the sample is quantised to whatever the device
+        // takes. On the usual Windows path — WASAPI shared mode, which is `f32` — that means
+        // turning the volume down costs no resolution at all. Doing the multiply in the old
+        // 16-bit fixed point instead threw away roughly a bit per halving, so a comfortable
+        // listening level would have been played back as 11- or 12-bit audio.
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => device.build_output_stream(
                 &config.config(),
-                callback!(f32, |s: i16| s as f32 / 32768.0),
+                callback!(f32, |s: f32| (s / 32768.0).clamp(-1.0, 1.0)),
                 error_callback,
                 None,
             ),
             cpal::SampleFormat::I16 => device.build_output_stream(
                 &config.config(),
-                callback!(i16, |s: i16| s),
+                callback!(i16, |s: f32| s.round().clamp(-32768.0, 32767.0) as i16),
                 error_callback,
                 None,
             ),
             cpal::SampleFormat::U16 => device.build_output_stream(
                 &config.config(),
-                callback!(u16, |s: i16| (s as i32 + 32768) as u16),
+                callback!(
+                    u16,
+                    |s: f32| (s.round().clamp(-32768.0, 32767.0) as i32 + 32768) as u16
+                ),
                 error_callback,
                 None,
             ),
@@ -359,6 +458,7 @@ impl Player {
             shared,
             format,
             started_at,
+            device_name,
             _stream: stream,
         })
     }
@@ -367,6 +467,15 @@ impl Player {
     /// source refused to seek.
     pub fn started_at(&self) -> Duration {
         self.started_at
+    }
+
+    /// The endpoint this player is actually playing to.
+    ///
+    /// Worth asking rather than assuming: a named device that was missing at open time fell
+    /// back to the default, and a player built as [`Output::Default`] is pinned to whatever
+    /// was default *then*, which is exactly the thing that goes stale.
+    pub fn device_name(&self) -> &str {
+        &self.device_name
     }
 
     /// True once the output device has failed. The player produces no more audio after this and
@@ -392,11 +501,21 @@ impl Player {
         self.shared.paused.load(Ordering::Relaxed)
     }
 
-    /// 0.0 to 1.0. Values above 1.0 are permitted but will clip.
+    /// 0.0 to 1.0, where 1.0 is the decoded signal untouched. Values above 1.0 are
+    /// permitted but will clip.
+    ///
+    /// The change is a target, not an instruction to jump: the callback ramps to it over a
+    /// few milliseconds, so this can be called as fast as a slider drag produces events
+    /// without any of them being heard as a click. NaN reads as 0.0.
     pub fn set_volume(&self, volume: f32) {
         self.shared
             .volume
-            .store((volume.max(0.0) * 1024.0) as u64, Ordering::Relaxed);
+            .store(volume.max(0.0).to_bits(), Ordering::Relaxed);
+    }
+
+    /// The gain being aimed at, which is what was last set — not the ramp's current value.
+    pub fn volume(&self) -> f32 {
+        f32::from_bits(self.shared.volume.load(Ordering::Relaxed))
     }
 
     /// True once the decoder finished *and* the queue has drained — i.e. the listener has actually

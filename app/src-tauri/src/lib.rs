@@ -527,6 +527,9 @@ pub fn run() {
             diagnostics::native_record_incident,
             native::native_set_mode,
             native::native_volume,
+            native::native_output_devices,
+            native::native_set_output,
+            native::native_output_device,
             player_cmd,
             remote_cmd,
             remote_presets

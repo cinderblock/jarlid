@@ -1235,9 +1235,15 @@ body.remote #remote-vol-wrap {
   padding: 20px;
 }
 /* Each setting is its own card. The page is a list of unrelated decisions, and a
-   flat run of headings made it read as one long form. */
+   flat run of headings made it read as one long form.
+
+   Centred rather than left-hugging: at 560px on a maximised window the page was a
+   narrow ribbon against a wide empty right half. The cap is generous enough to let
+   each setting put its control in a column of its own (see `.set-item`) and low
+   enough that a description never becomes a 200-character line. */
 .set-section {
-  max-width: 560px;
+  max-width: 1040px;
+  margin-inline: auto;
   padding: 16px 18px;
   border: 1px solid rgba(var(--wash), 0.08);
   border-radius: 14px;
@@ -1251,11 +1257,6 @@ body.remote #remote-vol-wrap {
   color: var(--faint);
   font-weight: 600;
 }
-.set-row {
-  font-size: 0.92rem;
-  color: var(--fg);
-  margin-bottom: 12px;
-}
 #set-signout:hover {
   background: var(--bad-soft);
   color: var(--bad-ink);
@@ -1265,12 +1266,6 @@ body.remote #remote-vol-wrap {
   background: var(--bad-soft);
   color: var(--bad-ink);
   box-shadow: inset 0 0 0 1px var(--bad);
-}
-.set-note {
-  font-size: 0.78rem;
-  color: var(--faint);
-  line-height: 1.5;
-  margin: 10px 0 0;
 }
 .set-radio {
   display: flex;
@@ -1319,14 +1314,122 @@ body.remote #remote-vol-wrap {
   color: var(--fg);
   margin-bottom: 2px;
 }
-.set-row-inline {
+/* The fader row never wraps: the icon and the read-out are part of the control, and
+   dropping the percentage onto its own line while dragging moves the number you are
+   watching. */
+.set-vol {
+  flex-wrap: nowrap;
+}
+.set-vol-icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--faint);
+}
+/* Fixed width and tabular figures: the number is read while dragging, and a
+   proportional one shifts the whole row sideways as it passes 9%, 99%. */
+.set-vol-value {
+  flex: none;
+  width: 3.4ch;
+  text-align: right;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+.set-section + .set-section {
+  margin-top: 16px;
+}
+
+/* ---- one setting: what it is, and the control for it --------------------
+   Narrow, this reads as a column — the description, then the control under it.
+   Wide, the control moves into a right-hand column, so the eye runs down one
+   edge of prose and one edge of controls rather than scanning a ragged single
+   file. The control column is capped: a dropdown stretched to half a maximised
+   window looks like a mistake, and the point of the width is the *description*
+   getting room, not the input. */
+.set-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+/* A rule between settings inside one card — without it two stacked items read as
+   one paragraph with a stray control in it. */
+.set-item + .set-item {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(var(--wash), 0.07);
+}
+.set-item-text b {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+.set-item-text p {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--faint);
+}
+.set-item-ctl {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
 }
-.set-section + .set-section {
-  margin-top: 16px;
+/* Dropdowns and fields fill the control column so their right edges line up;
+   buttons keep their natural width, because a full-width "Sign out" reads as a
+   much bigger action than it is. */
+.set-item-ctl > .select,
+.set-item-ctl > .field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.set-item-ctl-stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+/* A live fact about the setting rather than an explanation of it — which device is
+   actually in use, what the current taper does. Distinguished from the description
+   so it doesn't read as more prose. */
+.set-item-status {
+  margin: 6px 0 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.set-item-status:empty {
+  display: none;
+}
+
+@media (min-width: 760px) {
+  .set-item {
+    grid-template-columns: minmax(0, 1fr) minmax(200px, 280px);
+    gap: 28px;
+    align-items: center;
+  }
+  .set-item-ctl {
+    justify-content: flex-end;
+  }
+  /* The fader is the exception the user asked for: resolution beats alignment,
+     because a level is judged by movements of a percent or two and a 280px track
+     puts 3% and 6% on the same pixel. It keeps the full card width. */
+  .set-item-wide {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  /* Four options, each explaining itself — two columns rather than a tall single
+     file that pushes everything below it off the screen. */
+  .set-policy-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .set-policy-grid .set-radio + .set-radio {
+    margin-top: 0;
+  }
 }
 
 /* ---- form controls -----------------------------------------------------
@@ -1471,6 +1574,83 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* ---- slider ----
+   A range input is drawn from three pieces the platform owns — track, filled part
+   and thumb — and only the track and thumb have a standard-ish pseudo-element.
+   There is no Chromium equivalent of `::-moz-range-progress`, so the filled part is
+   painted as a hard-stopped gradient on the track and the stop position arrives
+   from script as `--fill`. Custom properties inherit into pseudo-elements, which is
+   what makes that work at all.
+
+   The element is deliberately taller than the track it draws: 20px of hit target
+   for a 5px line, because a 5px pointer target is a control you fight. */
+.slider {
+  flex: 1;
+  min-width: 120px;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0 var(--fill, 0%),
+    rgba(var(--wash), 0.16) var(--fill, 0%) 100%
+  );
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  /* Half the thumb minus half the track, or it rides above the line it sets. */
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--fg);
+  box-shadow: var(--sh-soft);
+  transition: transform 0.12s ease;
+}
+.slider:hover:not(:disabled)::-webkit-slider-thumb,
+.slider:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+/* The ring belongs around the track, not around 20px of invisible hit area. */
+.slider:focus-visible {
+  outline: none;
+}
+.slider:focus-visible::-webkit-slider-runnable-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.slider:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+/* WebView2 is Chromium, so the rules above are the ones that ship. These keep the
+   control honest in Firefox, which is where the dev server gets opened by hand. */
+.slider::-moz-range-track {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(var(--wash), 0.16);
+}
+.slider::-moz-range-progress {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: var(--fg);
+  box-shadow: var(--sh-soft);
 }
 
 /* ---- segmented control (Theme) ----

@@ -90,38 +90,89 @@
       <div class="page-body">
         <section class="set-section">
           <h3>Appearance</h3>
-          <div class="segmented" id="set-theme" role="radiogroup" aria-label="Theme">
-            <label class="seg">
-              <input type="radio" name="theme" value="system" />
-              <svg viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8.5 21h7M12 17v4"/></svg>
-              <span>System</span>
-            </label>
-            <label class="seg">
-              <input type="radio" name="theme" value="light" />
-              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.6M12 19.4V22M2 12h2.6M19.4 12H22M4.9 4.9l1.9 1.9M17.2 17.2l1.9 1.9M19.1 4.9l-1.9 1.9M6.8 17.2l-1.9 1.9"/></svg>
-              <span>Light</span>
-            </label>
-            <label class="seg">
-              <input type="radio" name="theme" value="dark" />
-              <svg viewBox="0 0 24 24"><path d="M20.5 14.6A8.6 8.6 0 0 1 9.4 3.5a8.6 8.6 0 1 0 11.1 11.1z"/></svg>
-              <span>Dark</span>
-            </label>
+          <div class="set-item">
+            <div class="set-item-text">
+              <b>Theme</b>
+              <p>System follows the Windows app-colour setting, including when Windows
+                switches it for you. The window frame follows too.</p>
+            </div>
+            <div class="set-item-ctl">
+              <div class="segmented" id="set-theme" role="radiogroup" aria-label="Theme">
+                <label class="seg">
+                  <input type="radio" name="theme" value="system" />
+                  <svg viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8.5 21h7M12 17v4"/></svg>
+                  <span>System</span>
+                </label>
+                <label class="seg">
+                  <input type="radio" name="theme" value="light" />
+                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.6M12 19.4V22M2 12h2.6M19.4 12H22M4.9 4.9l1.9 1.9M17.2 17.2l1.9 1.9M19.1 4.9l-1.9 1.9M6.8 17.2l-1.9 1.9"/></svg>
+                  <span>Light</span>
+                </label>
+                <label class="seg">
+                  <input type="radio" name="theme" value="dark" />
+                  <svg viewBox="0 0 24 24"><path d="M20.5 14.6A8.6 8.6 0 0 1 9.4 3.5a8.6 8.6 0 1 0 11.1 11.1z"/></svg>
+                  <span>Dark</span>
+                </label>
+              </div>
+            </div>
           </div>
-          <p class="set-note">System follows the Windows app-colour setting, including when
-            Windows switches it for you. The window frame follows too.</p>
+        </section>
+
+        <section class="set-section">
+          <h3>Volume</h3>
+          <!-- The fader is the one control that wants width rather than a right-hand
+               column: it is judged by small movements, and a short track makes 3% and 6%
+               land on the same pixel. -->
+          <div class="set-item set-item-wide">
+            <div class="set-item-text">
+              <b>Jarlid's own level</b>
+              <p>Independent of Windows. Turning it down leaves room to raise the system
+                volume, so that everything else on the machine — notifications, calls, a
+                video — sits above the music rather than under it.</p>
+            </div>
+            <div class="set-item-ctl set-vol">
+              <svg class="set-vol-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+              <input id="set-volume" class="slider" type="range" min="0" max="100" step="1"
+                value="100" aria-label="Jarlid's volume" />
+              <output id="set-volume-value" class="set-vol-value" for="set-volume">100%</output>
+            </div>
+          </div>
+        </section>
+
+        <section class="set-section">
+          <h3>Output</h3>
+          <div class="set-item">
+            <div class="set-item-text">
+              <b>Audio device</b>
+              <p>Following the Windows default means the music moves with it — change the
+                default while a song is playing and playback follows within a second. Choose
+                a device instead to keep Jarlid on it whatever the rest of the machine
+                does.</p>
+              <p id="set-output-now" class="set-item-status"></p>
+            </div>
+            <div class="set-item-ctl">
+              <div class="select" id="set-output-device"></div>
+            </div>
+          </div>
         </section>
 
         <section class="set-section">
           <h3>Account</h3>
-          <div id="set-account" class="set-row">Checking…</div>
-          <button id="set-signout" class="btn">Sign out</button>
-          <p class="set-note">Your password is stored in the Windows Credential Manager,
-            encrypted for your user. Signing out removes it from this machine.</p>
+          <div class="set-item">
+            <div class="set-item-text">
+              <b id="set-account">Checking…</b>
+              <p>Your password is stored in the Windows Credential Manager, encrypted for
+                your user. Signing out removes it from this machine.</p>
+            </div>
+            <div class="set-item-ctl">
+              <button id="set-signout" class="btn">Sign out</button>
+            </div>
+          </div>
         </section>
 
         <section class="set-section">
           <h3>When a new version is available</h3>
-          <div id="set-policy">
+          <div id="set-policy" class="set-policy-grid">
             <label class="set-radio">
               <input type="radio" name="update-policy" value="afterSong" />
               <span class="set-radio-text">
@@ -158,14 +209,19 @@
 
         <section class="set-section">
           <h3>Check for updates</h3>
-          <!-- The options live in settings-page.ts, not here: an interval this build
-               doesn't offer still has to be shown truthfully. -->
-          <div class="set-row-inline">
-            <div class="select" id="set-check-schedule"></div>
-            <input id="set-check-time" class="field" type="time" value="03:00" hidden />
+          <div class="set-item">
+            <div class="set-item-text">
+              <b>How often to look</b>
+              <p>A daily check uses the clock rather than an interval, so you can put the
+                restart at an hour you are not listening.</p>
+            </div>
+            <!-- The options live in settings-page.ts, not here: an interval this build
+                 doesn't offer still has to be shown truthfully. -->
+            <div class="set-item-ctl set-item-ctl-stack">
+              <div class="select" id="set-check-schedule"></div>
+              <input id="set-check-time" class="field" type="time" value="03:00" hidden />
+            </div>
           </div>
-          <p class="set-note">A daily check uses the clock rather than an interval, so you
-            can put the restart at an hour you are not listening.</p>
         </section>
       </div>
     </div>

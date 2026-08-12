@@ -15,6 +15,9 @@ const policyRadios = () =>
   document.querySelectorAll<HTMLInputElement>('input[name="update-policy"]');
 const themeRadios = () => document.querySelectorAll<HTMLInputElement>('input[name="theme"]');
 const timeInput = $<HTMLInputElement>("set-check-time");
+const volumeInput = $<HTMLInputElement>("set-volume");
+const volumeValue = $("set-volume-value");
+const outputNow = $("set-output-now");
 
 type Policy = "instant" | "afterSong" | "manualInstall" | "notifyOnly";
 type CheckSchedule =
@@ -25,7 +28,14 @@ interface Settings {
   updatePolicy: Policy;
   checkSchedule: CheckSchedule;
   theme: ThemePref;
+  /** 0-100. The taper from this to a gain lives in Rust; see `settings::Volume`. */
+  volume: number;
+  /** `null` means follow the Windows default, and keep following it. */
+  outputDevice: string | null;
 }
+
+/** The value used for "follow the Windows default", which is `null` on the wire. */
+const FOLLOW_DEFAULT = "";
 
 /** The offered intervals. `daily` is a wall-clock time and takes the time field. */
 const SCHEDULES: Option[] = [
@@ -41,12 +51,75 @@ const scheduleSel = createSelect($("set-check-schedule"), SCHEDULES, {
   onChange: () => void persist(),
 });
 
+// Populated from the backend on open — the list of endpoints is a fact about the
+// machine right now, not a constant.
+const outputSel = createSelect($("set-output-device"), [{ value: FOLLOW_DEFAULT, label: "Windows default" }], {
+  label: "Audio output device",
+  onChange: (value) => {
+    // Heard before it is saved, like the volume: choosing a device is judged by
+    // whether sound comes out of it.
+    void invoke("native_set_output", { device: value === FOLLOW_DEFAULT ? null : value }).catch(
+      () => {},
+    );
+    void persist();
+    // The engine takes about a second to move the stream; ask again once it has.
+    setTimeout(() => void refreshOutputNow(), 1400);
+  },
+});
+
 let current: Settings | null = null;
 
 export function open() {
   page.hidden = false;
   void refreshAccount();
   void refreshSettings();
+}
+
+/**
+ * The endpoints present right now.
+ *
+ * A stored device that is *not* present still gets an entry. Dropping it would make the
+ * list disagree with what is saved, and the next save would then quietly rewrite the
+ * choice — so unplugging a DAC would lose the preference rather than suspend it.
+ */
+async function refreshOutputDevices() {
+  let devices: string[] = [];
+  try {
+    devices = await invoke<string[]>("native_output_devices");
+  } catch {
+    // Can't enumerate; the stored choice still has to be shown truthfully.
+  }
+  const chosen = current?.outputDevice ?? null;
+  if (chosen && !devices.includes(chosen)) devices = [...devices, `${chosen}`];
+  outputSel.setOptions([
+    { value: FOLLOW_DEFAULT, label: "Windows default" },
+    ...devices.map((d) => ({ value: d, label: d })),
+  ]);
+  outputSel.value = chosen ?? FOLLOW_DEFAULT;
+}
+
+/**
+ * What is actually being played to, which is a different question from what was chosen:
+ * "Windows default" doesn't say which device that is, and a chosen device that has gone
+ * away falls back rather than going silent.
+ */
+async function refreshOutputNow() {
+  let inUse: string | null = null;
+  try {
+    inUse = await invoke<string | null>("native_output_device");
+  } catch {
+    // Not signed in, so no engine and nothing open.
+  }
+  const chosen = current?.outputDevice ?? null;
+  if (!inUse) {
+    outputNow.textContent = "Nothing is playing, so no device is open right now.";
+  } else if (!chosen) {
+    outputNow.textContent = `Playing on ${inUse} — the current Windows default.`;
+  } else if (chosen === inUse) {
+    outputNow.textContent = `Playing on ${inUse}.`;
+  } else {
+    outputNow.textContent = `${chosen} isn't available — playing on ${inUse} until it is back.`;
+  }
 }
 
 /** Apply the stored theme at startup, without showing the page. */
@@ -69,6 +142,9 @@ async function refreshSettings() {
     current = await invoke<Settings>("get_settings");
     render(current);
     setEnabled(true);
+    // Both depend on `current`, so they follow the render rather than racing it.
+    await refreshOutputDevices();
+    await refreshOutputNow();
   } catch {
     // Can't read them — don't show controls whose state would be a guess.
     setEnabled(false);
@@ -79,12 +155,17 @@ function setEnabled(on: boolean) {
   policyRadios().forEach((r) => (r.disabled = !on));
   themeRadios().forEach((r) => (r.disabled = !on));
   scheduleSel.setDisabled(!on);
+  outputSel.setDisabled(!on);
   timeInput.disabled = !on;
+  volumeInput.disabled = !on;
 }
 
 function render(s: Settings) {
   policyRadios().forEach((r) => (r.checked = r.value === s.updatePolicy));
   themeRadios().forEach((r) => (r.checked = r.value === (s.theme ?? "system")));
+  volumeInput.value = String(s.volume ?? 100);
+  outputSel.value = s.outputDevice ?? FOLLOW_DEFAULT;
+  reflectVolume();
   const sched = s.checkSchedule;
   scheduleSel.setOptions(scheduleOptions(sched));
   scheduleSel.value =
@@ -133,11 +214,36 @@ function readPolicy(): Policy {
   return (picked?.value as Policy) ?? "afterSong";
 }
 
+function readVolume(): number {
+  return Number(volumeInput.value);
+}
+
+function readOutput(): string | null {
+  const v = outputSel.value;
+  return v === FOLLOW_DEFAULT ? null : v;
+}
+
+/** Paint the filled part of the track and the read-out from the slider's position. */
+function reflectVolume() {
+  const v = readVolume();
+  volumeInput.style.setProperty("--fill", `${v}%`);
+  volumeValue.textContent = `${v}%`;
+}
+
+/** Apply a level without saving it. */
+function applyVolume(percent: number) {
+  // Not signed in means there is no engine to talk to yet; the level is still saved,
+  // and `attach()` applies it as soon as one exists.
+  void invoke("native_volume", { percent }).catch(() => {});
+}
+
 async function persist() {
   const next: Settings = {
     updatePolicy: readPolicy(),
     checkSchedule: readSchedule(),
     theme: readTheme(),
+    volume: readVolume(),
+    outputDevice: readOutput(),
   };
   timeInput.hidden = next.checkSchedule.kind !== "dailyAt";
   // Disabling a control takes focus with it, so a keyboard user would be dropped
@@ -149,11 +255,15 @@ async function persist() {
     render(current);
   } catch {
     // Roll back to what is actually stored rather than leaving the UI asserting
-    // something that was never saved — including the theme, which has already
-    // been applied optimistically.
+    // something that was never saved — including the theme and the volume, both of
+    // which have already been applied optimistically.
     if (current) {
       render(current);
       setTheme(current.theme ?? "system");
+      applyVolume(current.volume ?? 100);
+      // The device was moved optimistically too, so put playback back where the
+      // stored settings say it belongs.
+      void invoke("native_set_output", { device: current.outputDevice ?? null }).catch(() => {});
     }
   } finally {
     setEnabled(true);
@@ -163,6 +273,21 @@ async function persist() {
 
 $("set-policy").addEventListener("change", () => void persist());
 timeInput.addEventListener("change", () => void persist());
+
+// Volume is judged by ear, so it follows the handle rather than the write: every
+// `input` is heard immediately, and only the value it is let go on reaches the disk.
+// `change` on a range fires on release, which is exactly the moment worth saving.
+volumeInput.addEventListener("input", () => {
+  reflectVolume();
+  applyVolume(readVolume());
+});
+volumeInput.addEventListener("change", () => void persist());
+
+// The filled part of the track is painted from `--fill`, which only script can set, so
+// until this runs the markup's own `value` is drawn as an empty track with the thumb at
+// the far end. `render()` would fix it — but not on the path where the settings can't be
+// read at all, which is exactly when a control lying about its value is worst.
+reflectVolume();
 
 // The theme is the one setting you judge by looking at it, so it changes as you
 // click rather than after the write comes back.

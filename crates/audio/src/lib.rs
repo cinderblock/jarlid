@@ -15,7 +15,7 @@ mod player;
 #[cfg(windows)]
 pub use media_foundation::Decoder;
 #[cfg(windows)]
-pub use player::Player;
+pub use player::{default_output_name, output_devices, Output, Player};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
