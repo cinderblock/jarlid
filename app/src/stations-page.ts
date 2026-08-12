@@ -98,68 +98,121 @@ function visible(): StationInfo[] {
   return stations.filter((s) => matches(s, f));
 }
 
-function tag(text: string) {
-  const el = document.createElement("span");
-  el.className = "sp-tag";
-  el.textContent = text;
-  return el;
+interface Group {
+  title: string;
+  note: string;
+  items: StationInfo[];
+  special: boolean;
+}
+
+/// Split the collection by *where a station came from*, which is the distinction that
+/// actually matters: a QuickMix or Thumbprint is assembled by Pandora out of everything
+/// you have, and a genre station is theirs rather than yours. Only the middle group is
+/// stations you built, and that group is the one you are usually looking through.
+///
+/// Grouping also retires the per-row tags. A heading that says it once beats a badge
+/// repeated down the right-hand edge of every row.
+function groups(rows: StationInfo[]): Group[] {
+  const auto = (s: StationInfo) => s.isQuickMix || s.isThumbprint;
+  return [
+    {
+      title: "Mixes",
+      note: "Built by Pandora out of your whole collection",
+      items: rows.filter(auto),
+      special: true,
+    },
+    {
+      title: "Your stations",
+      note: "",
+      items: rows.filter((s) => !auto(s) && !s.isGenreStation),
+      special: false,
+    },
+    {
+      title: "Genre stations",
+      note: "Pandora's own, not built from your thumbs",
+      items: rows.filter((s) => !auto(s) && s.isGenreStation),
+      special: true,
+    },
+  ].filter((g) => g.items.length > 0);
+}
+
+function stationRow(st: StationInfo, special: boolean) {
+  const row = document.createElement("button");
+  row.className =
+    "sp-row" + (st.name === activeName ? " active" : "") + (special ? " special" : "");
+  row.type = "button";
+
+  if (selectMode) {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = selected.has(st.token);
+    row.appendChild(box);
+  }
+
+  const name = document.createElement("span");
+  name.className = "sp-name";
+  name.textContent = st.name;
+  row.appendChild(name);
+
+  row.addEventListener("click", () => {
+    if (busy) return;
+    if (selectMode) {
+      if (selected.has(st.token)) selected.delete(st.token);
+      else selected.add(st.token);
+      render();
+    } else {
+      invoke("native_play_station", { name: st.name, token: st.token }).catch((e) =>
+        setStatus(String(e), "err")
+      );
+      activeName = st.name;
+      close();
+    }
+  });
+  return row;
 }
 
 function render() {
   const rows = visible();
   listEl.innerHTML = "";
 
+  // One centred column. A responsive grid meant scanning across *and* down at once to
+  // find a name, which is the wrong shape for a list you read rather than browse.
+  const col = document.createElement("div");
+  col.className = "sp-col";
+  listEl.appendChild(col);
+
   if (!rows.length) {
     const empty = document.createElement("div");
-    empty.className = "sp-name";
-    empty.style.color = "var(--faint)";
-    empty.style.padding = "10px";
+    empty.className = "sp-empty";
     empty.textContent = stations.length
       ? "No stations match that search."
       : "No stations loaded yet.";
-    listEl.appendChild(empty);
+    col.appendChild(empty);
     refreshSelectionUi();
     return;
   }
 
-  for (const st of rows) {
-    const row = document.createElement("button");
-    row.className = "sp-row" + (st.name === activeName ? " active" : "");
-    row.type = "button";
+  for (const g of groups(rows)) {
+    const head = document.createElement("div");
+    head.className = "sp-group";
+    const h = document.createElement("h3");
+    h.textContent = g.title;
+    head.appendChild(h);
+    // The count belongs next to the heading, not on every row.
+    const count = document.createElement("span");
+    count.className = "sp-group-count";
+    count.textContent = String(g.items.length);
+    head.appendChild(count);
+    col.appendChild(head);
 
-    if (selectMode) {
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = selected.has(st.token);
-      row.appendChild(box);
+    if (g.note) {
+      const note = document.createElement("div");
+      note.className = "sp-group-note";
+      note.textContent = g.note;
+      col.appendChild(note);
     }
 
-    const name = document.createElement("span");
-    name.className = "sp-name";
-    name.textContent = st.name;
-    row.appendChild(name);
-
-    // QuickMix has no seeds or thumbs of its own — it is a shuffle over other
-    // stations — so flagging it explains an otherwise-surprising empty export.
-    if (st.isQuickMix) row.appendChild(tag("Mix"));
-    else if (st.isThumbprint) row.appendChild(tag("Thumbprint"));
-    else if (st.isGenreStation) row.appendChild(tag("Genre"));
-
-    row.addEventListener("click", () => {
-      if (busy) return;
-      if (selectMode) {
-        if (selected.has(st.token)) selected.delete(st.token);
-        else selected.add(st.token);
-        render();
-      } else {
-        invoke("native_play_station", { name: st.name, token: st.token }).catch((e) =>
-          setStatus(String(e), "err")
-        );
-        activeName = st.name;
-        close();
-      }
-    });
-    listEl.appendChild(row);
+    for (const st of g.items) col.appendChild(stationRow(st, g.special));
   }
   refreshSelectionUi();
 }

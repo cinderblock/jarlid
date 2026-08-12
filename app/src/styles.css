@@ -1135,27 +1135,71 @@ body.remote #remote-vol-wrap {
   min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
-  padding: 8px 12px;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 2px 8px;
-  align-content: start;
+  padding: 8px 20px 24px;
+}
+/* One column, centred. The list is read top-to-bottom; a multi-column grid asks the eye
+   to scan two directions at once to find a name. Capped so a wide window doesn't stretch
+   a single row across a metre of screen. */
+/* Left-aligned rather than centred, so the column lines up under the search box and
+   matches how the Settings page lays its sections out. */
+.sp-col {
+  width: 100%;
+  max-width: 640px;
+}
+.sp-empty {
+  color: var(--faint);
+  font-size: 0.88rem;
+  padding: 16px 10px;
+}
+.sp-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 22px 10px 4px;
+}
+.sp-group h3 {
+  margin: 0;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+  font-weight: 600;
+}
+.sp-group-count {
+  font-size: 0.72rem;
+  color: rgba(var(--wash), 0.28);
+  font-variant-numeric: tabular-nums;
+}
+.sp-group-note {
+  padding: 0 10px 6px;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: var(--faint);
 }
 .sp-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 10px;
+  padding: 10px 12px;
   border-radius: 8px;
-  font-size: 0.88rem;
+  font-size: 0.92rem;
   color: var(--dim);
   cursor: pointer;
   text-align: left;
   background: none;
   border: none;
+  border-left: 2px solid transparent;
   font-family: inherit;
   width: 100%;
   min-width: 0;
+}
+/* Pandora-built stations get a visible spine so the eye can tell at a glance that a row
+   is not one of yours, without reading the heading again. */
+.sp-row.special {
+  border-left-color: rgba(var(--wash), 0.22);
+}
+.sp-row.special:hover {
+  border-left-color: var(--accent);
 }
 .sp-row:hover {
   background: rgba(var(--wash), 0.08);
