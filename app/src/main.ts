@@ -165,6 +165,9 @@ function renderPlainLyrics(text: string) {
 let syncOffset = 0;
 
 function highlightLine(position: number) {
+  // Edit mode owns the pane: rows may have no timestamp yet, so the ascending-order
+  // assumption below does not hold, and the editor drives its own cursor instead.
+  if (lyricEditor.isEditing()) return;
   if (!syncedLines || syncedLines.length === 0) return;
   const p = position + syncOffset;
   let idx = -1;
@@ -441,6 +444,14 @@ function applyLyrics(res: Lyrics) {
   lyricsEditBtn.hidden = false;
   const edited = res.overridden ? " · edited" : "";
 
+  // Edit mode owns the pane's contents. Repainting under it would throw away the rows
+  // and the caret mid-edit, so keep the state current and leave the DOM alone.
+  if (lyricEditor.isEditing()) {
+    syncedLines = res.synced ? parseLrc(res.synced) : null;
+    lyricsStatus.textContent = `${res.synced ? "Synced lyrics" : "Lyrics"}${edited}`;
+    return;
+  }
+
   if (res.synced) {
     syncedLines = parseLrc(res.synced);
     renderSyncedLyrics(syncedLines);
@@ -460,18 +471,34 @@ function applyLyrics(res: Lyrics) {
 }
 
 lyricsEditBtn.addEventListener("click", () => {
+  if (lyricEditor.isEditing()) {
+    lyricEditor.end();
+    return;
+  }
   if (!lastLyrics) return;
-  lyricEditor.open({
+  lyricsEditBtn.classList.add("on");
+  lyricEditor.begin({
     meta: lastMeta,
     lyrics: lastLyrics,
     playhead: () => lastPlayhead,
     transport: (c) => void cmd(c),
+    seek: (position) => void invoke("player_seek", { position }).catch(() => {}),
     canTransport: !remoteMode,
     onApplied: applyLyrics,
+    // Repaint the pane the ordinary way and let the highlighter take over again.
+    onExit: () => {
+      lyricsEditBtn.classList.remove("on");
+      activeLineIdx = NO_LINE;
+      if (lastLyrics) applyLyrics(lastLyrics);
+    },
   });
 });
 attachTip(lyricsEditBtn, () =>
-  lastLyrics?.overridden ? "Edit lyrics (showing your local edit)" : "Fix or time these lyrics"
+  lyricEditor.isEditing()
+    ? "Stop editing"
+    : lastLyrics?.overridden
+      ? "Edit lyrics (showing your local edit)"
+      : "Fix or time these lyrics"
 );
 
 // ---- playhead ----------------------------------------------------------
@@ -483,8 +510,8 @@ let lastMoveAt = 0;
 function onPlayhead(ph: Playhead) {
   const wasPaused = lastPlayhead.paused;
   lastPlayhead = ph;
-  // A staged update says "after this song" or "when playback resumes" depending on
-  // this, so the badge has to follow it.
+  // A staged update says "after this song" or "while paused" depending on this, so the
+  // badge has to follow it.
   if (wasPaused !== ph.paused && status.armed) renderVersion();
   const now = Date.now();
   const moved = Math.abs(ph.position - lastPos) > 0.05;
@@ -578,10 +605,10 @@ function renderVersion() {
     versionEl.textContent = `v${v} ready to install`;
     return;
   }
-  // Armed: say when. Paused matters because a paused app is deliberately never
-  // restarted, so "after this song" would be a lie.
+  // Armed: say when. Paused is the moment the updater prefers — it installs within about a
+  // minute and comes back paused — so "after this song" would be a lie there.
   versionEl.textContent = lastPlayhead.paused
-    ? `updating to v${v} when playback resumes`
+    ? `updating to v${v} while paused`
     : `updating to v${v} after this song`;
 }
 
@@ -623,6 +650,12 @@ listen<string>("app://update-failed", () => {
   versionBusy = false;
   versionEl.textContent = "update failed";
   setTimeout(renderVersion, 2500);
+});
+// Playback started or stopped in the moment between the notice and the install, so the
+// updater backed out. Nothing went wrong and it will try again — just undo the notice.
+listen("app://update-stood-down", () => {
+  versionBusy = false;
+  renderVersion();
 });
 
 versionEl.addEventListener("click", async () => {
@@ -882,11 +915,11 @@ function nudgeSync(delta: number) {
   );
 }
 window.addEventListener("keydown", (e) => {
-  const tag = (e.target as HTMLElement).tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA") return;
-  // The editor binds Space and Backspace, and nudging the offset of lyrics you are in
-  // the middle of retiming makes no sense.
-  if (lyricEditor.isOpen()) return;
+  const el = e.target as HTMLElement;
+  if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) return;
+  // Edit mode binds Space, and a whole-file offset means nothing while individual lines
+  // are being retimed — the per-line times are the thing being fixed.
+  if (lyricEditor.isEditing()) return;
   if (e.key === "[" || e.code === "BracketLeft") nudgeSync(-0.25);
   else if (e.key === "]" || e.code === "BracketRight") nudgeSync(0.25);
 });

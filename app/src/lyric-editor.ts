@@ -1,10 +1,22 @@
-// The lyric editor: fix wrong words, tap timings onto lyrics that only exist as plain
-// text, keep the result locally, and optionally send the correction back to LRCLIB.
+// Editing lyrics in place, on the lyrics pane itself.
 //
-// Why this lives in the app rather than being a link to a web form: LRCLIB's own site
-// has no editor, and the third-party publish forms can only be prefilled with metadata,
-// never with the lyrics body — so "fix one word" would mean retyping the song. More to
-// the point, adding timings needs the playhead, which only the player has.
+// The first version of this was a full page you opened. It was wrong: writing a whole
+// lyric set or hand-typing timestamps is rare, and fixing *one line* is what actually
+// happens. So the pencil now flips the pane itself into edit mode and every line carries
+// its own controls.
+//
+// Two jobs live here, and they are deliberately not the same mode:
+//
+//   Correction — the lyrics already have timings and something is wrong. Per-line: fix
+//   the words, set this line's start to now, check it by jumping back and listening.
+//
+//   Timestamp — the lyrics have no timings at all. The song plays and you mark each line
+//   as it starts, continuously. Nothing jumps back, because a backward seek re-opens the
+//   stream and rebuffers; doing that between every line would make the pass impossible.
+//
+// While edit mode is on this module owns the pane: it renders the rows and drives its own
+// cursor. `highlightLine` in main.ts stands down, because it indexes `.line` nodes
+// positionally and assumes ascending timestamps, and neither holds mid-pass.
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -29,11 +41,13 @@ export interface EditorContext {
   lyrics: Lyrics;
   playhead: () => { position: number; duration: number; paused: boolean };
   transport: (cmd: string) => void;
-  /// False when a network renderer owns playback: `transport` drives the local engine,
-  /// so its buttons would restart a track nobody is listening to here.
+  seek: (position: number) => void;
+  /// False when a network renderer owns playback: timing needs a local playhead.
   canTransport: boolean;
   /// Hand replacement lyrics back to the now-playing screen.
   onApplied: (lyrics: Lyrics) => void;
+  /// Leave edit mode and repaint the pane normally.
+  onExit: () => void;
 }
 
 /// Taps land late — you hear the line, then press. Shifting stamps earlier by about a
@@ -41,53 +55,47 @@ export interface EditorContext {
 /// behind.
 const TAP_LATENCY = 0.33;
 
+/// How far before a line to drop the playhead when checking it. Long enough to hear the
+/// run-in, short enough not to sit through the previous line.
+const CHECK_LEAD = 2.5;
+
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const page = $("lyric-page");
-const trackEl = $("le-track");
-const textEl = $<HTMLTextAreaElement>("le-text");
-const wordsNote = $("le-words-note");
-const wordsPane = $("le-words");
-const timingPane = $("le-timing");
-const linesEl = $("le-lines");
-const clockEl = $("le-clock");
-const statusEl = $("le-status");
-const saveBtn = $<HTMLButtonElement>("le-save");
-const publishBtn = $<HTMLButtonElement>("le-publish");
-const flagBtn = $<HTMLButtonElement>("le-flag");
-const revertBtn = $<HTMLButtonElement>("le-revert");
-const stampBtn = $<HTMLButtonElement>("le-stamp");
-const backBtn = $<HTMLButtonElement>("le-back");
-const playPauseBtn = $<HTMLButtonElement>("le-playpause");
-const restartBtn = $<HTMLButtonElement>("le-restart");
-const confirmEl = $("le-confirm");
-const confirmTitle = $("le-confirm-title");
-const confirmMsg = $("le-confirm-msg");
-const confirmGo = $<HTMLButtonElement>("le-confirm-go");
-const reasonEl = $<HTMLInputElement>("le-reason");
-
-const timingTab = document.querySelector<HTMLInputElement>(
-  'input[name="le-mode"][value="timing"]'
-)!;
-
-let ctx: EditorContext | null = null;
-let cursor = 0;
-let clockTimer: number | undefined;
-let busy = false;
-/// Set when playback has moved off the track being edited — see notePlaybackMoved.
-let stale = false;
-
-/** True while the editor owns the screen — the player's own key bindings stand down. */
-export function isOpen() {
-  return !page.hidden;
-}
-
-// ---- LRC text <-> lines ---------------------------------------------------
+const lyricsEl = $("lyrics");
+const bar = $("lyric-bar");
+const statusEl = $("lyric-bar-status");
+const timestampBtn = $<HTMLButtonElement>("lyric-timestamp");
+const autoCheckWrap = $("lyric-autocheck-wrap");
+const autoCheckBox = $<HTMLInputElement>("lyric-autocheck");
+const saveBtn = $<HTMLButtonElement>("lyric-save");
+const revertBtn = $<HTMLButtonElement>("lyric-revert");
+const publishBtn = $<HTMLButtonElement>("lyric-publish");
+const flagBtn = $<HTMLButtonElement>("lyric-flag");
+const doneBtn = $<HTMLButtonElement>("lyric-done");
+const confirmEl = $("lyric-confirm");
+const confirmTitle = $("lyric-confirm-title");
+const confirmMsg = $("lyric-confirm-msg");
+const confirmGo = $<HTMLButtonElement>("lyric-confirm-go");
+const reasonEl = $<HTMLInputElement>("lyric-reason");
 
 interface Line {
   t: number | null;
   text: string;
 }
+
+let ctx: EditorContext | null = null;
+let lines: Line[] = [];
+let editing = false;
+/// The line the next mark lands on, during a timestamp pass.
+let cursor = 0;
+let stamping = false;
+let dirty = false;
+let busy = false;
+let stale = false;
+
+export const isEditing = () => editing;
+
+// ---- LRC text <-> lines ---------------------------------------------------
 
 const STAMP = /^\s*\[(\d+):(\d+(?:[.:]\d+)?)\]\s?/;
 
@@ -97,218 +105,256 @@ function parseLines(text: string): Line[] {
     if (!m) return { t: null, text: raw.trim() };
     return {
       t: parseInt(m[1], 10) * 60 + parseFloat(m[2].replace(":", ".")),
-      text: raw.slice(m[0].length),
+      text: raw.slice(m[0].length).trim(),
     };
   });
 }
 
-function stamp(t: number) {
+function stampOf(t: number) {
   const m = Math.floor(t / 60);
-  const s = t - m * 60;
-  return `[${String(m).padStart(2, "0")}:${s.toFixed(2).padStart(5, "0")}]`;
+  return `${String(m).padStart(2, "0")}:${(t - m * 60).toFixed(2).padStart(5, "0")}`;
 }
 
-function serialize(lines: Line[]) {
-  return lines.map((l) => (l.t === null ? l.text : `${stamp(l.t)} ${l.text}`)).join("\n");
-}
+const serialize = (ls: Line[]) =>
+  ls.map((l) => (l.t === null ? l.text : `[${stampOf(l.t)}] ${l.text}`)).join("\n");
 
-/** The plain form of an LRC body — LRCLIB stores both, and they should agree. */
-function stripStamps(text: string) {
-  return text
-    .split(/\r?\n/)
-    .map((l) => {
-      // A line can carry several stamps when the same words recur; strip the lot.
-      let out = l;
-      while (STAMP.test(out)) out = out.replace(STAMP, "");
-      return out;
-    })
-    .join("\n");
-}
+const anyTimed = () => lines.some((l) => l.t !== null);
 
-const hasStamps = (text: string) => parseLines(text).some((l) => l.t !== null);
+// ---- entering / leaving ---------------------------------------------------
 
-// ---- opening / closing ----------------------------------------------------
-
-export function open(context: EditorContext) {
+export function begin(context: EditorContext) {
   ctx = context;
+  editing = true;
+  dirty = false;
+  stale = false;
   busy = false;
-  const { meta, lyrics } = context;
-
-  textEl.value = lyrics.synced || lyrics.plain || "";
+  stamping = false;
   cursor = 0;
 
-  trackEl.textContent = lyrics.id
-    ? `LRCLIB #${lyrics.id} · ${lyrics.artistName} — ${lyrics.trackName}`
-    : `${meta.artist} — ${meta.title} · not in LRCLIB yet`;
+  const src = context.lyrics.synced || context.lyrics.plain || "";
+  lines = src ? parseLines(src) : [{ t: null, text: "" }];
 
-  wordsNote.textContent = lyrics.synced
-    ? "Each line keeps its own timestamp, so fixing a word cannot knock the timing out of step."
-    : lyrics.plain
-      ? "These lyrics have no timings. Add them on the Timing tab and the result can be published back as a synced version."
-      : "Nothing was found for this track. Paste the words in, and add timings if you want to.";
-
-  revertBtn.hidden = !lyrics.overridden;
-  stale = false;
-  refreshTiming();
-  setMode("words");
-  setBusy(false);
-  setStatus(lyrics.overridden ? "Showing your local edit." : "");
-
-  page.hidden = false;
-  hideConfirm();
-  clockTimer = window.setInterval(tickClock, 200);
-  textEl.focus();
+  lyricsEl.classList.add("editing");
+  bar.hidden = false;
+  render();
+  refreshBar();
 }
 
-export function close() {
-  page.hidden = true;
-  window.clearInterval(clockTimer);
+export function end() {
+  editing = false;
+  stamping = false;
+  lyricsEl.classList.remove("editing", "stamping");
+  bar.hidden = true;
+  confirmEl.hidden = true;
+  ctx?.onExit();
   ctx = null;
 }
 
-/// Playback has moved to another track while the editor is open. The words on screen
-/// still belong to the track that was opened, and still save to it — but the playhead
-/// does not any more, so stamping against it would write times from a different song,
-/// and "Restart track" would restart one nobody opened.
+doneBtn.addEventListener("click", () => {
+  // Leaving with unsaved work should be possible, but not by accident — a timing pass is
+  // several minutes of tapping and a stray click on Done should not bin it silently.
+  if (dirty) {
+    showConfirm({
+      title: "Leave without saving?",
+      message: "The changes on screen have not been saved, and closing the editor drops them.",
+      go: "Discard",
+      run: async () => {
+        dirty = false;
+        end();
+      },
+    });
+    return;
+  }
+  end();
+});
+
+/// Playback moved to another track. The words still belong to the track being edited and
+/// still save to it, but the playhead does not, so marking would write another song's
+/// times into this one.
 export function notePlaybackMoved() {
-  if (!isOpen() || stale || !ctx) return;
+  if (!editing || stale) return;
   stale = true;
-  setMode("words");
-  refreshTiming();
+  stamping = false;
+  lyricsEl.classList.remove("stamping");
+  refreshBar();
+  render();
   setStatus(
-    `Playback moved on. These words still save to ${ctx.meta.artist} — ${ctx.meta.title}, but timing needs the track playing.`,
+    `Playback moved on. Words still save to ${ctx?.meta.artist} — ${ctx?.meta.title}, but timing needs this track playing.`,
     "err"
   );
 }
 
-/// Timing needs a playhead that belongs to these lyrics, and a local engine to drive.
-function refreshTiming() {
-  const usable = !stale && !!ctx?.canTransport;
-  for (const b of [playPauseBtn, restartBtn]) b.disabled = !usable;
-  for (const b of [stampBtn, backBtn]) b.disabled = stale;
-  timingTab.disabled = stale;
+// ---- rendering ------------------------------------------------------------
+
+/// Rows keep `.line` and `data-idx` so the pane's own styling still applies; the extra
+/// children are what edit mode adds.
+function render() {
+  lyricsEl.innerHTML = "";
+  lines.forEach((line, i) => {
+    const row = document.createElement("div");
+    row.className = "line editable";
+    row.dataset.idx = String(i);
+    if (stamping && i === cursor) row.classList.add("cursor");
+    if (line.t !== null) row.classList.add("timed");
+
+    const time = document.createElement("button");
+    time.className = "ln-time";
+    time.textContent = line.t === null ? "––:––" : stampOf(line.t);
+    time.addEventListener("click", () => (stamping ? markAt(i) : setNow(i)));
+
+    const text = document.createElement("div");
+    text.className = "ln-text";
+    text.contentEditable = "plaintext-only";
+    text.spellcheck = false;
+    text.textContent = line.text;
+    text.addEventListener("input", () => {
+      lines[i].text = text.textContent ?? "";
+      markDirty();
+    });
+    text.addEventListener("paste", (e) => onPaste(e, i));
+    text.addEventListener("keydown", (e) => onLineKey(e, i, text));
+
+    const check = document.createElement("button");
+    check.className = "ln-check";
+    check.textContent = "▶";
+    check.disabled = line.t === null || !ctx?.canTransport || stale;
+    check.addEventListener("click", () => checkLine(i));
+
+    row.append(time, text, check);
+    lyricsEl.appendChild(row);
+  });
 }
 
-$("le-close").addEventListener("click", close);
+function focusLine(i: number, toEnd = true) {
+  const el = lyricsEl.querySelector<HTMLElement>(`.line[data-idx="${i}"] .ln-text`);
+  if (!el) return;
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(!toEnd);
+  const sel = getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
 
-// ---- mode tabs ------------------------------------------------------------
+// ---- line editing ---------------------------------------------------------
 
-function setMode(mode: "words" | "timing") {
-  const timing = mode === "timing";
-  wordsPane.hidden = timing;
-  timingPane.hidden = !timing;
-  const radio = document.querySelector<HTMLInputElement>(
-    `input[name="le-mode"][value="${mode}"]`
-  );
-  if (radio) radio.checked = true;
-  if (timing) {
-    // Start where there is work to do, so opening the tab on an already-timed file
-    // doesn't park the cursor on line 1 waiting to overwrite a good stamp.
-    const lines = parseLines(textEl.value);
-    const next = lines.findIndex((l) => l.t === null && l.text !== "");
-    cursor = next === -1 ? 0 : next;
-    renderLines();
+/// Enter opens a new line below, Backspace on an empty one removes it. This is what
+/// replaces the old full-page textarea: adding and removing lines has to be possible
+/// without a separate editor, or "no lyrics found" is a dead end.
+function onLineKey(e: KeyboardEvent, i: number, el: HTMLElement) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    lines[i].text = el.textContent ?? "";
+    lines.splice(i + 1, 0, { t: null, text: "" });
+    markDirty();
+    render();
+    focusLine(i + 1);
+  } else if (e.key === "Backspace" && !el.textContent && lines.length > 1) {
+    e.preventDefault();
+    lines.splice(i, 1);
+    if (cursor > i) cursor--;
+    markDirty();
+    render();
+    focusLine(Math.max(0, i - 1));
   }
 }
 
-for (const radio of document.querySelectorAll<HTMLInputElement>('input[name="le-mode"]')) {
-  radio.addEventListener("change", () => {
-    if (radio.checked) setMode(radio.value as "words" | "timing");
-  });
+/// Pasting a whole song into one line splits it across lines rather than jamming it into
+/// one. Without this, a track LRCLIB has nothing for would have no usable path.
+function onPaste(e: ClipboardEvent, i: number) {
+  const text = e.clipboardData?.getData("text/plain") ?? "";
+  if (!text.includes("\n")) return; // ordinary paste, let the browser do it
+  e.preventDefault();
+  const pasted = parseLines(text);
+  lines.splice(i, 1, ...pasted);
+  markDirty();
+  render();
+  focusLine(i + pasted.length - 1);
+}
+
+function markDirty() {
+  dirty = true;
+  refreshBar();
 }
 
 // ---- timing ---------------------------------------------------------------
 
-/// Lines are read back out of the textarea every time this pane opens, so a word fixed
-/// on the Words tab is never overwritten by a stale copy held here.
-function renderLines() {
-  const lines = parseLines(textEl.value);
-  if (cursor > lines.length) cursor = lines.length;
-  linesEl.innerHTML = "";
-  lines.forEach((line, i) => {
-    const row = document.createElement("div");
-    row.className = "le-line";
-    if (i === cursor) row.classList.add("at");
-    if (line.t !== null) row.classList.add("stamped");
-
-    const time = document.createElement("button");
-    time.className = "le-time";
-    time.textContent = line.t === null ? "––:––" : stamp(line.t).slice(1, -1);
-    // Clicking a row's time is how you resume a pass in the middle after a mistake.
-    time.addEventListener("click", () => {
-      cursor = i;
-      renderLines();
-    });
-
-    const words = document.createElement("span");
-    words.className = "le-words-cell";
-    words.textContent = line.text || " ";
-
-    row.append(time, words);
-    linesEl.appendChild(row);
-  });
-  linesEl.querySelector(".le-line.at")?.scrollIntoView({ block: "center", behavior: "smooth" });
+/// Set one line's start to the current playhead. The correction case: you noticed a
+/// single line is out, so you fix that line.
+function setNow(i: number) {
+  if (!ctx || stale || !ctx.canTransport) return;
+  lines[i].t = Math.max(0, ctx.playhead().position - TAP_LATENCY);
+  markDirty();
+  render();
+  if (autoCheckBox.checked) checkLine(i);
 }
 
-function stampCurrent() {
+/// Mark during a continuous pass: stamp the cursor line and move on. Deliberately does
+/// not seek, verify, or re-render anything but the rows — the song is still playing and
+/// the next line is seconds away.
+function markAt(i: number) {
   if (!ctx || stale) return;
-  const lines = parseLines(textEl.value);
-  if (cursor >= lines.length) return;
-  lines[cursor].t = Math.max(0, ctx.playhead().position - TAP_LATENCY);
-  textEl.value = serialize(lines);
-  cursor++;
-  renderLines();
-  updatePublishability();
+  lines[i].t = Math.max(0, ctx.playhead().position - TAP_LATENCY);
+  cursor = Math.min(i + 1, lines.length - 1);
+  dirty = true;
+  render();
+  // Instant, not smooth: during a pass the cursor moves every few seconds and a smooth
+  // scroll would still be gliding when the next line needs marking.
+  lyricsEl
+    .querySelector(`.line[data-idx="${cursor}"]`)
+    ?.scrollIntoView({ block: "center", behavior: "auto" });
+  if (cursor === lines.length - 1 && lines[cursor].t !== null) stopStamping();
 }
 
-function stepBack() {
-  const lines = parseLines(textEl.value);
-  if (cursor <= 0) return;
-  cursor--;
-  lines[cursor].t = null;
-  textEl.value = serialize(lines);
-  renderLines();
+function checkLine(i: number) {
+  const t = lines[i].t;
+  if (t === null || !ctx || !ctx.canTransport || stale) return;
+  ctx.seek(Math.max(0, t - CHECK_LEAD));
+  setStatus(`Playing from ${stampOf(Math.max(0, t - CHECK_LEAD))} to check line ${i + 1}.`);
 }
 
-stampBtn.addEventListener("click", stampCurrent);
-backBtn.addEventListener("click", stepBack);
-restartBtn.addEventListener("click", () => {
-  ctx?.transport("replay");
-  cursor = 0;
-  renderLines();
-});
-playPauseBtn.addEventListener("click", () => ctx?.transport("toggle"));
-
-function tickClock() {
-  if (!ctx) return;
-  const { position, paused } = ctx.playhead();
-  const m = Math.floor(position / 60);
-  const s = Math.floor(position % 60);
-  clockEl.textContent = `${m}:${String(s).padStart(2, "0")}`;
-  playPauseBtn.textContent = paused ? "Play" : "Pause";
+function startStamping() {
+  if (!ctx || stale || !ctx.canTransport) return;
+  stamping = true;
+  // Resume where there is work rather than restamping good lines from the top.
+  cursor = lines.findIndex((l) => l.t === null && l.text);
+  if (cursor < 0) cursor = 0;
+  lyricsEl.classList.add("stamping");
+  render();
+  refreshBar();
+  setStatus("Space or click a line's time as each line starts. Esc stops.");
+  if (ctx.playhead().paused) ctx.transport("play");
 }
 
-// Keys only mean anything on the timing tab, and never while a text field has focus.
+function stopStamping() {
+  stamping = false;
+  lyricsEl.classList.remove("stamping");
+  render();
+  refreshBar();
+  setStatus(dirty ? "Timing pass done — save it." : "");
+}
+
+timestampBtn.addEventListener("click", () => (stamping ? stopStamping() : startStamping()));
+
+// Space marks during a pass. It must not fire while a line's text has focus, or typing a
+// space would stamp instead of typing.
 window.addEventListener("keydown", (e) => {
-  if (!isOpen()) return;
+  if (!editing) return;
   if (e.key === "Escape") {
     if (!confirmEl.hidden) hideConfirm();
-    else close();
+    else if (stamping) stopStamping();
     return;
   }
-  const tag = (e.target as HTMLElement).tagName;
-  if (tag === "TEXTAREA" || tag === "INPUT") return;
-  if (timingPane.hidden) return;
-  if (e.key === " ") {
+  const el = e.target as HTMLElement;
+  if (el.isContentEditable || el.tagName === "INPUT") return;
+  if (stamping && e.key === " ") {
     e.preventDefault();
-    stampCurrent();
-  } else if (e.key === "Backspace") {
-    e.preventDefault();
-    stepBack();
+    markAt(cursor);
   }
 });
 
-// ---- saving ---------------------------------------------------------------
+// ---- the action bar -------------------------------------------------------
 
 function setStatus(text: string, kind?: "ok" | "err") {
   statusEl.textContent = text;
@@ -316,45 +362,58 @@ function setStatus(text: string, kind?: "ok" | "err") {
   statusEl.classList.toggle("err", kind === "err");
 }
 
+function refreshBar() {
+  const timed = anyTimed();
+  timestampBtn.textContent = stamping ? "Stop timing" : timed ? "Retime all…" : "Add timings…";
+  timestampBtn.disabled = busy || stale || !ctx?.canTransport;
+  // Checking a line is only meaningful once something has a time, and auto-checking would
+  // wreck a continuous pass, so it is offered only outside one.
+  autoCheckWrap.hidden = stamping || !timed;
+  saveBtn.disabled = busy || !dirty;
+  revertBtn.hidden = !ctx?.lyrics.overridden;
+  revertBtn.disabled = busy;
+  flagBtn.disabled = busy || !ctx?.lyrics.id;
+  publishBtn.disabled = busy || !publication();
+}
+
 function setBusy(on: boolean) {
   busy = on;
-  for (const b of [saveBtn, publishBtn, flagBtn, revertBtn, confirmGo]) b.disabled = on;
-  if (!on) {
-    flagBtn.disabled = !ctx?.lyrics.id;
-    updatePublishability();
-  }
+  refreshBar();
+  confirmGo.disabled = on;
 }
 
-/** The lyrics as currently edited, in the shape LRCLIB and the cache both want. */
-function edited(): { synced: string | null; plain: string | null } {
-  const text = textEl.value.trim();
-  if (!text) return { synced: null, plain: null };
-  return hasStamps(text)
-    ? { synced: text, plain: stripStamps(text).trim() }
-    : { synced: null, plain: text };
-}
+const keyArgs = () => ({
+  artist: ctx!.meta.artist,
+  track: ctx!.meta.title,
+  album: ctx!.meta.album || null,
+});
 
-function keyArgs() {
-  const meta = ctx!.meta;
-  return { artist: meta.artist, track: meta.title, album: meta.album || null };
+/// The edit, in the shape LRCLIB and the cache both want. Lines that never got a time
+/// still belong in the plain form.
+function edited() {
+  const body = serialize(lines).trim();
+  if (!body) return { synced: null, plain: null };
+  return anyTimed()
+    ? { synced: body, plain: lines.map((l) => l.text).join("\n").trim() }
+    : { synced: null, plain: body };
 }
 
 async function saveOverride(): Promise<Lyrics> {
-  const body = edited();
-  const base = ctx!.lyrics;
   const saved = await invoke<Lyrics>("save_lyrics_override", {
     ...keyArgs(),
-    lyrics: { ...base, ...body, overridden: true },
+    lyrics: { ...ctx!.lyrics, ...edited(), overridden: true },
   });
   ctx!.lyrics = saved;
   ctx!.onApplied(saved);
-  revertBtn.hidden = false;
+  dirty = false;
+  refreshBar();
   return saved;
 }
 
 saveBtn.addEventListener("click", async () => {
   if (busy || !ctx) return;
-  if (!edited().synced && !edited().plain) {
+  const body = edited();
+  if (!body.synced && !body.plain) {
     setStatus("There is nothing to save.", "err");
     return;
   }
@@ -380,8 +439,11 @@ revertBtn.addEventListener("click", async () => {
     });
     ctx.lyrics = fresh;
     ctx.onApplied(fresh);
-    textEl.value = fresh.synced || fresh.plain || "";
-    revertBtn.hidden = true;
+    lines = parseLines(fresh.synced || fresh.plain || "");
+    if (!lines.length) lines = [{ t: null, text: "" }];
+    dirty = false;
+    render();
+    refreshBar();
     setStatus("Your edit is gone; this is what LRCLIB serves.", "ok");
   } catch (e) {
     setStatus(String(e), "err");
@@ -393,26 +455,22 @@ revertBtn.addEventListener("click", async () => {
 // ---- publishing -----------------------------------------------------------
 
 /// LRCLIB identifies a record by track/artist/album/duration together, so all four are
-/// required. Prefer the matched record's own wording: publishing under Pandora's
-/// spelling would file a *new* record beside the wrong one instead of correcting it.
+/// required and must be the matched record's own wording — publishing under Pandora's
+/// spelling files a new record beside the wrong one instead of correcting it.
 function publication() {
   if (!ctx) return null;
   const { lyrics, meta } = ctx;
   const duration = lyrics.duration ?? ctx.playhead().duration;
-  if (!duration) return null;
+  const body = edited();
+  if (!duration || (!body.synced && !body.plain)) return null;
   return {
     trackName: lyrics.trackName || meta.title,
     artistName: lyrics.artistName || meta.artist,
     albumName: lyrics.albumName || meta.album || meta.title,
     duration,
-    ...edited(),
+    ...body,
     ...keyArgs(),
   };
-}
-
-function updatePublishability() {
-  const p = publication();
-  publishBtn.disabled = busy || !p || (!p.synced && !p.plain);
 }
 
 publishBtn.addEventListener("click", () => {
@@ -424,14 +482,11 @@ publishBtn.addEventListener("click", () => {
   showConfirm({
     title: ctx!.lyrics.id ? "Publish this correction?" : "Add these lyrics to LRCLIB?",
     message: ctx!.lyrics.id
-      ? `This becomes the version everyone gets for ${p.artistName} — ${p.trackName}. ` +
-        `The current one is kept as an earlier revision, so nothing is destroyed.`
-      : `This adds ${p.artistName} — ${p.trackName} to the public LRCLIB database, ` +
-        `where anyone can fetch it.`,
+      ? `This becomes the version everyone gets for ${p.artistName} — ${p.trackName}. The current one is kept as an earlier revision, so nothing is destroyed.`
+      : `This adds ${p.artistName} — ${p.trackName} to the public LRCLIB database, where anyone can fetch it.`,
     go: "Publish",
     run: async () => {
-      // Save first: the fix should survive even if the network or the challenge fails.
-      const saved = await saveOverride();
+      const saved = await saveOverride(); // the fix should survive a failed publish
       setStatus("Solving LRCLIB's proof-of-work…");
       await invoke("publish_lyrics", { publication: p });
       setStatus("Published to LRCLIB.", "ok");
@@ -440,8 +495,8 @@ publishBtn.addEventListener("click", () => {
   });
 });
 
-/// Once LRCLIB serves the correction itself, the local copy is redundant — drop it so
-/// the pane stops calling itself an edit. If LRCLIB hasn't caught up, keep ours.
+/// Once LRCLIB serves the correction itself the local copy is redundant — drop it, so the
+/// pane stops calling itself an edit. If LRCLIB hasn't caught up, keep ours.
 async function settle(saved: Lyrics) {
   if (!ctx) return;
   try {
@@ -450,10 +505,13 @@ async function settle(saved: Lyrics) {
       ...keyArgs(),
       duration: ctx.playhead().duration || null,
     });
-    if ((fresh.synced ?? null) === (saved.synced ?? null) && (fresh.plain ?? null) === (saved.plain ?? null)) {
+    if (
+      (fresh.synced ?? null) === (saved.synced ?? null) &&
+      (fresh.plain ?? null) === (saved.plain ?? null)
+    ) {
       ctx.lyrics = fresh;
       ctx.onApplied(fresh);
-      revertBtn.hidden = true;
+      refreshBar();
       setStatus("Published to LRCLIB — it now serves your version.", "ok");
       return;
     }
@@ -469,8 +527,7 @@ flagBtn.addEventListener("click", () => {
   showConfirm({
     title: "Report these lyrics?",
     message:
-      "Tells LRCLIB the published lyrics for this track are wrong — the right move when " +
-      "they belong to a different song entirely and there is nothing to correct by hand.",
+      "Tells LRCLIB the published lyrics for this track are wrong — the right move when they belong to a different song entirely and there is nothing to correct by hand.",
     go: "Report",
     reason: true,
     run: async () => {
@@ -506,7 +563,7 @@ function hideConfirm() {
   pending = null;
 }
 
-$("le-confirm-cancel").addEventListener("click", hideConfirm);
+$("lyric-confirm-cancel").addEventListener("click", hideConfirm);
 
 confirmGo.addEventListener("click", async () => {
   const run = pending;

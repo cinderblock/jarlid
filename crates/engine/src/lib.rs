@@ -9,6 +9,7 @@
 mod audio_thread;
 pub mod credentials;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -79,6 +80,9 @@ pub struct Engine {
     state: Arc<Mutex<State>>,
     audio: Arc<AudioThread>,
     events: mpsc::UnboundedSender<Event>,
+    /// Set by [`Engine::begin_paused`] and consumed by the next [`Engine::advance`], so the
+    /// first track of a session can be loaded without starting it.
+    start_paused: AtomicBool,
 }
 
 impl Engine {
@@ -102,6 +106,7 @@ impl Engine {
             })),
             audio: Arc::new(AudioThread::spawn()),
             events,
+            start_paused: AtomicBool::new(false),
         };
 
         Ok((engine, receiver))
@@ -317,9 +322,29 @@ impl Engine {
             track
         };
 
+        // One-shot: only the advance that follows `begin_paused` is held, and every later one
+        // behaves normally — including the one the play button triggers.
+        if self.start_paused.swap(false, Ordering::SeqCst) {
+            self.audio.play_paused(&track.audio_url);
+            let _ = self.events.send(Event::TrackStarted(Box::new(track)));
+            // The UI reads paused from the playhead tick, but saying so outright means no
+            // window in which the transport shows "playing" over silence.
+            let _ = self.events.send(Event::Paused(true));
+            return Ok(());
+        }
+
         self.audio.play(&track.audio_url);
         let _ = self.events.send(Event::TrackStarted(Box::new(track)));
         Ok(())
+    }
+
+    /// Load the next track without starting it.
+    ///
+    /// Applies to the next [`Engine::advance`] only. This exists for the updater: an update
+    /// that installs itself while the listener has the music paused must not come back
+    /// playing, or the restart starts music at someone who deliberately stopped it.
+    pub fn begin_paused(&self) {
+        self.start_paused.store(true, Ordering::SeqCst);
     }
 
     /// Drive the radio: advance when a track ends. Runs until the engine is dropped.
@@ -391,6 +416,15 @@ impl Engine {
         // Re-announce so the UI resets its progress bar and re-syncs lyrics to zero.
         let _ = self.events.send(Event::TrackStarted(Box::new(track)));
         Ok(())
+    }
+
+    /// Move the playhead within the current track.
+    ///
+    /// Deliberately does *not* announce a track start the way [`Engine::replay`] does: the
+    /// playhead ticker publishes the new position within a frame or two, and re-announcing would
+    /// tell the UI to reset its progress bar and reload lyrics for a track that never changed.
+    pub fn seek(&self, to: Duration) {
+        self.audio.seek(to);
     }
 
     pub fn set_paused(&self, paused: bool) {

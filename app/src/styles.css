@@ -1034,8 +1034,7 @@ body.remote #remote-vol-wrap {
    station at a time, so it needs room for a list, progress and results, and it
    must not vanish because a click landed outside a popover. */
 #stations-page,
-#settings-page,
-#lyric-page {
+#settings-page {
   position: fixed;
   inset: 0;
   z-index: 8;
@@ -1045,8 +1044,7 @@ body.remote #remote-vol-wrap {
   backdrop-filter: blur(24px);
 }
 #stations-page[hidden],
-#settings-page[hidden],
-#lyric-page[hidden] {
+#settings-page[hidden] {
   display: none;
 }
 .page-head {
@@ -1634,158 +1632,199 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
   flex-wrap: wrap;
 }
 
-/* ---- lyric editor -------------------------------------------------------
-   A full page like Stations and Settings: retiming a song means watching a list
-   scroll past while the track plays, which wants the whole window. */
-#le-track {
-  flex: 1;
-  min-width: 0;
-  font-size: 0.8rem;
-  color: var(--faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+
+/* ---- editing lyrics in place --------------------------------------------
+   Edit mode turns the lyric rows into a small three-column grid — time, words,
+   check — rather than opening anything. The pane keeps scrolling and the song
+   keeps playing, which is the whole point: a timing is only judgeable against
+   the audio it is meant to match. */
+#lyrics.editing {
+  /* The huge top/bottom padding exists to let a highlighted line sit centred.
+     While editing, the list is the subject and that gap is just distance. */
+  padding: 12px 0;
+  scroll-behavior: auto;
+  user-select: text;
+  /* The edge fade is right for a scrolling lyric; on an editable list it dims the
+     first and last rows you are trying to work on. */
+  -webkit-mask-image: none;
+  mask-image: none;
+  /* The narrow layout centres the pane, which would centre the row grids too. */
+  text-align: left;
 }
-#lyric-page .page-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+#lyrics.editing .line {
+  display: grid;
+  grid-template-columns: 5.6em 1fr auto;
+  align-items: baseline;
+  gap: 10px;
+  font-size: clamp(0.95rem, 1.4vw, 1.15rem);
+  font-weight: 500;
+  color: var(--dim);
+  padding: 4px 6px;
+  border-radius: 8px;
+  transform: none;
+  text-shadow: none;
 }
-#lyric-page .set-section {
-  max-width: 760px;
-  width: 100%;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+#lyrics.editing .line:hover {
+  background: rgba(var(--wash), 0.06);
 }
-#le-text {
-  flex: 1;
-  min-height: 240px;
-  resize: none;
+#lyrics.editing .line.timed {
+  color: var(--fg);
+}
+
+.ln-time {
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  border-radius: 6px;
+  cursor: pointer;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: 0.82rem;
-  line-height: 1.6;
-  padding: 12px 14px;
-  white-space: pre;
-  overflow-wrap: normal;
-  overflow-x: auto;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+  text-align: right;
 }
-#le-transport {
+.line.timed .ln-time {
+  color: var(--accent);
+}
+.ln-time:hover {
+  background: rgba(var(--wash), 0.12);
+  color: var(--fg);
+}
+
+.ln-text {
+  min-width: 0;
+  outline: none;
+  border-radius: 6px;
+  padding: 0 4px;
+  cursor: text;
+  white-space: pre-wrap;
+}
+.ln-text:focus {
+  background: rgba(var(--wash), 0.1);
+  color: var(--fg);
+}
+
+.ln-check {
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--faint);
+  font-size: 0.7rem;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.line:hover .ln-check:not(:disabled),
+.ln-check:focus-visible {
+  opacity: 1;
+}
+.ln-check:hover:not(:disabled) {
+  background: rgba(var(--wash), 0.12);
+  color: var(--fg);
+}
+.ln-check:disabled {
+  cursor: default;
+}
+
+/* A timing pass is a rhythm game: the only thing that matters is knowing which
+   line the next press lands on, so the cursor is loud and everything else is
+   quiet. */
+#lyrics.stamping .line {
+  opacity: 0.5;
+}
+#lyrics.stamping .line.cursor {
+  opacity: 1;
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--fg);
+  font-weight: 600;
+}
+#lyrics.stamping .ln-check {
+  display: none;
+}
+
+#lyric-bar {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  padding-top: 12px;
+  margin-top: 4px;
+  border-top: 1px solid rgba(var(--wash), 0.1);
 }
-#le-clock {
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
-  font-size: 0.95rem;
-  color: var(--dim);
+#lyric-bar .btn {
+  padding: 7px 12px;
+  font-size: 0.78rem;
 }
-#le-lines {
+#lyric-bar-status {
   flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  border-top: 1px solid rgba(var(--wash), 0.08);
-  padding-top: 8px;
-}
-.le-line {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  padding: 3px 6px;
-  border-radius: 7px;
+  min-width: 100%;
+  font-size: 0.78rem;
   color: var(--faint);
-}
-.le-line.stamped {
-  color: var(--dim);
-}
-/* The line you are about to stamp. It has to be findable at a glance while the song
-   is running, so it gets the accent rather than a subtle shade. */
-.le-line.at {
-  background: rgba(var(--wash), 0.1);
-  color: var(--fg);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-.le-time {
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--faint);
-  flex: none;
-  width: 5.2em;
-  text-align: right;
-}
-.le-line.stamped .le-time {
-  color: var(--accent);
-}
-.le-time:hover {
-  color: var(--fg);
-  text-decoration: underline;
-}
-.le-words-cell {
-  min-width: 0;
-  font-size: 0.9rem;
-}
-#le-status {
-  font-size: 0.8rem;
-  color: var(--faint);
-  flex: 1;
-  min-width: 0;
   min-height: 1em;
+  order: -1;
 }
-#le-status.ok {
+#lyric-bar-status.ok {
   color: var(--accent);
 }
-#le-status.err {
+#lyric-bar-status.err {
   color: var(--bad);
 }
+.lyric-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--faint);
+  cursor: pointer;
+  margin-right: auto;
+}
+.lyric-check input {
+  accent-color: var(--accent);
+}
 
-/* Publishing and flagging are public and one-way, so they interrupt rather than
-   happening on a stray click. */
-#le-confirm {
-  position: absolute;
+/* The pencil stays lit while edit mode is on, so the pane never looks editable
+   for no visible reason. */
+.lyric-edit.on {
+  opacity: 1;
+  color: var(--accent);
+}
+
+#lyric-confirm {
+  position: fixed;
   inset: 0;
-  z-index: 1;
+  z-index: 9;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay);
   backdrop-filter: blur(3px);
 }
-#le-confirm[hidden] {
-  display: none;
-}
-.le-confirm-card {
+.lyric-confirm-card {
   max-width: 440px;
   padding: 22px 24px;
   border-radius: 16px;
-  background: var(--page);
+  background: var(--panel);
   border: 1px solid rgba(var(--wash), 0.12);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 24px 60px var(--sh-deep);
 }
-.le-confirm-card h3 {
+.lyric-confirm-card h3 {
   margin: 0 0 10px;
   font-size: 0.95rem;
 }
-.le-confirm-card p {
+.lyric-confirm-card p {
   margin: 0 0 14px;
   font-size: 0.85rem;
   line-height: 1.5;
   color: var(--dim);
 }
-.le-confirm-card .field {
+.lyric-confirm-card .field {
   width: 100%;
   padding: 9px 12px;
   margin-bottom: 14px;
 }
-.le-confirm-actions {
+.lyric-confirm-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;

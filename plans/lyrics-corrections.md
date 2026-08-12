@@ -172,6 +172,56 @@ fills as a countdown to the first line. Three things that are easy to get wrong 
   `main.ts` and `lyric-editor.ts` is resolved at *import* time, so one wrong id throws
   and blanks the whole app. All 81 currently resolve against `index.html`.
 
+## Redesign — inline editing (2026-08-11, supersedes the full-page editor)
+
+Cameron, on seeing the first version: the editor should not be another layer. Writing a
+whole lyric set or hand-typing timestamps is rare; fixing *one line* is the common case.
+
+Decisions taken with him:
+
+- **The pencil toggles edit mode** on the lyrics pane itself. Off by default, so the
+  listening surface stays clean.
+- **The full-page editor is removed entirely.** "No lyrics at all" is still covered
+  because pasting multi-line text into a line splits it into lines.
+- **Two distinct modes, because they are different jobs:**
+  - *Timestamp mode* — for lyrics with no timings at all. A button starts it; the song
+    plays and Space (or a click) marks each line as it starts, **continuously**. No
+    jump-back between marks; nothing interrupts the pass.
+  - *Correction mode* — the default for lyrics that already have timings. Per-line
+    controls: edit the words, set this line's start to *now*, and check it.
+- **Jump-back to verify belongs only to correction mode**, automatic after a single-line
+  change (toggleable) plus a manual per-line check button.
+
+### Seek had to be built — it did not exist
+
+`Engine` exposed only `replay()` (restart at zero). The primitive was already there
+though: `audio::Player::play_at(url, offset)`, the stall-recovery path.
+
+- `AudioThread` gains `Command::Seek(Duration)`, which parks the target in the existing
+  `Current::resume_at` and drops the player. The thread's existing rebuild step re-opens
+  there, so nothing had to learn how to seek a live decoder.
+- It publishes the destination position immediately — otherwise the playhead reports the
+  old position for a beat and the lyric highlight visibly walks backwards before jumping.
+- It resets `recoveries`, or a pass of timing work would spend the track's recovery
+  budget and eventually skip the song.
+- `Engine::seek` deliberately does **not** emit `TrackStarted` the way `replay` does;
+  that would tell the UI to reset its progress bar and reload lyrics for a track that
+  never changed.
+- The Tauri command `player_seek` lives in `lib.rs`, not `native.rs`, purely to avoid
+  entangling with another session's uncommitted volume work in that file.
+
+**Backward seek is not cheap** — the ring buffer only holds audio *ahead* of the
+listener, so going back re-opens the stream and rebuffers. That is why the continuous tap
+pass never seeks.
+
+### Pane ownership while editing
+
+`highlightLine` indexes `.line` nodes positionally and assumes `syncedLines` is sorted
+ascending — neither holds mid-pass, when lines have no timestamp yet. So while edit mode
+is on, **the editor owns the pane**: it renders the rows (keeping `.line` and
+`data-idx` so nothing else breaks) and drives its own cursor, and `highlightLine` stands
+down. Normal rendering and highlighting resume on exit.
+
 ## Things not to do
 
 - Don't key a publish off Pandora's now-playing metadata when a matched LRCLIB record

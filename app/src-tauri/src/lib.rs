@@ -51,6 +51,22 @@ async fn player_cmd(
     native::native_cmd(app, state, cmd).await
 }
 
+/// Move the playhead within the current track.
+///
+/// Separate from `player_cmd` because that one carries a bare verb and this needs a
+/// destination. Going backwards costs a stream re-open and a rebuffer (the ring buffer
+/// only holds audio ahead of the listener), so this is for deliberate jumps — checking a
+/// lyric timing, say — and not for scrubbing.
+#[tauri::command]
+async fn player_seek(
+    state: tauri::State<'_, native::NativeEngine>,
+    position: f64,
+) -> Result<(), String> {
+    let to = std::time::Duration::from_secs_f64(position.max(0.0));
+    state.engine().await?.seek(to);
+    Ok(())
+}
+
 /// Transport command for the network (UPnP/DLNA) player shown in remote mode.
 #[tauri::command]
 async fn remote_cmd(ctl: tauri::State<'_, upnp::RemoteCtl>, cmd: String) -> Result<(), String> {
@@ -488,6 +504,7 @@ pub fn run() {
             export::cancel_export,
             export::export_stations,
             import::import_preview,
+            player_seek,
             lyrics::fetch_lyrics,
             lyrics::save_lyrics_override,
             lyrics::clear_lyrics_override,
