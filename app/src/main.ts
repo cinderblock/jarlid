@@ -483,8 +483,8 @@ let lastMoveAt = 0;
 function onPlayhead(ph: Playhead) {
   const wasPaused = lastPlayhead.paused;
   lastPlayhead = ph;
-  // A staged update says "after this song" or "when playback resumes" depending on
-  // this, so the badge has to follow it.
+  // A staged update says "after this song" or "while paused" depending on this, so the
+  // badge has to follow it.
   if (wasPaused !== ph.paused && status.armed) renderVersion();
   const now = Date.now();
   const moved = Math.abs(ph.position - lastPos) > 0.05;
@@ -578,10 +578,10 @@ function renderVersion() {
     versionEl.textContent = `v${v} ready to install`;
     return;
   }
-  // Armed: say when. Paused matters because a paused app is deliberately never
-  // restarted, so "after this song" would be a lie.
+  // Armed: say when. Paused is the moment the updater prefers — it installs within about a
+  // minute and comes back paused — so "after this song" would be a lie there.
   versionEl.textContent = lastPlayhead.paused
-    ? `updating to v${v} when playback resumes`
+    ? `updating to v${v} while paused`
     : `updating to v${v} after this song`;
 }
 
@@ -623,6 +623,12 @@ listen<string>("app://update-failed", () => {
   versionBusy = false;
   versionEl.textContent = "update failed";
   setTimeout(renderVersion, 2500);
+});
+// Playback started or stopped in the moment between the notice and the install, so the
+// updater backed out. Nothing went wrong and it will try again — just undo the notice.
+listen("app://update-stood-down", () => {
+  versionBusy = false;
+  renderVersion();
 });
 
 versionEl.addEventListener("click", async () => {

@@ -55,7 +55,12 @@ const MAX_RECOVERIES: u32 = 3;
 const RECOVERY_FORGIVENESS: Duration = Duration::from_secs(10);
 
 enum Command {
-    Play(String),
+    /// `paused: true` records the track without ever opening the device — see
+    /// [`AudioThread::play_paused`].
+    Play {
+        url: String,
+        paused: bool,
+    },
     SetPaused(bool),
     SetVolume(f32),
     Stop,
@@ -128,19 +133,25 @@ impl AudioThread {
                 // Drain commands first so pause and skip feel immediate.
                 loop {
                     match rx.try_recv() {
-                        Ok(Command::Play(url)) => {
+                        Ok(Command::Play {
+                            url,
+                            paused: start_paused,
+                        }) => {
                             thread_state.track_ended.store(false, Ordering::Relaxed);
                             thread_state.failed.store(false, Ordering::Relaxed);
                             thread_state.position_ms.store(0, Ordering::Relaxed);
-                            paused = false;
-                            paused_since = None;
+                            paused = start_paused;
+                            // Dated now for consistency rather than for effect: a track loaded
+                            // paused never builds a player, and RELEASE_AFTER_PAUSE only ever
+                            // releases one that exists. There is no device to let go of yet.
+                            paused_since = start_paused.then(Instant::now);
                             recoveries = 0;
                             recovered_at = Duration::ZERO;
                             last_position = Duration::ZERO;
                             last_moved = Instant::now();
                             last_decoded = Duration::ZERO;
                             last_decode = Instant::now();
-                            thread_state.paused.store(false, Ordering::Relaxed);
+                            thread_state.paused.store(start_paused, Ordering::Relaxed);
                             player = None; // stop the old device before opening a new one
                             current = Some(Current {
                                 url,
@@ -332,7 +343,24 @@ impl AudioThread {
     }
 
     pub fn play(&self, url: &str) {
-        let _ = self.commands.send(Command::Play(url.to_string()));
+        let _ = self.commands.send(Command::Play {
+            url: url.to_string(),
+            paused: false,
+        });
+    }
+
+    /// Load a track but do not start it — the device is never opened, so not one frame is
+    /// emitted. Pressing play afterwards runs the same rebuild path a long pause does.
+    ///
+    /// This has to be part of the `Play` message rather than `play()` followed by
+    /// `set_paused(true)`: those are two messages, and the thread's build step runs between
+    /// drains, so a split would open the device and play a burst of audio before the pause
+    /// landed. The listener would hear exactly the interruption this exists to avoid.
+    pub fn play_paused(&self, url: &str) {
+        let _ = self.commands.send(Command::Play {
+            url: url.to_string(),
+            paused: true,
+        });
     }
 
     pub fn set_paused(&self, paused: bool) {
