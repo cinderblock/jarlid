@@ -97,8 +97,12 @@ impl NativeEngine {
 pub fn init(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        // Read once per launch, and unconditionally — a marker left by an update that
+        // installed while nobody was signed in still belongs to this launch, and consuming
+        // it here is what stops it leaking into a later manual sign-in.
+        let resume_paused = crate::updates::take_resume_paused(&app);
         match Engine::start_from_saved().await {
-            Ok((started, events)) => attach(&app, started, events).await,
+            Ok((started, events)) => attach(&app, started, events, resume_paused).await,
             Err(engine::Error::NotSignedIn) => {
                 // Normal first run — not an error worth logging as one.
                 let _ = app.emit("engine://needs-login", json!({}));
@@ -112,10 +116,13 @@ pub fn init(app: &AppHandle) {
 }
 
 /// Take ownership of a started engine: publish its events, drive the radio, tick the playhead.
+/// `resume_paused` comes from the updater's marker and is only ever true on the launch path:
+/// signing in by hand is a request for music, not a restoration of a paused session.
 async fn attach(
     app: &AppHandle,
     started: Engine,
     mut events: tokio::sync::mpsc::UnboundedReceiver<Event>,
+    resume_paused: bool,
 ) {
     let engine = Arc::new(started);
     *app.state::<NativeEngine>().0.lock().await = Some(Arc::clone(&engine));
@@ -267,7 +274,14 @@ async fn attach(
     };
 
     if let Some((name, token)) = resume {
-        if let Err(e) = engine.play_station(&name, &token).await {
+        // An update that installed itself while the music was paused has to come back
+        // paused, or the restart starts music at someone who deliberately stopped it.
+        let started = if resume_paused {
+            engine.play_station_paused(&name, &token).await
+        } else {
+            engine.play_station(&name, &token).await
+        };
+        if let Err(e) = started {
             eprintln!("[native] could not start playback: {e}");
         } else {
             save_last_station(app, &name, &token);
@@ -285,7 +299,7 @@ pub async fn native_sign_in(
     let (started, events) = Engine::sign_in(&username, &password)
         .await
         .map_err(|e| e.to_string())?;
-    attach(&app, started, events).await;
+    attach(&app, started, events, false).await;
     Ok(())
 }
 

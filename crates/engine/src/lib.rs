@@ -80,8 +80,8 @@ pub struct Engine {
     state: Arc<Mutex<State>>,
     audio: Arc<AudioThread>,
     events: mpsc::UnboundedSender<Event>,
-    /// Set by [`Engine::begin_paused`] and consumed by the next [`Engine::advance`], so the
-    /// first track of a session can be loaded without starting it.
+    /// Set for the duration of [`Engine::play_station_paused`] and consumed by the advance
+    /// inside it, so the first track of a session can be loaded without starting it.
     start_paused: AtomicBool,
 }
 
@@ -322,13 +322,15 @@ impl Engine {
             track
         };
 
-        // One-shot: only the advance that follows `begin_paused` is held, and every later one
-        // behaves normally — including the one the play button triggers.
+        // One-shot: only the advance inside `play_station_paused` is held, and every later
+        // one behaves normally — including the one the play button triggers.
         if self.start_paused.swap(false, Ordering::SeqCst) {
             self.audio.play_paused(&track.audio_url);
             let _ = self.events.send(Event::TrackStarted(Box::new(track)));
-            // The UI reads paused from the playhead tick, but saying so outright means no
-            // window in which the transport shows "playing" over silence.
+            // A `TrackStarted` that did not start anything would otherwise leave the event
+            // stream implying playback. Jarlid's UI happens not to need it — it starts up
+            // showing paused and takes the truth from the playhead tick — but the event
+            // stream is this crate's API and should not lie to the next consumer.
             let _ = self.events.send(Event::Paused(true));
             return Ok(());
         }
@@ -338,13 +340,24 @@ impl Engine {
         Ok(())
     }
 
-    /// Load the next track without starting it.
+    /// Restore a station without starting it: the track is loaded, the device is never
+    /// opened, and pressing play begins it.
     ///
-    /// Applies to the next [`Engine::advance`] only. This exists for the updater: an update
-    /// that installs itself while the listener has the music paused must not come back
-    /// playing, or the restart starts music at someone who deliberately stopped it.
-    pub fn begin_paused(&self) {
+    /// This exists for the updater. An update that installs itself while the listener has
+    /// the music paused must not come back playing, or the restart starts music at someone
+    /// who deliberately stopped it.
+    ///
+    /// The intent lives and dies with this one call, which is the whole reason it is a
+    /// method rather than a flag callers set. Left standing it would be a trap: if this
+    /// restore fails — a stream violation moments after the installer ran is the obvious
+    /// way — the flag would sit there waiting for the *next* advance, and that one is the
+    /// advance the listener asks for by clicking Take Over or picking a station. They would
+    /// get a loaded track and silence, with nothing on screen to explain it.
+    pub async fn play_station_paused(&self, name: &str, token: &str) -> Result<()> {
         self.start_paused.store(true, Ordering::SeqCst);
+        let started = self.play_station(name, token).await;
+        self.start_paused.store(false, Ordering::SeqCst);
+        started
     }
 
     /// Drive the radio: advance when a track ends. Runs until the engine is dropped.

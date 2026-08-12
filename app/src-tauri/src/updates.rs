@@ -1,10 +1,15 @@
-//! Updates that land in the gap between songs.
+//! Updates that land when nothing is playing.
 //!
 //! The download happens invisibly in the background; the *install* — which exits the
-//! process and relaunches it — is held until a track ends. The rule: interrupting a
-//! running song is acceptable if we truly have to, but always prefer waiting a couple of
-//! minutes for it to end. So a track boundary is the normal trigger and [`MAX_WAIT`] is a
-//! backstop for when no boundary ever arrives.
+//! process and relaunches it — waits for a moment that costs the listener nothing. There
+//! are two such moments, in order of preference:
+//!
+//! - **Paused.** The best one: nothing is being cut off, and the app is told to come back
+//!   paused (see [`arm_resume_paused`]) so the restart is inaudible. [`PAUSE_SETTLE`] keeps
+//!   a five-second pause from restarting the app.
+//! - **A track boundary.** Interrupting a running song is acceptable if we truly have to,
+//!   but always prefer waiting a couple of minutes for it to end. [`MAX_WAIT`] is a backstop
+//!   for when no boundary ever arrives.
 //!
 //! Two properties of `tauri-plugin-updater` make this work, both read from its source
 //! rather than assumed:
@@ -36,20 +41,54 @@ use tauri_plugin_updater::Update;
 
 use crate::settings::{self, Policy};
 
-/// How long to wait for a track to end before installing anyway.
+/// How much *playing* time to allow without a track boundary before installing anyway.
 ///
 /// Longer than almost any song, so it only fires when something is wrong — a playhead that
-/// has stopped advancing, say — rather than as a routine timeout.
+/// has stopped advancing, say — rather than as a routine timeout. Deliberately not wall
+/// time: see [`Waiting`].
 const MAX_WAIT: Duration = Duration::from_secs(6 * 60);
+
+/// How long playback must have been continuously paused before an update installs itself.
+///
+/// Long enough that pausing to answer a question does not restart the app under you, short
+/// enough that walking away for a minute is sufficient. Combined with [`TICK`] the real
+/// latency is up to about fifty seconds, which nobody is timing.
+///
+/// Sampled at [`TICK`] granularity rather than measured, so this is really "paused at every
+/// sample across 30 s" — a brief resume that falls between two samples goes unseen. The
+/// last-moment re-check in [`try_install`] is what covers the case that actually matters,
+/// which is playback running at the instant of the install.
+const PAUSE_SETTLE: Duration = Duration::from_secs(30);
 
 /// How often the loop wakes to re-evaluate. Coarse on purpose.
 const TICK: Duration = Duration::from_secs(20);
+
+/// Marker read once at launch: come back paused rather than playing.
+///
+/// A file rather than a process argument because the NSIS installer relaunches us with the
+/// *old* process's arguments (`/UPDATE /ARGS …`), so there is nothing to append to. It lives
+/// next to `last-station.json` in the config directory, which the installer does not touch.
+///
+/// It holds the version it was written for, which is what makes it self-validating rather
+/// than merely time-limited. `install()` exits this process the moment NSIS is launched, so
+/// a successful hand-off is not a successful *install* — the listener can still cancel the
+/// UAC prompt, or the installer can fail. Then they relaunch by hand, which is the natural
+/// reaction, and an unconditional marker would greet them with a silent app. The relaunched
+/// binary is only the new version if the install truly happened, so requiring the marker to
+/// name the running version answers exactly that question.
+const RESUME_PAUSED: &str = "resume-paused";
+
+/// How long the [`RESUME_PAUSED`] marker stays meaningful.
+///
+/// Belt and braces behind the version check: the marker is deleted on read and on a failed
+/// install, and a stale one is already inert against a different version. This only covers
+/// being killed between writing it and installing, where the version would still match.
+const RESUME_PAUSED_TTL: Duration = Duration::from_secs(10 * 60);
 
 struct Staged {
     version: String,
     bytes: Vec<u8>,
     update: Update,
-    staged_at: Instant,
 }
 
 #[derive(Default)]
@@ -85,8 +124,44 @@ impl UpdateCtl {
     pub fn is_armed(&self) -> bool {
         self.armed.load(Ordering::SeqCst)
     }
-    fn waited(&self) -> Option<Duration> {
-        Some(self.staged.lock().ok()?.as_ref()?.staged_at.elapsed())
+}
+
+/// How long an update has been waiting for a moment, split by what the listener was doing.
+///
+/// Neither clock is wall time, and that distinction is the whole point. The backstop asks
+/// "how long have we been *playing* without a track boundary"; the paused install asks "how
+/// long has playback been *stopped*, without interruption".
+///
+/// Conflating them was a real bug: the backstop used to measure wall time while its gate
+/// only opened once playback resumed, so an update staged during a pause longer than
+/// [`MAX_WAIT`] arrived at the moment the listener pressed play with its six minutes already
+/// spent — and cut the song they had just resumed in half, every time.
+///
+/// `ready` is the same lesson generalised. Neither clock may run while the install is held
+/// for a reason that has nothing to do with timing — not armed, an export running, a network
+/// player owning playback. Otherwise the countdown is spent behind a shut gate and fires the
+/// instant the gate opens: clicking "install after this song" on an update that had been
+/// sitting unarmed all evening would restart the app mid-song, having promised the opposite.
+#[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
+struct Waiting {
+    /// Playing time while nothing but a track boundary was missing. Survives pauses: a pause
+    /// does not make an absent boundary any less absent.
+    playing: Duration,
+    /// The *current* pause, reset the moment playback resumes.
+    paused: Duration,
+}
+
+impl Waiting {
+    /// `ready` means every condition except the moment itself is satisfied.
+    fn tick(&mut self, ready: bool, playing: bool, dt: Duration) {
+        if !ready {
+            *self = Self::default();
+        } else if playing {
+            self.playing += dt;
+            self.paused = Duration::ZERO;
+        } else {
+            self.paused += dt;
+        }
     }
 }
 
@@ -151,16 +226,16 @@ pub async fn stage(app: &tauri::AppHandle) -> Result<Option<String>, String> {
             version: version.clone(),
             bytes,
             update,
-            staged_at: Instant::now(),
         });
         ctl.armed
             .store(policy.arms_automatically(), Ordering::SeqCst);
     }
     publish(app);
 
-    // "Instant" means exactly that: do not wait for a boundary.
+    // "Instant" means exactly that: do not wait for a boundary. It still comes back the way
+    // it was left, so "instant" while paused is silent rather than merely fast.
     if policy == Policy::Instant {
-        try_install(app, true, "instant policy", true);
+        try_install(app, playing(app).await, true, "instant policy", true);
     }
     Ok(Some(version))
 }
@@ -192,7 +267,7 @@ enum Hold {
     NotArmed,
     Exporting,
     Remote,
-    Paused,
+    MidSong,
 }
 
 impl Hold {
@@ -202,9 +277,19 @@ impl Hold {
             Hold::NotArmed => "waiting to be asked",
             Hold::Exporting => "an export is running",
             Hold::Remote => "a network player owns playback",
-            Hold::Paused => "playback is paused",
+            Hold::MidSong => "a song is playing",
         }
     }
+}
+
+/// What the app should do when it comes back up.
+///
+/// Derived from what playback was doing at the instant of the decision, and nothing else:
+/// restarting must not change whether music is coming out of the speakers.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Resume {
+    Playing,
+    Paused,
 }
 
 /// What the world looks like when we consider installing.
@@ -215,7 +300,12 @@ struct Conditions {
     armed: bool,
     exporting: bool,
     remote: bool,
+    /// Local playback is actually running. Polled, not assumed — the one caller that still
+    /// asserts it is the track boundary, where a track having just ended is proof.
     playing: bool,
+    /// The caller has a mandate to cut off a running song: a track just ended, the backstop
+    /// expired, or the user asked for it. Without one, playing audio is left alone.
+    may_interrupt: bool,
 }
 
 /// The whole decision, as a pure function.
@@ -223,7 +313,7 @@ struct Conditions {
 /// Deliberately separated from the Tauri plumbing: the rest of this module cannot run
 /// outside a release build, so this is the only part that can be tested at all — and it is
 /// the part where a mistake means restarting the app at a bad moment.
-fn decide(c: Conditions) -> Result<(), Hold> {
+fn decide(c: Conditions) -> Result<Resume, Hold> {
     if !c.staged {
         return Err(Hold::NothingStaged);
     }
@@ -239,15 +329,20 @@ fn decide(c: Conditions) -> Result<(), Hold> {
     if c.remote {
         return Err(Hold::Remote);
     }
-    // Nothing is being interrupted while paused — but the app comes back *playing*, and
-    // starting music at someone who deliberately stopped it is worse than waiting.
-    if !c.playing {
-        return Err(Hold::Paused);
+    // Paused needs no mandate at all: nothing is being cut off, and `Resume::Paused` means
+    // the app comes back exactly as it was left. Audible playback is the case that has to
+    // justify itself.
+    if c.playing && !c.may_interrupt {
+        return Err(Hold::MidSong);
     }
-    Ok(())
+    Ok(if c.playing {
+        Resume::Playing
+    } else {
+        Resume::Paused
+    })
 }
 
-fn conditions(app: &tauri::AppHandle, playing: bool) -> Conditions {
+fn conditions(app: &tauri::AppHandle, playing: bool, may_interrupt: bool) -> Conditions {
     let ctl = app.state::<UpdateCtl>();
     Conditions {
         staged: ctl.is_staged(),
@@ -255,34 +350,43 @@ fn conditions(app: &tauri::AppHandle, playing: bool) -> Conditions {
         exporting: app.state::<crate::export::ExportCtl>().is_running(),
         remote: crate::remote_active(),
         playing,
+        may_interrupt,
     }
 }
 
-/// A track just ended — the moment we have been waiting for.
+/// A track just ended — a moment we are allowed to use.
+///
+/// The only place `playing: true` is asserted rather than polled, and it is earned: the
+/// engine has already started the next track by the time this event arrives, so there
+/// genuinely is audio running.
 pub fn on_track_boundary(app: &tauri::AppHandle) {
-    try_install(app, true, "track boundary", false);
+    try_install(app, true, true, "track boundary", false);
 }
 
 /// `force` is an explicit request: it waives the guards that exist purely to avoid
-/// surprising the listener (not armed, paused, a renderer owning playback), because a
-/// deliberate request is not a surprise. It does **not** waive the export guard, which
-/// protects work in progress rather than anyone's comfort.
-fn try_install(app: &tauri::AppHandle, playing: bool, why: &str, force: bool) {
+/// surprising the listener (not armed, a renderer owning playback, and the requirement of a
+/// mandate to interrupt), because a deliberate request is not a surprise. It does **not**
+/// waive the export guard, which protects work in progress rather than anyone's comfort —
+/// nor does it override `playing`, because "install now" is not a request to start music.
+fn try_install(app: &tauri::AppHandle, playing: bool, may_interrupt: bool, why: &str, force: bool) {
     let ctl = app.state::<UpdateCtl>();
-    let mut c = conditions(app, playing);
+    let mut c = conditions(app, playing, may_interrupt);
     if force {
         c.armed = true;
         c.remote = false;
-        c.playing = true;
+        c.may_interrupt = true;
     }
-    if let Err(h) = decide(c) {
-        // These two are the steady state at every track boundary; logging them would be
-        // pure noise.
-        if !matches!(h, Hold::NothingStaged | Hold::NotArmed) {
-            eprintln!("[updater] holding install ({why}): {}", h.reason());
+    let resume = match decide(c) {
+        Ok(resume) => resume,
+        Err(h) => {
+            // These two are the steady state at every track boundary; logging them would be
+            // pure noise.
+            if !matches!(h, Hold::NothingStaged | Hold::NotArmed) {
+                eprintln!("[updater] holding install ({why}): {}", h.reason());
+            }
+            return;
         }
-        return;
-    }
+    };
     if ctl.firing.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -292,21 +396,120 @@ fn try_install(app: &tauri::AppHandle, playing: bool, why: &str, force: bool) {
         return;
     };
 
-    eprintln!("[updater] installing v{} at {why}", staged.version);
+    // Written before the install rather than after, because `install` never returns.
+    if resume == Resume::Paused {
+        arm_resume_paused(app, &staged.version);
+    }
+
+    eprintln!(
+        "[updater] installing v{} at {why} (coming back {})",
+        staged.version,
+        match resume {
+            Resume::Playing => "playing",
+            Resume::Paused => "paused",
+        }
+    );
     let _ = app.emit("app://update-installing", staged.version.clone());
     // Let the UI paint the notice before the process exits under it.
     std::thread::sleep(Duration::from_millis(250));
+
+    // The listener can hit play — or pause — inside that window. Going ahead anyway would
+    // restart the app into the state they just left, which is precisely the interruption
+    // all of this exists to avoid. Standing down costs nothing: the next tick or boundary
+    // picks it up again, with the state re-read.
+    if paused_now(app).is_some_and(|p| p != (resume == Resume::Paused)) {
+        eprintln!("[updater] stood down ({why}): playback changed while arming");
+        disarm_resume_paused(app);
+        *ctl.staged.lock().unwrap() = Some(staged);
+        ctl.firing.store(false, Ordering::SeqCst);
+        let _ = app.emit("app://update-stood-down", ());
+        publish(app);
+        return;
+    }
 
     // No network here: the bytes are downloaded and verified, and the handle is held.
     // On success this never returns — the plugin launches the installer and exits(0).
     if let Err(e) = staged.update.install(&staged.bytes) {
         eprintln!("[updater] install failed: {e}");
+        disarm_resume_paused(app);
         let _ = app.emit("app://update-failed", staged.version.clone());
         // Put it back so a later boundary can retry rather than losing the download.
         *ctl.staged.lock().unwrap() = Some(staged);
         ctl.firing.store(false, Ordering::SeqCst);
         publish(app);
     }
+}
+
+fn resume_paused_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_config_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join(RESUME_PAUSED))
+}
+
+/// Tell the next launch to load a track without starting it — but only if that launch is
+/// the version we are installing.
+fn arm_resume_paused(app: &tauri::AppHandle, version: &str) {
+    if let Some(path) = resume_paused_path(app) {
+        if let Err(e) = std::fs::write(&path, version) {
+            // Not fatal, but worth saying: the update still installs, it just comes back
+            // playing at someone who had it paused.
+            eprintln!("[updater] could not arm the paused restart: {e}");
+        }
+    }
+}
+
+fn disarm_resume_paused(app: &tauri::AppHandle) {
+    if let Some(path) = resume_paused_path(app) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Should this launch come up paused? Consumes the marker, so it answers `true` exactly
+/// once per restart that asked for it.
+pub fn take_resume_paused(app: &tauri::AppHandle) -> bool {
+    let Some(path) = resume_paused_path(app) else {
+        return false;
+    };
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return false;
+    };
+
+    let fresh = meta
+        .modified()
+        .map(|t| t.elapsed().unwrap_or_default() < RESUME_PAUSED_TTL)
+        .unwrap_or(false);
+    let wanted = std::fs::read_to_string(&path).unwrap_or_default();
+    let running = app.package_info().version.to_string();
+    let ours = wanted.trim() == running;
+
+    // Removed whatever we decided: a marker we have chosen to ignore must not linger and
+    // surprise the launch after this one. Existence came from the metadata above, not from
+    // this call succeeding — if the file is momentarily locked, saying "it wasn't there"
+    // would leave it to be consumed by an unrelated launch later.
+    if let Err(e) = std::fs::remove_file(&path) {
+        eprintln!("[updater] could not clear the paused-restart marker: {e}");
+    }
+    if !ours {
+        // The overwhelmingly likely cause is an install that did not happen — a cancelled
+        // UAC prompt, say — so the listener is looking at the old version and did not ask
+        // for any of this.
+        eprintln!("[updater] ignoring a paused-restart marker for v{wanted} (running v{running})");
+    } else if !fresh {
+        eprintln!("[updater] ignoring a stale paused-restart marker");
+    }
+    ours && fresh
+}
+
+/// Local paused state without awaiting, for the last look before an irreversible step.
+///
+/// `None` means "could not tell" — not signed in, or the engine mutex was momentarily
+/// contended — and callers treat that as no reason to change course.
+fn paused_now(app: &tauri::AppHandle) -> Option<bool> {
+    Some(
+        app.state::<crate::native::NativeEngine>()
+            .try_engine()?
+            .is_paused(),
+    )
 }
 
 /// One click on the version badge, which walks the *known → staged → armed → now* ladder a
@@ -323,7 +526,7 @@ pub async fn update_action(app: tauri::AppHandle) -> Result<Status, String> {
 
     if staged && armed {
         // Already going to happen on its own — so this means now.
-        try_install(&app, true, "user asked", true);
+        try_install(&app, playing(&app).await, true, "user asked", true);
         return Ok(status(&app)); // only reached when the install failed
     }
     if staged {
@@ -369,6 +572,7 @@ pub fn spawn(app: &tauri::AppHandle) {
         // Settle before the first check.
         tokio::time::sleep(Duration::from_secs(10)).await;
         let mut next_check = Some(Instant::now());
+        let mut waiting = Waiting::default();
 
         loop {
             let cfg = settings::get(&app);
@@ -398,13 +602,23 @@ pub fn spawn(app: &tauri::AppHandle) {
 
             tokio::time::sleep(TICK).await;
 
-            // Backstop: only while playing, so a paused app is never restarted out from
-            // under the listener.
-            if playing(&app).await {
-                let ctl = app.state::<UpdateCtl>();
-                if ctl.is_armed() && ctl.waited().is_some_and(|w| w >= MAX_WAIT) {
-                    try_install(&app, true, "backstop (no track boundary)", false);
+            let playing = playing(&app).await;
+            // Everything except the moment: staged, armed, no export, no network player.
+            // Asking `decide` with a mandate leaves exactly those guards standing, so this
+            // cannot drift out of step with the real rules.
+            let ready = decide(conditions(&app, playing, true)).is_ok();
+            waiting.tick(ready, playing, TICK);
+
+            if !playing {
+                // The preferred moment. Nothing is cut off and the app comes back paused,
+                // so from the listener's side the update simply never happened.
+                if waiting.paused >= PAUSE_SETTLE {
+                    try_install(&app, false, false, "paused", false);
                 }
+            } else if waiting.playing >= MAX_WAIT {
+                // Backstop: playing this long with no track boundary means one is not
+                // coming, so interrupting is the lesser evil.
+                try_install(&app, true, true, "backstop (no track boundary)", false);
             }
         }
     });
@@ -423,7 +637,7 @@ async fn playing(app: &tauri::AppHandle) -> bool {
 mod tests {
     use super::*;
 
-    /// Everything lined up for an install.
+    /// Everything lined up for an install: playing, at a track boundary.
     fn ready() -> Conditions {
         Conditions {
             staged: true,
@@ -431,12 +645,13 @@ mod tests {
             exporting: false,
             remote: false,
             playing: true,
+            may_interrupt: true,
         }
     }
 
     #[test]
     fn installs_when_a_track_ends_with_an_armed_update() {
-        assert_eq!(decide(ready()), Ok(()));
+        assert_eq!(decide(ready()), Ok(Resume::Playing));
     }
 
     #[test]
@@ -490,16 +705,49 @@ mod tests {
         );
     }
 
-    /// The app always comes back playing, so restarting a paused app starts music at
-    /// someone who deliberately stopped it.
+    /// The whole point: a paused app updates on its own, with no mandate to interrupt
+    /// anything, because there is nothing to interrupt.
     #[test]
-    fn never_restarts_a_paused_app() {
+    fn a_paused_app_installs_without_needing_a_mandate() {
         assert_eq!(
             decide(Conditions {
                 playing: false,
+                may_interrupt: false,
                 ..ready()
             }),
-            Err(Hold::Paused)
+            Ok(Resume::Paused)
+        );
+    }
+
+    /// …and it must come back the way it was left. Restarting a paused app into playing
+    /// starts music at someone who deliberately stopped it, which is what made "never while
+    /// paused" the rule before the app could come back paused.
+    #[test]
+    fn restarting_never_changes_whether_music_is_playing() {
+        for may_interrupt in [true, false] {
+            assert_eq!(
+                decide(Conditions {
+                    playing: false,
+                    may_interrupt,
+                    ..ready()
+                }),
+                Ok(Resume::Paused),
+                "paused stays paused even with a mandate to interrupt"
+            );
+        }
+        assert_eq!(decide(ready()), Ok(Resume::Playing));
+    }
+
+    /// Audible playback is the case that has to justify itself. Without a mandate — no
+    /// track boundary, no expired backstop, no click — a running song is left alone.
+    #[test]
+    fn never_cuts_into_a_song_without_a_reason() {
+        assert_eq!(
+            decide(Conditions {
+                may_interrupt: false,
+                ..ready()
+            }),
+            Err(Hold::MidSong)
         );
     }
 
@@ -511,7 +759,8 @@ mod tests {
             armed: true,
             exporting: true,
             remote: true,
-            playing: false,
+            playing: true,
+            may_interrupt: false,
         };
         assert_eq!(decide(c), Err(Hold::Exporting));
         assert_eq!(
@@ -520,6 +769,14 @@ mod tests {
                 ..c
             }),
             Err(Hold::Remote)
+        );
+        assert_eq!(
+            decide(Conditions {
+                exporting: false,
+                remote: false,
+                ..c
+            }),
+            Err(Hold::MidSong)
         );
     }
 
@@ -531,7 +788,7 @@ mod tests {
         let forced = |c: Conditions| Conditions {
             armed: true,
             remote: false,
-            playing: true,
+            may_interrupt: true,
             ..c
         };
 
@@ -542,9 +799,14 @@ mod tests {
             exporting: false,
             remote: true,
             playing: false,
+            may_interrupt: false,
         };
         assert_eq!(decide(held), Err(Hold::NotArmed), "held automatically");
-        assert_eq!(decide(forced(held)), Ok(()), "but a request goes through");
+        assert_eq!(
+            decide(forced(held)),
+            Ok(Resume::Paused),
+            "but a request goes through — and 'install now' is not a request to start music"
+        );
 
         assert_eq!(
             decide(forced(Conditions {
@@ -578,5 +840,90 @@ mod tests {
             "too long to be a backstop"
         );
         assert!(TICK < MAX_WAIT);
+        assert!(
+            PAUSE_SETTLE < MAX_WAIT,
+            "a pause should not wait out a song"
+        );
+    }
+
+    /// The regression this whole split exists for.
+    ///
+    /// Left paused for an hour with an update staged, the old wall-clock timer had long
+    /// since passed `MAX_WAIT` — so the first thing that happened after pressing play was
+    /// the backstop firing and cutting the resumed song in half. Paused time must not count
+    /// toward "no track boundary arrived".
+    #[test]
+    fn a_long_pause_does_not_expire_the_backstop() {
+        let mut w = Waiting::default();
+        for _ in 0..(3600 / TICK.as_secs()) {
+            w.tick(true, false, TICK);
+        }
+        assert!(w.paused >= Duration::from_secs(3600 - TICK.as_secs()));
+        assert_eq!(
+            w.playing,
+            Duration::ZERO,
+            "an hour paused is not an hour of playing"
+        );
+
+        // And the very next tick after pressing play must not trip it either.
+        w.tick(true, true, TICK);
+        assert!(w.playing < MAX_WAIT);
+    }
+
+    /// The paused clock is a streak, not a total: pausing for 20s twice with playback in
+    /// between is not the same as being away from the keyboard.
+    #[test]
+    fn resuming_resets_the_pause_streak() {
+        let mut w = Waiting::default();
+        w.tick(true, false, TICK);
+        w.tick(true, false, TICK);
+        assert_eq!(w.paused, TICK * 2);
+        w.tick(true, true, TICK);
+        assert_eq!(w.paused, Duration::ZERO);
+        assert_eq!(w.playing, TICK);
+    }
+
+    /// A pause in the middle does not make a missing track boundary any less missing, so
+    /// the playing clock accumulates across it rather than restarting.
+    #[test]
+    fn the_playing_clock_survives_a_pause() {
+        let mut w = Waiting::default();
+        w.tick(true, true, TICK);
+        w.tick(true, false, TICK);
+        w.tick(true, true, TICK);
+        assert_eq!(w.playing, TICK * 2);
+    }
+
+    /// Nothing staged means nothing to wait for — including after a failed install put the
+    /// bytes back, which starts the clocks over rather than resuming a spent countdown.
+    #[test]
+    fn losing_the_staged_update_resets_both_clocks() {
+        let mut w = Waiting::default();
+        w.tick(true, true, TICK);
+        w.tick(true, false, TICK);
+        w.tick(false, false, TICK);
+        assert_eq!(w, Waiting::default());
+    }
+
+    /// The same bug wearing a different gate.
+    ///
+    /// Under `ManualInstall` an update sits staged but unarmed indefinitely. If the clock
+    /// ran anyway, an evening's listening would bank the whole backstop — and the click
+    /// that arms it, whose own tooltip promises "install after this song", would restart
+    /// the app mid-song within one tick. An export running does the same thing.
+    #[test]
+    fn a_countdown_never_runs_behind_a_shut_gate() {
+        let mut w = Waiting::default();
+        // Six minutes of listening while something other than timing holds the install.
+        for _ in 0..(MAX_WAIT.as_secs() / TICK.as_secs() + 1) {
+            w.tick(false, true, TICK);
+        }
+        assert_eq!(w, Waiting::default());
+
+        // Now it is armed. The backstop starts from zero, so the track boundary that is
+        // moments away gets to be the trigger, exactly as promised.
+        w.tick(true, true, TICK);
+        assert_eq!(w.playing, TICK);
+        assert!(w.playing < MAX_WAIT);
     }
 }

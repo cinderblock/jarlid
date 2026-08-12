@@ -55,14 +55,16 @@ anywhere in it.
   sign out (which clears the saved password from the Windows Credential Manager); and how
   updates should arrive. Every control on the page is drawn by the app rather than by the
   platform, so the dropdowns and radios belong to the same UI as everything else.
-- **Updates that land between songs**: the installer is downloaded and signature-verified in
-  the background, then installed in the gap *after* a track rather than through the middle
-  of one. Jarlid restarts itself and picks the station back up, so an update costs a
-  slightly longer pause rather than an interruption. You choose the behaviour — install
-  after the current song (default), install immediately, download but ask first, or just be
-  told a version exists — and how often to look, from every 30 minutes to once a day at a
-  wall-clock hour you are not listening at. It will not restart during a station export,
-  while a network player owns playback, or while paused.
+- **Updates that never interrupt anything**: the installer is downloaded and
+  signature-verified in the background, then installed at a moment that costs you nothing.
+  If the music is paused it goes in immediately and silently, and Jarlid comes back *still
+  paused* — you would only know from the version number. Otherwise it waits for the gap
+  *after* a track rather than cutting through the middle of one, restarts, and picks the
+  station back up, so an update costs a slightly longer pause between songs. You choose the
+  behaviour — install after the current song (default), install immediately, download but
+  ask first, or just be told a version exists — and how often to look, from every 30 minutes
+  to once a day at a wall-clock hour you are not listening at. It will not restart during a
+  station export or while a network player owns playback.
 - Full station collection searchable in the picker; Cover-Flow-style recently-played gallery;
   WiiM volume slider in remote mode; window position/size persist across launches (kill-safe).
 

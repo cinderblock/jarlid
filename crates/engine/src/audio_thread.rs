@@ -143,9 +143,9 @@ impl AudioThread {
                             thread_state.failed.store(false, Ordering::Relaxed);
                             thread_state.position_ms.store(0, Ordering::Relaxed);
                             paused = start_paused;
-                            // Dated now, so a track queued paused and left that way still hits
-                            // the release-after-pause path rather than looking freshly paused
-                            // forever.
+                            // Dated now for consistency rather than for effect: a track loaded
+                            // paused never builds a player, and RELEASE_AFTER_PAUSE only ever
+                            // releases one that exists. There is no device to let go of yet.
                             paused_since = start_paused.then(Instant::now);
                             recoveries = 0;
                             recovered_at = Duration::ZERO;

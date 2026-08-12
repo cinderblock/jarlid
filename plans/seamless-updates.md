@@ -134,6 +134,129 @@ precisely so a dev build can never download a release over itself. So:
 - What is tested now: `decide()` — the guard logic, where a mistake means restarting at a
   bad moment — via 7 unit tests covering each hold and their precedence.
 
+## 2026-08-11 — reversal: paused is the *best* moment, not a hold
+
+**Reported symptom:** *"Automatic update should happen silently and automatically if the
+music is currently paused. Right now, it waits until I hit play and then some race condition
+or something makes the update happen right after resuming the track."*
+
+**It was not a race.** It was two deliberate rules combining into the worst possible
+outcome, and it reproduces every time:
+
+1. `decide()` held on `!playing`, so a staged update sat there for the whole pause.
+2. The backstop measured `staged_at.elapsed()` — **wall time** — while its gate
+   (`if playing(&app).await`) only opened once playback resumed.
+
+So an update staged during a pause longer than `MAX_WAIT` (6 min) arrived at the moment the
+listener pressed play with its backstop *already expired*. The next loop tick — at most
+`TICK` = 20 s later — fired "backstop (no track boundary)" and cut the just-resumed song in
+half. The longer you left it paused, the more certain the interruption. `Hold::Paused` was
+never reachable in production either: all four `try_install` call sites hardcoded
+`playing: true`.
+
+### What changed
+
+- **Paused installs, on purpose.** After `PAUSE_SETTLE` (30 s) of continuous pause an armed
+  update installs itself. The settle window is so that pausing to answer a question does not
+  restart the app; worst-case latency is `TICK + PAUSE_SETTLE` ≈ 50 s.
+- **The app comes back paused.** This is what made the old guard necessary and is the whole
+  cost of the reversal. `updates::arm_resume_paused` writes a marker file next to
+  `last-station.json`; `native::attach` consumes it (delete-on-read) and calls
+  `Engine::begin_paused()` before `play_station`, so `advance()` issues `play_paused`
+  instead of `play`.
+- **Starting paused opens no audio device at all.** `AudioThread`'s build step is
+  `if !paused && player.is_none()`, so a `Play { paused: true }` records the track and stops.
+  Pressing play runs the same rebuild path a long pause already used. There is no window in
+  which a frame could be emitted, so no blip — which is why this is a new `Command` field
+  rather than `play()` followed by `set_paused(true)` (those are two messages, and the
+  build step runs between them if the drain loop happens to split them).
+- **The backstop counts playing time only.** `Staged.staged_at`/`waited()` are gone,
+  replaced by `Waiting { playing, paused }`, accumulated a `TICK` at a time. `playing` is
+  what the 6-minute backstop measures ("no boundary arrived *while playing*"); `paused` is a
+  streak, reset on resume, and is what `PAUSE_SETTLE` measures. This alone kills the
+  reported symptom, independently of the paused-install feature.
+- **`decide` enforces the rule instead of trusting callers.** New field `may_interrupt`
+  (true at a track boundary, at the backstop, and on an explicit request; false on the
+  paused tick), new `Hold::MidSong` replacing the dead `Hold::Paused`, and it now returns
+  `Resume::Playing | Resume::Paused` — which is what decides whether the marker is written.
+  Callers pass the *polled* `playing` value rather than `true`; only `on_track_boundary`
+  still asserts it, and there it is justified (a track just ended).
+- **`force` no longer overrides `playing`.** It sets `armed`, clears `remote` and grants
+  `may_interrupt`. So clicking the badge while paused installs *and comes back paused*,
+  which is what the click meant.
+- **Last-moment re-check.** The 250 ms UI-paint sleep before `install()` is followed by a
+  best-effort re-read of the engine's `paused` flag. If it disagrees with what `decide` saw,
+  the install is abandoned and everything (staged bytes, `firing`, the marker) is put back.
+  This is the only genuinely racy window left, and it is now covered.
+
+### Caught in review, after the first draft worked
+
+An adversarial pass over the diff found two bugs that were *the same bug as the original*,
+wearing different gates. Both are fixed; both are worth remembering as a pattern.
+
+1. **A countdown must never run behind a shut gate.** The first draft reset the clocks only
+   when nothing was staged, so `Waiting::playing` kept accumulating while the install was
+   held for `NotArmed`, `Exporting` or `Remote`. Under `manualInstall` an evening's
+   listening banked the whole six minutes; the click that armed it — whose own tooltip says
+   *"install after this song"* — then restarted the app mid-song within one tick. Same shape
+   when a long export finished. Fixed by gating both clocks on
+   `decide(conditions(playing, may_interrupt: true)).is_ok()`, i.e. "everything except the
+   moment is satisfied", which is derived from the real rules rather than restated.
+2. **A one-shot flag must not outlive the call that set it.** `begin_paused()` set a sticky
+   flag consumed by *whatever advance happened next*. But `advance()` has four early returns
+   before the consumption point, and a stream violation seconds after the installer ran is a
+   thoroughly ordinary way to hit one. The flag then survived to be eaten by the advance the
+   listener asked for — clicking **Take Over**, or picking a station — handing them a loaded
+   track and silence with nothing on screen to explain it. Fixed by replacing it with
+   `Engine::play_station_paused`, which sets and clears around its own await, so the intent
+   cannot escape.
+3. **The marker is self-validating, not merely time-limited.** `install()` exits this process
+   as soon as NSIS launches, which is not the same as the install succeeding — a cancelled
+   UAC prompt leaves the old binary and a live marker. Relaunching by hand (the natural
+   reaction) would then give a silent app. The marker now holds the version it was written
+   for, and a launch ignores it unless it names the running version. The 10-minute TTL is
+   now genuinely belt-and-braces.
+4. **Existence comes from `metadata`, not from `remove_file` succeeding.** If the file was
+   momentarily locked, the old code reported "not there" *and left it on disk*, so the next
+   launch inside the TTL consumed it.
+
+Two smaller notes from the same pass, both left alone deliberately: `PAUSE_SETTLE` is
+sampled at `TICK` granularity rather than measured (the last-moment re-check covers the case
+that matters, and the doc now says so); and `app://update-failed` is clobbered by the
+`publish` that follows it before its 2.5 s timeout — pre-existing, in a file another session
+is editing, and harmless to the stand-down path.
+
+### ⚠️ Verification status — what is NOT proven (as of 2026-08-11)
+
+Shipped deliberately without a live test; the user was offered one and declined for now.
+What has actually been run: `cargo test --lib` (62 pass, 16 of them `updates::`),
+`cargo check --release` (mandatory here — the loop's call site is `cfg`'d out in debug), and
+`bun run build`. That covers `decide()` and `Waiting`, which is where a mistake means
+restarting at a bad moment.
+
+**Unexercised at runtime, in rough order of risk:**
+
+1. **The paused restart end-to-end.** Nothing has ever written the marker, restarted, and
+   come back paused. Testable *without* a new release by planting the marker by hand:
+   write the running version into `%APPDATA%\…\resume-paused` and launch. Expect: a track
+   loaded, play icon showing, no audio device opened, and pressing play starts it. Note this
+   still calls `getPlaylist` and so claims the account's single stream — do not run it while
+   listening on another device.
+2. **`play_paused` emitting no audio.** Reasoned from the audio thread's build gate
+   (`if !paused && player.is_none()`), never observed.
+3. **The paused install itself.** Release-only *and* needs a newer release to exist, so as
+   always the version that adds this cannot demonstrate it — the first real proof is the
+   vX → vX+1 update after this ships.
+4. **The stand-down path** (playback changing inside the 250 ms paint window) and the
+   version-mismatch marker rejection. Both are error paths with no test.
+
+### Things this deliberately does not do
+
+- It does not persist playback *position*. Coming back paused at the top of a fresh track is
+  accepted; the mid-track resume idea is still the Deferred section below.
+- It does not skip `getPlaylist` on a paused start, so a paused relaunch still claims the
+  account's single stream exactly as before.
+
 ## The waiting policy (user's rule)
 
 > *"If we have to, interrupting and resuming a running song is OK. But always prefer
@@ -149,9 +272,11 @@ not a design choice to agonise over. Concretely:
   any track, so it only fires when something is wrong, e.g. a position that has stopped
   advancing), install anyway. Interrupting is explicitly acceptable rather than waiting
   forever.
-- The backstop timer **only runs while playing**. A paused app is never interrupted and
-  never restarted out from under the listener — it simply updates the next time it is
-  playing, or on the next launch check.
+- The backstop timer **only counts time spent playing** — not wall time. Counting wall time
+  meant an update staged during a long pause fired the instant the listener pressed play;
+  see the 2026-08-11 section above.
+- **Paused is the preferred moment**, not a hold: after 30 s of continuous pause the update
+  installs and the app comes back paused. Superseded the original "never while paused" rule.
 
 ## Guards (must not restart at a bad moment)
 
@@ -159,9 +284,10 @@ not a design choice to agonise over. Concretely:
   `notifyOnly` the background loop does not download at all. An explicit click waives it:
   a click is a request, not automation.
 - **Never while an export is running.** `ExportCtl.running` already exists; check it.
-- **Never while paused.** Nothing is being interrupted, but a restart would come back
-  *playing* and start music at someone who deliberately stopped it. Trade-off accepted: an
-  app left paused indefinitely does not auto-update; the startup check catches it later.
+- ~~**Never while paused.**~~ **REVERSED 2026-08-11.** The reasoning was sound — a restart
+  came back *playing* and started music at someone who deliberately stopped it — but the fix
+  was to make the app come back *paused*, not to refuse to update. See the 2026-08-11
+  section above.
 - **Never in remote mode** — the WiiM owns playback, there is no local track boundary to
   ride, and restarting would just drop the display.
 - Only fire once; disarm after triggering so a failed install cannot loop.
