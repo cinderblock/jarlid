@@ -170,6 +170,25 @@
           </div>
         </section>
 
+        <!-- Looking comes before deciding: whether to check at all governs whether the
+             policy below ever applies, and "Never" makes it moot entirely. -->
+        <section class="set-section">
+          <h3>Check for updates</h3>
+          <div class="set-item">
+            <div class="set-item-text">
+              <b>How often to look</b>
+              <p>A daily check uses the clock rather than an interval, so you can put the
+                restart at an hour you are not listening.</p>
+            </div>
+            <!-- The options live in settings-page.ts, not here: an interval this build
+                 doesn't offer still has to be shown truthfully. -->
+            <div class="set-item-ctl set-item-ctl-stack">
+              <div class="select" id="set-check-schedule"></div>
+              <input id="set-check-time" class="field" type="time" value="03:00" hidden />
+            </div>
+          </div>
+        </section>
+
         <section class="set-section">
           <h3>When a new version is available</h3>
           <div id="set-policy" class="set-policy-grid">
@@ -204,23 +223,6 @@
                 fetches the update.
               </span>
             </label>
-          </div>
-        </section>
-
-        <section class="set-section">
-          <h3>Check for updates</h3>
-          <div class="set-item">
-            <div class="set-item-text">
-              <b>How often to look</b>
-              <p>A daily check uses the clock rather than an interval, so you can put the
-                restart at an hour you are not listening.</p>
-            </div>
-            <!-- The options live in settings-page.ts, not here: an interval this build
-                 doesn't offer still has to be shown truthfully. -->
-            <div class="set-item-ctl set-item-ctl-stack">
-              <div class="select" id="set-check-schedule"></div>
-              <input id="set-check-time" class="field" type="time" value="03:00" hidden />
-            </div>
           </div>
         </section>
       </div>
