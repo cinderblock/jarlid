@@ -585,6 +585,18 @@ pub fn run() {
                         eprintln!("[playhead #{n}] {}", event.payload());
                     }
                 });
+
+                // Same idea for the technical readout. Worth its own line rather than trusting
+                // the corner of the screen: the BPM is the one value in the app that cannot be
+                // checked by looking at it, and a tempo that is confidently half of the real one
+                // looks exactly as plausible as a correct one.
+                static T: AtomicU64 = AtomicU64::new(0);
+                app.listen_any("engine://technical", move |event| {
+                    let n = T.fetch_add(1, Ordering::Relaxed);
+                    if n % 10 == 0 {
+                        eprintln!("[technical #{n}] {}", event.payload());
+                    }
+                });
             }
 
             // Closing the main (UI) window quits the whole app — otherwise the

@@ -68,11 +68,29 @@ const ANALYSE_EVERY: f64 = 1.0;
 /// offering a number that is really just the loudest bit of noise in the range.
 const MIN_CONFIDENCE: f32 = 0.10;
 
-/// Width of the log-normal tempo prior, in octaves.
+/// How hard to penalise a candidate period whose halves and thirds are themselves periodic.
 ///
-/// Deliberately gentle: it breaks ties between a tempo and its double, and does nothing else.
-/// A narrow prior would simply report 120 BPM for everything.
-const PRIOR_OCTAVES: f64 = 0.9;
+/// The beat is the slowest pulse that is not merely a subdivision of a faster one, and this is
+/// the term that encodes that. Too small and every backbeat halves the tempo; too large and a
+/// track with busy sixteenths reports its subdivision. 1.0 — an equal trade against the
+/// fundamental's own correlation — carries the whole test set.
+const SUBDIVISION_PENALTY: f64 = 1.0;
+
+/// Width of the log-normal tempo prior, in octaves, centred on 120 BPM.
+///
+/// This does more work than it looks like. The comb filter below can rank a period against
+/// unrelated ones, but it cannot choose between a tempo and its double or half, because both
+/// are *genuinely* periodic: a hi-hat on every off-beat makes the eighth-note pulse as real as
+/// the quarter-note one, and a backbeat snare makes the two-beat pattern as real. Only a
+/// preference for the range people actually count breaks that, which is why every tempo
+/// estimator has one.
+///
+/// 0.55 was fitted, not guessed. At 0.9 it was too weak to matter — a 100 BPM pattern with
+/// eighth-note hats read as 200, and Mr. Saxobeat read as 64 rather than 128 for a whole song.
+/// At 0.55 a candidate an octave out must beat the true one by roughly 4x on comb score instead
+/// of 1.6x, which no real track manages, while a genuine 75 or 174 BPM track still wins
+/// comfortably — both are in the test set below.
+const PRIOR_OCTAVES: f64 = 0.55;
 
 /// Estimates the tempo of a stream of PCM as it arrives.
 ///
@@ -299,27 +317,35 @@ impl TempoTracker {
             .take(lag_max + 1)
             .skip(lag_min)
         {
-            // A comb filter over the autocorrelation. Each harmonic contributes the height of
-            // the peak at k·L *minus* the value halfway to the next one, and that subtraction
-            // is the whole trick.
-            //
-            // Summing the peaks alone cannot tell a tempo from half of it: if L is the true
-            // period then 2L, 3L … are peaks, but every multiple of 2L is also a multiple of L,
-            // so both candidates score identically and the answer comes down to noise. (It did:
-            // a 174 BPM click track read as exactly 87.) The midpoints break the tie. At the
-            // true period, L/2 falls between beats and is a trough, so peak − midpoint is
-            // large; at twice the true period the "midpoint" 1.5L lands on a real beat, so the
-            // difference collapses to nothing.
+            // Harmonic sum: a period L also correlates at 2L, 3L, … so adding those rewards a
+            // candidate that explains the whole structure rather than one peak of it.
             let mut score = 0.0;
-            for (harmonic, weight) in [(1.0, 1.0), (2.0, 0.5), (3.0, 0.25)] {
-                let peak = (harmonic * lag as f64).round() as usize;
-                let trough = ((harmonic + 0.5) * lag as f64).round() as usize;
-                // Both terms or neither — keeping a peak whose midpoint fell off the end would
-                // quietly reinstate the bias this exists to remove.
-                if trough <= max_lag {
-                    score += weight * (acf[peak] - acf[trough]);
+            for (harmonic, weight) in [(1, 1.0), (2, 0.5), (3, 0.25)] {
+                let peak = harmonic * lag;
+                if peak <= max_lag {
+                    score += weight * acf[peak];
                 }
             }
+
+            // Then penalise a candidate whose own *subdivisions* are strongly periodic, because
+            // that means the real pulse is faster and we are looking at every second or third
+            // beat of it.
+            //
+            // This term is load-bearing, and the way it was wrong first is worth keeping. The
+            // original subtracted the value halfway to the next harmonic: at the true period
+            // L/2 is a trough, while at twice the true period the midpoint 1.5L lands on a real
+            // beat, so the difference collapsed. That did fix a 174 BPM click track reading 87.
+            //
+            // But it is the same mechanism seen from the wrong end. As soon as a track has
+            // *subdivisions* — a hi-hat on every off-beat — the true beat's own midpoint at
+            // 1.5L lands on a hat, so the true tempo got penalised and the estimate ran away to
+            // the fastest subdivision instead. A 100 BPM drum pattern read as 200, and in the
+            // real app Mr. Saxobeat read as 64 rather than 128 for an entire song.
+            //
+            // Penalising L/2 and L/3 is the right way round: it asks "is there a faster pulse I
+            // should have picked?" rather than "does anything happen between my beats?". All
+            // three failures above are now each other's regression tests.
+            score -= SUBDIVISION_PENALTY * (acf[lag / 2] + 0.5 * acf[lag / 3]);
 
             // A gentle nudge toward tempos people actually count, to break what ties are left.
             // Wide enough that a real 75 or 170 BPM track still wins.
@@ -471,6 +497,76 @@ mod tests {
         let mut tracker = TempoTracker::new(48_000, 2);
         tracker.push(&pcm);
         assert_eq!(tracker.tempo(), None, "four seconds is not enough to know");
+    }
+
+    /// A drum pattern: kick on every beat, snare on 2 and 4, hi-hat on every off-beat.
+    ///
+    /// Closer to real music than a click track in the way that matters — the snare and hat put
+    /// their energy in *different bands* from the kick, so the two-beat pattern is a real
+    /// spectral period rather than merely an amplitude accent.
+    fn drum_pattern(bpm: f64, seconds: f64, rate: u32) -> Vec<i16> {
+        let mut noise = Lcg(0x9E37_79B9);
+        let frames = (seconds * rate as f64) as usize;
+        let beat = 60.0 / bpm * rate as f64;
+
+        let mut pcm = Vec::with_capacity(frames * 2);
+        for frame in 0..frames {
+            let position = frame as f64 / beat;
+            let in_beat = (position.fract() * beat) as f32;
+            let index = position as usize;
+            // Distance into the current half-beat, for the hat.
+            let half = ((position * 2.0).fract() * beat * 0.5) as f32;
+
+            // Kick: a low sine that decays fast. All of its energy is under 200 Hz.
+            let kick = (-in_beat / (0.06 * rate as f32)).exp()
+                * (in_beat / rate as f32 * 60.0 * std::f32::consts::TAU).sin();
+
+            // Snare on beats 2 and 4: broadband noise, so it lands in the mid and high bands.
+            let snare = if index % 2 == 1 {
+                (-in_beat / (0.09 * rate as f32)).exp() * noise.next()
+            } else {
+                0.0
+            };
+
+            // Hat on every off-beat, pushed toward Nyquist by alternating sign so it sits in
+            // the high band alone.
+            let sign = if frame % 2 == 0 { 1.0 } else { -1.0 };
+            let hat = if (position * 2.0) as usize % 2 == 1 {
+                (-half / (0.02 * rate as f32)).exp() * noise.next() * sign * 0.5
+            } else {
+                0.0
+            };
+
+            let sample = (kick * 0.9 + snare * 0.5 + hat * 0.35).clamp(-1.0, 1.0);
+            let quantised = (sample * 28_000.0) as i16;
+            pcm.push(quantised);
+            pcm.push(quantised);
+        }
+        pcm
+    }
+
+    /// The case the app got wrong in the wild: a four-on-the-floor dance track read at exactly
+    /// half its tempo. Mr. Saxobeat (~128 BPM) showed as 64 BPM for the whole song.
+    ///
+    /// A backbeat snare makes the *pattern* two beats long even though the *pulse* is one, and
+    /// summing band flux hands that two-beat period straight to the autocorrelation. Nothing in
+    /// a click track exercises this, which is exactly why it survived to the real app.
+    #[test]
+    fn a_backbeat_does_not_halve_the_tempo() {
+        for bpm in [128.0, 100.0, 174.0] {
+            let pcm = drum_pattern(bpm, 25.0, 48_000);
+            let mut tracker = TempoTracker::new(48_000, 2);
+            for chunk in pcm.chunks(4093) {
+                tracker.push(chunk);
+            }
+            let found = tracker.tempo().expect("a tempo from a drum pattern");
+            assert!(
+                (found.bpm as f64 - bpm).abs() < bpm * 0.03,
+                "{bpm} BPM drum pattern read as {:.1} BPM (half would be {:.0})",
+                found.bpm,
+                bpm / 2.0
+            );
+        }
     }
 
     /// A steady pulse should read as strongly periodic; the confidence is shown to the user as

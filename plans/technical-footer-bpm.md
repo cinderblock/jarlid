@@ -167,7 +167,44 @@ Confidence is the normalised autocorrelation at the winning lag — a real corre
 coefficient, not an invented score. Below `MIN_CONFIDENCE` the tracker reports nothing rather
 than guessing.
 
-### Harmonic summing alone does NOT fix the octave error — the midpoints do
+### The octave error, in three acts — read this before touching the scoring
+
+This is the single hardest part of the feature and it was got wrong twice. The scoring now is
+`harmonic sum − subdivision penalty, times a log-normal prior`, and each term is there because
+removing it reproduces a specific failure.
+
+**Act 1 — plain harmonic summing halves fast tempos.** Scoring `acf(L) + ½acf(2L) + ¼acf(3L)`
+failed: a 174 BPM click track read as exactly 87. The reason is arithmetic, not tuning — if `L`
+is the true period then every multiple of `2L` is also a multiple of `L`, so the candidate `2L`
+sums the very same peaks and ties exactly. The tie then fell to the 120 BPM prior, which at 87
+vs 174 leans the **wrong** way. No reweighting of harmonics can fix this.
+
+**Act 2 — subtracting the midpoint fixes that and breaks everything with a hi-hat.** Scoring
+`Σ wₖ·[acf(k·L) − acf((k+½)·L)]` fixed the click track: at the true period the midpoint falls
+between beats and is a trough, while at twice the true period the "midpoint" 1.5L lands on a
+real beat and the difference collapses. All synthetic tests passed, so it shipped to the app.
+
+It was wrong. It is the same mechanism seen from the wrong end: as soon as a track has
+**subdivisions** — a hi-hat on every off-beat — the *true* beat's own midpoint at 1.5L lands on
+a hat, so the true tempo gets penalised and the estimate runs away to the fastest subdivision.
+Caught only by running the real app: **Mr. Saxobeat (~128 BPM) read `~64` for an entire song.**
+A synthetic drum pattern with a backbeat and off-beat hats then reproduced it offline, and also
+exposed the mirror failure — a 100 BPM pattern reading 200.
+
+**Act 3 — penalise the subdivisions, not the midpoints.** `score(L) = Σ wₖ·acf(k·L) −
+β·[acf(L/2) + ½·acf(L/3)]`. This asks *"is there a faster pulse I should have picked?"* rather
+than *"does anything happen between my beats?"*, which is the actual definition of the beat: the
+slowest pulse that is not merely a subdivision of a faster one. All three failures now guard each
+other as tests.
+
+The prior also had to tighten from 0.9 to 0.55 octaves. At 0.9 it was decorative; the comb can
+rank unrelated periods but genuinely cannot choose between a tempo and its double, because both
+*are* periodic — only a preference for the range people count breaks that.
+
+**Do not "simplify" the scoring back to a plain harmonic sum, and do not reintroduce midpoint
+subtraction.** Both look cleaner and both are wrong, in opposite directions.
+
+### Harmonic summing alone does NOT fix the octave error (superseded — see above)
 
 First implementation scored candidates as `acf(L) + ½acf(2L) + ¼acf(3L)`, which is the textbook
 "harmonic sum". It failed:
@@ -197,12 +234,14 @@ imbalance quietly reinstates the bias.
 `crates/audio/examples/bpm.rs` runs the real `Decoder` at the player's 48 kHz stereo and prints
 the estimate every 5 s, so a wandering answer is visible instead of averaged away. Results:
 
+Results with the final (Act 3) scoring:
+
 | Track | Result | Verdict |
 |---|---|---|
-| PioneerDJ Demo Track 1 | **127.6** BPM, conf 0.51 | 0.3% off a round 128 |
-| PioneerDJ Demo Track 2 | **120.0** BPM, conf 0.77 | exact |
+| PioneerDJ Demo Track 1 | **127.9** BPM, conf 0.59 | 0.1% off a round 128 |
+| PioneerDJ Demo Track 2 | **120.1** BPM, conf 0.79 | exact |
 | human gazpacho — Blink Dogs | 109.2 BPM, conf 0.79 | plausible, strongly locked |
-| Brylie Christopher — A Gentle Fog Descends | 107.0 BPM, conf 0.22 | ambient; correctly hedged |
+| Brylie Christopher — A Gentle Fog Descends | 115.2 BPM, conf 0.22 | ambient; correctly hedged |
 | Rod — Inner Rhythm (23 min) | 116.5 BPM, conf 0.44 | long mix, tempo varies; hedged |
 | Alice's Restaurant Massacree | **no tempo found** | 18 min of spoken word — correct refusal |
 
