@@ -572,6 +572,80 @@ window.addEventListener("keydown", (e) => {
     togglePlayback();
   }
 });
+// Technical readout, bottom-left, opposite the version badge. Every number here was already
+// being measured somewhere in the pipeline and, until now, only ever reached a bug report.
+interface Technical {
+  /// Measured from the audio — Pandora sends no tempo. Null until enough has been heard.
+  bpm: number | null;
+  bpmConfidence: number | null;
+  codec: string | null;
+  bitrateKbps: number | null;
+  sourceRate: number | null;
+  channels: number | null;
+  outputRate: number | null;
+  buffered: number;
+  drift: number;
+  starved: number;
+}
+const techEl = $("tech");
+
+/// Confidence below which the BPM is hedged with a tilde rather than stated flat.
+///
+/// Calibrated against real tracks rather than guessed: a locked-in beat measures 0.51-0.79
+/// (house at 120.0 and 127.6, a busy rock track at 109.2), while genuinely ambiguous material
+/// sits at 0.22-0.44 (an ambient piece, a long DJ mix, and the drumless intro of a house track
+/// where the only pulse is the dotted two-thirds one). 0.45 falls in the gap between them.
+const BPM_HEDGE = 0.45;
+
+const kHz = (hz: number) => `${(hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1)} kHz`;
+
+function renderTechnical(t: Technical) {
+  const parts: string[] = [];
+
+  // Always present, even before it is known: a slot that appears later would shove the rest of
+  // the line sideways a few seconds into every song.
+  if (t.bpm === null) {
+    parts.push("♩ —");
+  } else {
+    const hedge = (t.bpmConfidence ?? 0) < BPM_HEDGE ? "~" : "";
+    parts.push(`♩ ${hedge}${Math.round(t.bpm)}`);
+  }
+
+  if (t.codec) {
+    parts.push(t.bitrateKbps ? `${t.codec} ${t.bitrateKbps}k` : t.codec);
+  }
+
+  // Both rates when they differ, because that gap is the resampling that keeps pitch honest;
+  // one when they don't, because "48 → 48 kHz" is just noise.
+  if (t.sourceRate && t.outputRate && t.sourceRate !== t.outputRate) {
+    parts.push(`${kHz(t.sourceRate)} → ${kHz(t.outputRate)}`);
+  } else if (t.outputRate || t.sourceRate) {
+    parts.push(kHz(t.outputRate || t.sourceRate!));
+  }
+
+  // Only worth a word when it isn't the stereo everyone assumes.
+  if (t.channels === 1) parts.push("mono");
+  else if (t.channels && t.channels > 2) parts.push(`${t.channels} ch`);
+
+  parts.push(`buf ${t.buffered.toFixed(1)} s`);
+
+  // Faults are absent rather than zero. A permanent "drift 0.00 s" trains you to stop reading
+  // the line, which defeats the point of having it.
+  const faults: string[] = [];
+  if (t.drift >= 0.05) faults.push(`drift ${t.drift.toFixed(2)} s`);
+  if (t.starved >= 0.05) faults.push(`starved ${t.starved.toFixed(2)} s`);
+
+  techEl.textContent = parts.join(" · ");
+  if (faults.length) {
+    // Built as a node rather than innerHTML: none of this is user data today, but a codec name
+    // does come from Media Foundation and this is the sort of line that quietly grows fields.
+    const marker = document.createElement("span");
+    marker.className = "fault";
+    marker.textContent = ` · ${faults.join(" · ")}`;
+    techEl.append(marker);
+  }
+}
+
 // The version badge is the entire (unobtrusive) update UI: shows the running version,
 // then what is about to happen to it. Clicking walks the known -> staged -> armed -> now
 // ladder one step per click; how far the app walks on its own is the Settings policy.
@@ -1092,6 +1166,7 @@ setInterval(() => {
 // ---- events from the engine bridge ------------------------------------
 listen<NowPlaying>("engine://nowplaying", (e) => onNowPlaying(e.payload));
 listen<Playhead>("engine://playhead", (e) => onPlayhead(e.payload));
+listen<Technical>("engine://technical", (e) => renderTechnical(e.payload));
 listen<{ thumbUp: boolean; thumbDown: boolean }>("engine://thumbs", (e) =>
   setThumbs(e.payload.thumbUp, e.payload.thumbDown)
 );

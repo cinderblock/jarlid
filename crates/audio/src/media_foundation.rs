@@ -12,7 +12,7 @@ use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use windows::Win32::System::Variant::VT_I8;
 
-use crate::{Error, Format, Result};
+use crate::{Error, Format, Result, Source};
 
 /// MF must be initialised once per process, and deliberately never shut down — `MFShutdown` while
 /// another decoder is alive would invalidate it.
@@ -38,6 +38,7 @@ fn ensure_initialized() -> Result<()> {
 pub struct Decoder {
     reader: IMFSourceReader,
     format: Format,
+    source: Option<Source>,
     finished: bool,
     /// Presentation time of the most recent chunk, as the source reports it.
     ///
@@ -99,6 +100,10 @@ impl Decoder {
                 .map_err(|_| Error::NoAudioStream)?;
         }
 
+        // What the container holds, asked before anything is decoded. Best-effort: a source
+        // that will not describe itself is worth a blank field, never a failed open.
+        let source = unsafe { describe_source(&reader) };
+
         // Read back what MF actually negotiated — this is where SBR shows up, as an output rate
         // of 44100 rather than the 22050 of the AAC core.
         let format = unsafe {
@@ -113,6 +118,7 @@ impl Decoder {
         Ok(Self {
             reader,
             format,
+            source,
             finished: false,
             last_timestamp: None,
         })
@@ -128,6 +134,15 @@ impl Decoder {
 
     pub fn format(&self) -> Format {
         self.format
+    }
+
+    /// What the container actually holds, when Media Foundation will say.
+    ///
+    /// Distinct from [`Decoder::format`], which is what we decode *to*. On a Pandora stream the
+    /// two differ in every field: 128 kbit/s MP3 at 44.1 kHz in, 16-bit PCM at the output
+    /// device's 48 kHz out.
+    pub fn source(&self) -> Option<Source> {
+        self.source.clone()
     }
 
     /// Jump to `position` in the source.
@@ -189,7 +204,9 @@ impl Decoder {
             // A format change mid-stream would invalidate our reported format; surface it rather
             // than silently emitting mismatched PCM.
             if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 as u32 != 0 {
-                return Err(Error::Unsupported("stream changed format mid-playback".into()));
+                return Err(Error::Unsupported(
+                    "stream changed format mid-playback".into(),
+                ));
             }
 
             // MF can return no sample without ending the stream (e.g. a gap); keep reading.
@@ -221,6 +238,44 @@ impl Decoder {
         }
         Ok(pcm)
     }
+}
+
+/// Describe the undecoded stream from the reader's *native* media type.
+///
+/// Everything here is best-effort. Reporting nothing costs a blank corner of the UI; failing an
+/// open over it would cost the song.
+///
+/// # Safety
+///
+/// `reader` must be a live source reader with the audio stream selected.
+unsafe fn describe_source(reader: &IMFSourceReader) -> Option<Source> {
+    let native = unsafe { reader.GetNativeMediaType(FIRST_AUDIO_STREAM, 0) }.ok()?;
+
+    // Named subtypes rather than a GUID dump: this ends up in front of a person. AAC-LC and
+    // HE-AAC share a subtype — telling them apart needs the AAC profile out of the codec
+    // private data — so this says "AAC" rather than claiming a precision it does not have.
+    let codec = match unsafe { native.GetGUID(&MF_MT_SUBTYPE) }.ok() {
+        Some(subtype) if subtype == MFAudioFormat_MP3 => "MP3",
+        Some(subtype) if subtype == MFAudioFormat_AAC || subtype == MFAudioFormat_ADTS => "AAC",
+        Some(subtype) if subtype == MFAudioFormat_PCM => "PCM",
+        Some(subtype) if subtype == MFAudioFormat_Float => "PCM float",
+        Some(subtype) if subtype == MFAudioFormat_FLAC => "FLAC",
+        Some(subtype) if subtype == MFAudioFormat_Opus => "Opus",
+        Some(subtype) if subtype == MFAudioFormat_WMAudioV9 => "WMA",
+        _ => "unknown",
+    };
+
+    let bytes_per_second =
+        unsafe { native.GetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND) }.unwrap_or(0);
+
+    Some(Source {
+        codec: codec.to_string(),
+        // Rounded to the nearest kbit/s: a 128 kbit/s MP3 declares 16000 B/s, which is 128
+        // exactly, but VBR averages land just off and "127" reads as a bug rather than a bitrate.
+        bitrate_kbps: ((bytes_per_second as u64 * 8 + 500) / 1000) as u32,
+        sample_rate: unsafe { native.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND) }.unwrap_or(0),
+        channels: unsafe { native.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS) }.unwrap_or(0) as u16,
+    })
 }
 
 // The source reader is safe to move between threads; MF guards its own internals.
@@ -304,6 +359,29 @@ mod tests {
             landed.abs_diff(target) < Duration::from_millis(250),
             "seek asked for {target:?} and the source reported {landed:?}"
         );
+    }
+
+    /// The technical readout puts this in front of a person, so it has to be read off a real
+    /// stream rather than assumed. A stock WAV is the one container guaranteed to be present.
+    #[test]
+    fn describes_the_undecoded_source() {
+        const SOUND: &str = r"C:\Windows\Media\Ring05.wav";
+        if !std::path::Path::new(SOUND).exists() {
+            eprintln!("skipping: {SOUND} not present on this machine");
+            return;
+        }
+
+        let source = Decoder::open(SOUND)
+            .expect("open")
+            .source()
+            .expect("media foundation describes a WAV");
+
+        assert_eq!(source.codec, "PCM");
+        assert!(source.sample_rate >= 8_000, "{source:?}");
+        assert!(source.channels >= 1, "{source:?}");
+        // Uncompressed, so the declared byte rate is exactly rate x channels x bytes-per-sample
+        // and the bitrate must agree with it rather than being some unrelated field.
+        assert!(source.bitrate_kbps > 0, "{source:?}");
     }
 
     #[test]

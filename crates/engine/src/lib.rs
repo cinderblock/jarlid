@@ -489,6 +489,29 @@ impl Engine {
         self.audio.starved()
     }
 
+    /// The tempo of the current track, measured from its audio.
+    ///
+    /// Pandora sends no BPM — nor key, nor anything else musicological — so this is computed
+    /// from the decoded samples as they play. `None` until roughly ten seconds in, because
+    /// decoding is throttled to about playback speed and there is genuinely no more to go on.
+    pub fn tempo(&self) -> Option<audio::Tempo> {
+        self.audio.tempo()
+    }
+
+    /// What is actually being decoded: codec, bitrate and the source's own sample rate, read
+    /// from the container. Deliberately not [`pandora::Track::audio_encoding`], which describes
+    /// the default stream rather than the better one we asked for and were granted.
+    pub fn source(&self) -> Option<audio::Source> {
+        self.audio.source()
+    }
+
+    /// The rate audio is decoded to, which is the output device's own. Pandora sends 44.1 kHz
+    /// and most Windows endpoints run at 48; the difference is real resampling, and playing one
+    /// as the other would run everything about 8.8% sharp.
+    pub fn output_rate(&self) -> Option<u32> {
+        self.audio.output_rate()
+    }
+
     pub fn is_paused(&self) -> bool {
         self.audio.is_paused()
     }

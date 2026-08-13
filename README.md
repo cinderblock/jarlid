@@ -65,6 +65,19 @@ anywhere in it.
   on to the speakers you just switched away from. Or pin Jarlid to one device and leave it
   there. A chosen device that gets unplugged falls back to the default without forgetting the
   choice, so plugging it back in restores it.
+- **Technical readout, including the song's BPM**: a faint line in the bottom-left corner,
+  opposite the version badge — tempo, what is actually being decoded, and whether it is being
+  decoded well. **Pandora sends no tempo of any kind**, so the BPM is *measured*, from the same
+  samples that reach the speakers: a three-band onset envelope, autocorrelated and comb-filtered,
+  with no FFT and no new dependency. It takes about ten seconds to appear, because decoding is
+  deliberately throttled to roughly playback speed and there is genuinely no more to go on. A
+  reading it isn't sure of is marked `~`, and music with no steady pulse — spoken word, rubato
+  piano — gets no number rather than an invented one. The codec and bitrate beside it are read
+  from the container rather than from Pandora's `audioEncoding` label, which describes the
+  stream we *didn't* ask for; where the source and device rates differ, both are shown, because
+  that gap is the resampling that keeps pitch honest. Buffer depth sits at the end, and the two
+  fault counters — audio lost, and audio that arrived too late to play — appear only when they
+  are non-zero, so a line that stays quiet means what it says.
 - **Settings**: light, dark, or follow Windows (the window frame follows too, and "system"
   keeps following when Windows switches at sunset); Jarlid's own volume; which account is
   signed in and a way to sign out (which clears the saved password from the Windows
@@ -117,7 +130,10 @@ A Tauri app whose only webview is our own UI. Three library crates do the real w
   collection, and the tuner API for playlists, audio and feedback. Portable, no platform code.
 - **`crates/audio`** — decoding and playback. Windows Media Foundation decodes HE-AAC *with SBR*
   (Symphonia implements neither SBR nor PS, and would silently decode at half the sample rate),
-  resampling to the output device's rate; a lock-free ring buffer feeds cpal.
+  resampling to the output device's rate; a lock-free ring buffer feeds cpal. Tempo is measured
+  on the decode thread as the samples go past — it is the one thread that sees every sample in
+  order and is allowed to think, unlike the output callback, where a lock once caused continuous
+  scratchiness.
 - **`crates/engine`** — the radio. Queue refill, auto-advance, transport, thumbs, station Modes,
   and credentials in the Windows Credential Manager.
 

@@ -26,7 +26,7 @@ use windows::Win32::System::Threading::{
     SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
 };
 
-use crate::{Decoder, Error, Format, Result};
+use crate::{Decoder, Error, Format, Result, Source, Tempo};
 
 /// Tells Windows this thread feeds an audio stream, for as long as the guard lives.
 ///
@@ -165,12 +165,20 @@ struct Shared {
     /// Stored as bits because there is no `AtomicF32`. It is the *target*, not what is
     /// currently being applied — the callback ramps towards it; see `callback!`.
     volume: AtomicU32,
+    /// Measured tempo as `f32` bits, and how periodic the track proved to be at it. Zero BPM
+    /// means "not known yet" — which it always is for the first ten seconds or so, since
+    /// decoding is throttled to roughly playback speed.
+    bpm: AtomicU32,
+    bpm_confidence: AtomicU32,
 }
 
 /// Plays one track. Create a [`Player`] per track; the caller sequences them.
 pub struct Player {
     shared: Arc<Shared>,
     format: Format,
+    /// What the container held, when Media Foundation would say — the honest answer to "what is
+    /// actually playing", as opposed to Pandora's `audioEncoding` label.
+    source: Option<Source>,
     /// Where in the track this player started; zero unless it was built to resume a stalled one.
     started_at: Duration,
     /// The endpoint actually opened — not necessarily the one asked for, since a named device
@@ -224,6 +232,9 @@ impl Player {
 
         let mut decoder = Decoder::open_at(url, Some(requested))?;
         let format = decoder.format();
+        // Taken before the decoder moves onto its thread: it describes the container, which
+        // cannot change, so there is no reason to reach across a thread boundary for it later.
+        let source = decoder.source();
 
         if !offset.is_zero() {
             // A source that won't seek still plays, from the top. Failure is not fatal here.
@@ -265,6 +276,8 @@ impl Player {
             stopped: AtomicBool::new(false),
             device_error: AtomicBool::new(false),
             volume: AtomicU32::new(1.0f32.to_bits()),
+            bpm: AtomicU32::new(0.0f32.to_bits()),
+            bpm_confidence: AtomicU32::new(0.0f32.to_bits()),
         });
 
         // Decode thread: keep the queue topped up, backing off when full so a track is streamed
@@ -294,6 +307,14 @@ impl Player {
                 .collect();
             let mut cursor = 0usize;
 
+            // Tempo is measured here rather than looked up: Pandora's track model carries no BPM,
+            // key or any other musicological field, so the only source of the number is the audio
+            // itself. This thread is the right place for it — it sees every decoded sample exactly
+            // once and in order, and unlike the output callback it is allowed to think. The work
+            // is a few milliseconds once a second, against a decode-stall watchdog measured in
+            // seconds.
+            let mut tempo = crate::TempoTracker::new(format.sample_rate, format.channels);
+
             loop {
                 if decode_shared.stopped.load(Ordering::Relaxed) {
                     return;
@@ -311,7 +332,9 @@ impl Player {
                     }
                     if pushed > 0 {
                         decode_shared.queued.fetch_add(pushed, Ordering::Relaxed);
-                        decode_shared.total_decoded.fetch_add(pushed, Ordering::Relaxed);
+                        decode_shared
+                            .total_decoded
+                            .fetch_add(pushed, Ordering::Relaxed);
                     }
                     if cursor < pending.len() {
                         // Still full: wait for the callback to consume, then resume mid-buffer.
@@ -330,11 +353,25 @@ impl Player {
                                 .chunks_exact(2)
                                 .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
                         );
+                        // `pending` was cleared immediately above, so this is exactly the new
+                        // samples — the tracker must see each one once, and the drain loop above
+                        // can revisit `pending` many times before it empties.
+                        tempo.push(&pending);
+                        if let Some(measured) = tempo.tempo() {
+                            decode_shared
+                                .bpm
+                                .store(measured.bpm.to_bits(), Ordering::Relaxed);
+                            decode_shared
+                                .bpm_confidence
+                                .store(measured.confidence.to_bits(), Ordering::Relaxed);
+                        }
                     }
                     // End of track: stop producing and let the queue drain so the ending isn't
                     // clipped.
                     Ok(None) => {
-                        decode_shared.decoder_finished.store(true, Ordering::Relaxed);
+                        decode_shared
+                            .decoder_finished
+                            .store(true, Ordering::Relaxed);
                         return;
                     }
                     // A decode error is *not* an ending, and conflating the two silently ate the
@@ -480,6 +517,7 @@ impl Player {
         Ok(Self {
             shared,
             format,
+            source,
             started_at,
             device_name,
             _stream: stream,
@@ -607,6 +645,29 @@ impl Player {
 
     pub fn format(&self) -> Format {
         self.format
+    }
+
+    /// What the container being played actually holds — codec, bitrate and the source's own
+    /// rate, all read from the stream rather than from Pandora's label. `None` when Media
+    /// Foundation would not describe it.
+    pub fn source(&self) -> Option<Source> {
+        self.source.clone()
+    }
+
+    /// The measured tempo of what is playing, or `None` before enough of it has been heard.
+    ///
+    /// Expect `None` for roughly the first ten seconds of a track. Decoding is deliberately
+    /// throttled to about playback speed (see `TARGET_BUFFER`), so there is no more audio in
+    /// hand than that — an earlier answer could only be a guess.
+    pub fn tempo(&self) -> Option<Tempo> {
+        let bpm = f32::from_bits(self.shared.bpm.load(Ordering::Relaxed));
+        if bpm <= 0.0 {
+            return None;
+        }
+        Some(Tempo {
+            bpm,
+            confidence: f32::from_bits(self.shared.bpm_confidence.load(Ordering::Relaxed)),
+        })
     }
 }
 

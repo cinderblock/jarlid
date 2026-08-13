@@ -408,6 +408,37 @@ body.remote #history {
   text-decoration: underline;
 }
 
+/* Technical readout: what is actually playing and whether it is playing well. Deliberately
+   the mirror image of the version badge opposite it — same size, same faintness, same
+   tabular numerals so a changing buffer depth does not make the line wobble. */
+#tech {
+  position: fixed;
+  bottom: 8px;
+  left: 12px;
+  z-index: 6;
+  padding: 2px 4px;
+  font-size: 0.65rem;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  /* The toast is centred at bottom: 22px and can be wide; keep out of its way rather than
+     rendering underneath it on a narrow window. */
+  max-width: 34vw;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+/* Fault numbers only appear when non-zero, so they may as well be legible when they do.
+   Everything else in this strip is ambient; these two are the reason to look at it. */
+#tech .fault {
+  color: var(--accent);
+}
+/* Remote mode plays on someone else's hardware — our decoder is idle, so every number here
+   would be zero and the codec would be whatever we last played ourselves. */
+body.remote #tech {
+  display: none;
+}
+
 /* Top-right control cluster. Flex so a hidden button collapses rather than leaving a
    hole — the speaker button only appears when a network renderer is discovered. */
 #topbar {

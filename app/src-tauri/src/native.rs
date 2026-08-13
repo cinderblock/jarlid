@@ -20,6 +20,11 @@ use tokio::sync::Mutex;
 /// be smooth without flooding the event bus.
 const PLAYHEAD_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How often to publish the technical readout. Deliberately far slower than the playhead: it
+/// feeds a corner of the screen a person glances at, not a lyric highlight, and a buffer depth
+/// that twitches four times a second is harder to read than one that does not.
+const TECHNICAL_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Where the last-played station is remembered, so launching resumes what you were listening to
 /// rather than whatever happens to sort first.
 fn last_station_path(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -271,6 +276,43 @@ async fn attach(
                         // Authoritative, unlike the DOM-scraping era's guesswork.
                         "paused": engine.is_paused(),
                         "volume": 1.0,
+                    }),
+                );
+            }
+        });
+    }
+
+    // Technical readout. Everything here was already measured somewhere in the pipeline and,
+    // until now, only ever reached a bug report — the corner of the UI it feeds is the first
+    // place a person can see whether playback is actually healthy.
+    {
+        let app = app.clone();
+        let engine = Arc::clone(&engine);
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(TECHNICAL_INTERVAL).await;
+                let source = engine.source();
+                let tempo = engine.tempo();
+                let _ = app.emit(
+                    "engine://technical",
+                    json!({
+                        // Measured from the audio, because Pandora sends no tempo of any kind.
+                        // Null until enough of the track has been heard to say.
+                        "bpm": tempo.map(|t| t.bpm),
+                        "bpmConfidence": tempo.map(|t| t.confidence),
+                        // What the container really holds, not what the playlist labelled it.
+                        "codec": source.as_ref().map(|s| s.codec.clone()),
+                        "bitrateKbps": source.as_ref().map(|s| s.bitrate_kbps),
+                        "sourceRate": source.as_ref().map(|s| s.sample_rate),
+                        "channels": source.as_ref().map(|s| s.channels),
+                        // The device's rate. Where it differs from `sourceRate`, that gap is
+                        // Media Foundation resampling — the thing that keeps pitch correct.
+                        "outputRate": engine.output_rate(),
+                        // Health. `drift` is audio lost outright, `starved` is audio that
+                        // arrived too late to play; both should sit at zero forever.
+                        "buffered": engine.buffered().as_secs_f64(),
+                        "drift": engine.drift().as_secs_f64(),
+                        "starved": engine.starved().as_secs_f64(),
                     }),
                 );
             }

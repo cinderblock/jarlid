@@ -11,7 +11,7 @@
 //! URL is kept here, and the player is treated as disposable — rebuilt at the position the
 //! listener had reached whenever it stalls, errors, or is released across a long pause.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -101,6 +101,24 @@ struct Published {
     /// A `Mutex` rather than an atomic because it is a string, and it is read by the UI at
     /// human pace, never from the audio callback.
     device: Mutex<Option<String>>,
+    /// Measured tempo of the current track as `f32` bits, and how periodic it proved to be.
+    ///
+    /// **Latched across player rebuilds, cleared only on `Play` and `Stop.`** A player is
+    /// disposable and is thrown away on any stall, so its tracker restarts from wherever the
+    /// rebuild resumed and needs another ten seconds to say anything. Holding the last good
+    /// reading here means a dropped connection costs a stale BPM for a moment rather than
+    /// blanking the readout mid-song.
+    bpm: AtomicU32,
+    bpm_confidence: AtomicU32,
+    /// What the container being decoded actually holds. `Mutex` for the same reason as `device`:
+    /// it is a string, read at human pace. Fixed for a track, so a rebuild re-publishes the
+    /// same thing.
+    source: Mutex<Option<audio::Source>>,
+    /// The rate we decode *to*, which is the output device's and usually not the source's —
+    /// Pandora sends 44.1 kHz and most Windows endpoints run at 48. Zero when nothing is open.
+    /// Worth publishing next to the source rate: the gap between them is the resampling that
+    /// stops everything playing sharp.
+    output_rate: AtomicU32,
 }
 
 /// The track the thread is responsible for. Present whenever there is something to (re)build a
@@ -161,6 +179,10 @@ impl AudioThread {
                             thread_state.track_ended.store(false, Ordering::Relaxed);
                             thread_state.failed.store(false, Ordering::Relaxed);
                             thread_state.position_ms.store(0, Ordering::Relaxed);
+                            // A new song has a new tempo. This is the one place the latch is
+                            // dropped — carrying the last track's BPM into this one would be a
+                            // confidently wrong number rather than an absent one.
+                            thread_state.bpm.store(0.0f32.to_bits(), Ordering::Relaxed);
                             paused = start_paused;
                             // Dated now for consistency rather than for effect: a track loaded
                             // paused never builds a player, and RELEASE_AFTER_PAUSE only ever
@@ -259,6 +281,11 @@ impl AudioThread {
                             if let Ok(mut slot) = thread_state.device.lock() {
                                 *slot = None;
                             }
+                            thread_state.bpm.store(0.0f32.to_bits(), Ordering::Relaxed);
+                            thread_state.output_rate.store(0, Ordering::Relaxed);
+                            if let Ok(mut slot) = thread_state.source.lock() {
+                                *slot = None;
+                            }
                         }
                         Ok(Command::Shutdown) => return,
                         Err(mpsc::TryRecvError::Empty) => break,
@@ -279,6 +306,14 @@ impl AudioThread {
                                 if let Ok(mut slot) = thread_state.device.lock() {
                                     *slot = Some(new_player.device_name().to_string());
                                 }
+                                // Read off the container rather than off Pandora's label, which
+                                // describes the stream we did not ask for.
+                                if let Ok(mut slot) = thread_state.source.lock() {
+                                    *slot = new_player.source();
+                                }
+                                thread_state
+                                    .output_rate
+                                    .store(new_player.format().sample_rate, Ordering::Relaxed);
                                 last_device_check = Instant::now();
                                 last_position = new_player.started_at();
                                 last_moved = Instant::now();
@@ -319,6 +354,18 @@ impl AudioThread {
                     thread_state
                         .drift_ms
                         .store(millis(active.drift()), Ordering::Relaxed);
+
+                    // Only ever written when there *is* an answer, which is what makes this a
+                    // latch: a rebuilt player reports `None` for its first ten seconds and the
+                    // previous reading stays up rather than flickering out mid-song.
+                    if let Some(tempo) = active.tempo() {
+                        thread_state
+                            .bpm
+                            .store(tempo.bpm.to_bits(), Ordering::Relaxed);
+                        thread_state
+                            .bpm_confidence
+                            .store(tempo.confidence.to_bits(), Ordering::Relaxed);
+                    }
 
                     // Accumulated as a delta rather than folded in when a player is dropped, so
                     // the total survives every rebuild path without each one having to remember.
@@ -383,7 +430,8 @@ impl AudioThread {
                         // decoder that has legitimately finished the track also stops producing
                         // and drains, and must not be mistaken for a hung one.
                         Some("decoding stalled")
-                    } else if !active.buffered().is_zero() && last_moved.elapsed() > PLAYBACK_STALL {
+                    } else if !active.buffered().is_zero() && last_moved.elapsed() > PLAYBACK_STALL
+                    {
                         // Audio queued and nobody consuming it: the device stopped without saying
                         // so. Distinct from the case above, where the *supply* is what dried up.
                         Some("playback stalled")
@@ -530,6 +578,36 @@ impl AudioThread {
     /// late to play. Non-zero means the decode thread is losing CPU to something.
     pub fn starved(&self) -> Duration {
         Duration::from_millis(self.published.starved_ms.load(Ordering::Relaxed))
+    }
+
+    /// The measured tempo of the current track, or `None` before enough of it has been heard.
+    ///
+    /// Latched across player rebuilds, so a stall mid-song does not blank it; cleared when a new
+    /// track starts.
+    pub fn tempo(&self) -> Option<audio::Tempo> {
+        let bpm = f32::from_bits(self.published.bpm.load(Ordering::Relaxed));
+        if bpm <= 0.0 {
+            return None;
+        }
+        Some(audio::Tempo {
+            bpm,
+            confidence: f32::from_bits(self.published.bpm_confidence.load(Ordering::Relaxed)),
+        })
+    }
+
+    /// What the stream being decoded actually is — codec, bitrate, source rate — measured from
+    /// the container rather than read off Pandora's `audioEncoding`.
+    pub fn source(&self) -> Option<audio::Source> {
+        self.published.source.lock().ok()?.clone()
+    }
+
+    /// The sample rate audio is being decoded to — the output device's — or `None` when nothing
+    /// is open. Compare with [`AudioThread::source`]'s rate to see the resampling.
+    pub fn output_rate(&self) -> Option<u32> {
+        match self.published.output_rate.load(Ordering::Relaxed) {
+            0 => None,
+            rate => Some(rate),
+        }
     }
 
     pub fn is_paused(&self) -> bool {
