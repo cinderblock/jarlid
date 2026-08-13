@@ -86,3 +86,14 @@ So the fix belongs on the producer, not the consumer.
   a wrong task name or missing crate feature fails silently into the fallback).
 - Still to do: run the machine hot and check `starved` stays at zero in a diagnostics report.
   Before this change it should climb whenever audio breaks up; after it, it should not.
+
+**Do not build the app on the machine you are verifying on, at the time you are verifying.**
+A Tauri release build claims four of the machine's four compute slots (`compute-budget` skill) and
+is precisely the kind of load that causes this bug. Building while listening would manufacture the
+symptom, degrade the audio it is meant to fix, and make any reading of `starved` meaningless —
+you would be measuring the build, not the fix. Build first, then let the machine settle, then
+provoke the load deliberately.
+
+As of 2026-08-12 a build could not be started anyway: 2 of 4 slots were held by a long-lived
+`svdsa presentation dev (cargo+vite)` server, and a cargo build wants all four, so the claim would
+have queued behind a process that does not exit on its own.
