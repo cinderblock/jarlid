@@ -193,9 +193,10 @@ impl Player {
     /// throws the old player away and builds a new one at the position the listener had reached,
     /// so a dead socket costs a rebuffer rather than the rest of the song.
     ///
-    /// If the source refuses to seek, playback starts from the beginning and [`Player::started_at`]
-    /// reports `0` — the position must describe what is actually being heard, or synced lyrics
-    /// would run confidently wrong for the whole track.
+    /// The position clock is seeded from the source's *first decoded sample*, not from `offset` —
+    /// a seek is a request the source may satisfy approximately or ignore entirely. The position
+    /// must describe what is actually being heard, or synced lyrics run confidently wrong for the
+    /// whole track. See [`Player::started_at`].
     pub fn play_at(url: &str, offset: Duration) -> Result<Self> {
         Self::play_on(url, offset, &Output::Default)
     }
@@ -224,12 +225,22 @@ impl Player {
         let mut decoder = Decoder::open_at(url, Some(requested))?;
         let format = decoder.format();
 
-        // A source that won't seek still plays — from the top. Say so rather than pretending.
-        let started_at = if offset.is_zero() || decoder.seek(offset).is_err() {
-            Duration::ZERO
-        } else {
-            offset
-        };
+        if !offset.is_zero() {
+            // A source that won't seek still plays, from the top. Failure is not fatal here.
+            let _ = decoder.seek(offset);
+        }
+
+        // Decode the first chunk up front so the position clock can be seeded from where the seek
+        // ACTUALLY landed rather than where it was aimed.
+        //
+        // `SetCurrentPosition` takes a request, not a promise — it reports success and lands on
+        // whatever boundary the source can manage, which for a network stream without an index
+        // can be some distance away, and a refused seek lands at zero. Trusting the requested
+        // offset meant `position()` could describe audio nobody was hearing, and every consumer
+        // of it inherits that lie: the progress bar, and synced lyrics, which would then run at a
+        // fixed error for the rest of the track.
+        let first_chunk = decoder.next_chunk()?;
+        let started_at = decoder.last_timestamp().unwrap_or(Duration::ZERO);
 
         let capacity = format.sample_rate as usize
             * format.channels as usize
@@ -268,7 +279,19 @@ impl Player {
             // Held for the life of the thread: this is the thread whose starvation is audible.
             let _priority = AudioPriority::raise();
 
-            let mut pending: Vec<i16> = Vec::new();
+            // The chunk already decoded to establish the true start position; play it, don't
+            // re-read it.
+            let Some(first) = first_chunk else {
+                // Nothing in the stream at all — an ending, not a fault.
+                decode_shared
+                    .decoder_finished
+                    .store(true, Ordering::Relaxed);
+                return;
+            };
+            let mut pending: Vec<i16> = first
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
             let mut cursor = 0usize;
 
             loop {
@@ -463,8 +486,8 @@ impl Player {
         })
     }
 
-    /// Where in the track this player actually began — the requested offset, or zero if the
-    /// source refused to seek.
+    /// Where in the track this player actually began, as reported by the source's own first
+    /// sample — not the offset that was requested, which the source is free to ignore.
     pub fn started_at(&self) -> Duration {
         self.started_at
     }

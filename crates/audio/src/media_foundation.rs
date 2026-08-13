@@ -39,6 +39,13 @@ pub struct Decoder {
     reader: IMFSourceReader,
     format: Format,
     finished: bool,
+    /// Presentation time of the most recent chunk, as the source reports it.
+    ///
+    /// This is the only trustworthy answer to "where are we actually decoding from" after a seek.
+    /// `SetCurrentPosition` takes a request, not a promise: the source lands on whatever boundary
+    /// it can, and for a network stream without an index that may be some distance off — while
+    /// still returning success.
+    last_timestamp: Option<Duration>,
 }
 
 /// `MF_SOURCE_READER_FIRST_AUDIO_STREAM`, which windows-rs exposes as an enum value.
@@ -107,7 +114,16 @@ impl Decoder {
             reader,
             format,
             finished: false,
+            last_timestamp: None,
         })
+    }
+
+    /// Where the most recent chunk actually sits in the track, per the source itself.
+    ///
+    /// `None` until something has been decoded. After a [`Decoder::seek`] this is the truth about
+    /// where playback resumed, which is not necessarily what was asked for.
+    pub fn last_timestamp(&self) -> Option<Duration> {
+        self.last_timestamp
     }
 
     pub fn format(&self) -> Format {
@@ -152,6 +168,7 @@ impl Decoder {
         loop {
             let mut flags = 0u32;
             let mut sample: Option<IMFSample> = None;
+            let mut timestamp = 0i64;
 
             unsafe {
                 self.reader.ReadSample(
@@ -159,7 +176,7 @@ impl Decoder {
                     0,
                     None,
                     Some(&mut flags),
-                    None,
+                    Some(&mut timestamp),
                     Some(&mut sample),
                 )?;
             }
@@ -189,6 +206,8 @@ impl Decoder {
             };
 
             if !data.is_empty() {
+                // 100 ns units, same as the seek request.
+                self.last_timestamp = Some(Duration::from_nanos(timestamp.max(0) as u64 * 100));
                 return Ok(Some(data));
             }
         }
@@ -251,6 +270,39 @@ mod tests {
         assert!(
             error < duration / 10,
             "seek to {expected:?} of {duration:?} left {remaining:?} to decode"
+        );
+    }
+
+    /// After a seek, the decoder must be able to say where it *actually* is.
+    ///
+    /// This is the invariant the playback position rests on. `SetCurrentPosition` reports success
+    /// and then lands wherever the source can, so seeding a position clock from the requested
+    /// offset is an assumption, not a fact — and when it is wrong, everything downstream (progress
+    /// bar, synced lyrics) is wrong by the same amount for the whole track, silently.
+    #[test]
+    fn first_sample_reports_where_the_seek_landed() {
+        const SOUND: &str = r"C:\Windows\Media\Ring05.wav";
+        if !std::path::Path::new(SOUND).exists() {
+            eprintln!("skipping: {SOUND} not present on this machine");
+            return;
+        }
+
+        let mut decoder = Decoder::open(SOUND).expect("open");
+        assert!(
+            decoder.last_timestamp().is_none(),
+            "nothing decoded yet, so there is no honest answer to give"
+        );
+
+        let target = Duration::from_millis(1500);
+        decoder.seek(target).expect("seek");
+        decoder.next_chunk().expect("decode").expect("a sample");
+
+        let landed = decoder
+            .last_timestamp()
+            .expect("a timestamp after decoding");
+        assert!(
+            landed.abs_diff(target) < Duration::from_millis(250),
+            "seek asked for {target:?} and the source reported {landed:?}"
         );
     }
 

@@ -1,6 +1,7 @@
 # Lyrics stop highlighting the current line
 
-**Status: OPEN — narrowed, not solved. Needs one observation from the app to finish.**
+**Status: OPEN, but the prime suspect has been removed by construction (see "Fix applied").
+Still needs one observation from the app to confirm whether that was the whole story.**
 
 ## Symptom (user, 2026-08-11)
 
@@ -53,9 +54,28 @@ While the highlight is broken, in the app:
   or the DOM, and both hypotheses above are wrong.
 - Secondarily: what does the lyrics status line say — "Synced lyrics" or "Lyrics"?
 
-## If it is the seek
+## Fix applied (2026-08-11)
 
-`play_at` should report where the seek *actually* landed rather than where it was aimed. Media
-Foundation gives the true timestamp back on the first decoded sample (`ReadSample`'s
-`plltimestamp`, currently passed `None`), so the honest fix is to read the first sample's
-timestamp and seed `frames_played` from that.
+Done, because it is correct whether or not it turns out to be this bug: `play_at` no longer trusts
+the offset it asked for. It decodes the first chunk up front and seeds the position clock from
+`ReadSample`'s presentation timestamp — the source's own account of where it landed. A seek that
+lands 10 s early, or is silently refused, now produces a *correct* position instead of a confident
+lie, so the whole class of "position describes audio nobody is hearing" is gone by construction
+rather than by assumption.
+
+Covered by `first_sample_reports_where_the_seek_landed`, which asserts the reported position
+matches the requested one within 250 ms on a real decode — the invariant that was previously
+assumed and never checked.
+
+**Known trade-off:** that first read happens on the audio thread, inside `play_at`. If Media
+Foundation hangs on it (the very failure the stall watchdog exists for), the audio thread's command
+loop is blocked and transport controls stop responding until it returns. `Decoder::open_at` already
+does synchronous network I/O on that thread so this is not a new class of problem, but it does
+widen the window. The structural fix would be building players off-thread, which `cpal::Stream`
+being `!Send` on Windows is precisely what prevents.
+
+## Still open
+
+The fix above does **not** explain two consecutive songs, since each new track builds a player at
+offset zero where there is nothing to get wrong. If the highlight is still missing on a fresh
+track after this ships, the seek was never the cause and the observation below is what to get.
