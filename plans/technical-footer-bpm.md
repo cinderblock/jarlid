@@ -251,6 +251,25 @@ a confident number appearing under every podcast-like track.
 `Source` detection was validated on the same files — VBR averages (149k, 241k), CBR (192k, 256k,
 320k), and a 48 kHz source that needs no resampling all read correctly.
 
+### Pandora's 128 kbit/s is NOT why live confidence looked low — ruled out by experiment
+
+Live readings on two consecutive Pandora tracks came back at confidence `0.116` and `0.153`,
+against 0.22-0.79 for six local files. The obvious suspect was bitrate: the live stream is
+128 kbit/s MP3 while every offline test file was 149-320 kbit/s, and codec artefacts in the high
+band would pollute the flux sum.
+
+**It is not the bitrate.** Re-encoding two known-good files down to exactly 128 kbit/s at
+44.1 kHz with `ffmpeg -b:a 128k` and re-measuring:
+
+| Track | Original | Re-encoded to 128k |
+|---|---|---|
+| Demo Track 2 | 120.1 BPM, conf 0.79 | **120.1 BPM, conf 0.77** |
+| Blink Dogs | 109.2 BPM, conf 0.79 | **109.2 BPM, conf 0.78** |
+
+Identical tempo, confidence within noise. So the detector is unaffected at Pandora's bitrate and
+the two live tracks were simply not very rhythmic — which is what a 0.12 confidence is *for*.
+Don't re-open this on the strength of a couple of low readings; get the track names first.
+
 ### Sparse intros read the *dotted* pulse — fixed by latching on confidence
 
 Both demo tracks read two-thirds of their true tempo during their drumless intros (85.2 against
@@ -283,13 +302,17 @@ being a round number someone liked.
 - [x] `engine://technical` event
 - [x] Frontend element, CSS, render
 - [x] `cargo test` / `cargo clippy` / typecheck
-- [ ] Drive the real app and read the strip against a song of known tempo
-- [ ] README
-- [ ] Commit
+- [x] Drive the real app — strip renders; payload verified live (MP3 128k, 44.1→48 kHz, buf 5.0 s)
+- [x] Ruled out bitrate as the cause of low live confidence (128k re-encode test)
+- [x] README
+- [x] Commit
 
 ## Open questions for the user
 
-1. None outstanding. (Content and visibility were settled up front — see Decisions.)
+1. **Worth an eyeball when convenient:** does the corner read a sensible BPM on tracks you know?
+   The two Pandora tracks I could observe live reported low confidence (see Findings), and I
+   could not identify them to check. Everything measurable has been measured; this is the last
+   thing only you can confirm.
 
 ## Things not to do
 
