@@ -20,6 +20,19 @@ account, has no official export, and disappears with the account.
   put export in the station-picker dropdown — rejected by the user, and rightly: a dropdown
   340px wide that closes on any outside click is no place for a multi-minute operation.
   A **Settings page** sits behind a second top-right button.
+- **The station list is ONE column, and stays one column.** It began as a responsive
+  grid, which the user rejected: "I *hate* 2D lists. don't make my eyes scan in two
+  dimensions at once." Finding a known name is a search task, and a grid makes it slower
+  by adding a second axis. Left-aligned, capped at 640px, matching how the Settings page
+  lays its sections out. A future contributor tempted by a grid should read this first.
+- **Pandora's own stations are separate sections, not row badges.** Three groups split by
+  *where a station came from*: **Mixes** (QuickMix, Thumbprint — assembled by Pandora out
+  of your whole collection), **Your stations**, **Genre stations** (Pandora's own, not
+  built from your thumbs). Only the middle group is the one you built, and it is the one
+  you are usually scanning. Pandora-built rows also carry a left spine. Grouping retired
+  the per-row tags entirely — a heading that says it once beats a badge repeated down the
+  right-hand edge of every row, and it removes the second scanning axis as well.
+  A *visual* second dimension is still wanted elsewhere; see `plans/station-galaxy.md`.
 - **Format:** ONE versioned JSON file, `"jarlidExport": 1`. Not CSV, not per-station files.
 - **Scope:** thumbs + seeds + per-station settings. Explicitly OUT: dumping raw API
   responses wholesale, and exporting Jarlid's local recently-played history.
@@ -177,14 +190,28 @@ invokes `native_play_station`.
       added (account + sign out, which had no UI at all before). `engine://stations` now
       carries the full station shape; new `native_account` command.
 - [x] 2026-08-10 Pages checked in a browser against the real modules with a stub station
-      list (grid, tags, filter, select-all indeterminate, button labelling, signed-out
-      fallback). Only console errors are `listen()` without `__TAURI_INTERNALS__`, expected
-      outside Tauri.
+      list (filter, select-all indeterminate, button labelling, signed-out fallback). Only
+      console errors are `listen()` without `__TAURI_INTERNALS__`, expected outside Tauri.
+      NOTE: that first version was a responsive grid with per-row tags. Both are gone —
+      see the layout decisions above.
+- [x] 2026-08-11 Stations list rebuilt as one column with three source-based groups.
+      Verified in a browser that all rows share a single x, the group counts are right,
+      and select mode keeps the same shape rather than reflowing.
 - [ ] **Not yet exercised end-to-end in the running app** — see below.
-- [ ] **Import not started.** Needs `station.addMusic` verified against a throwaway station
-      first (the precedent is `crates/pandora/examples/verify-writes.rs`, which the user
-      authorised for exactly one disposable station). Guessing the method name would be
-      exactly the mistake the live probe caught for export.
+- [x] 2026-08-10 **Import PLANNING built** (`app/src-tauri/src/import.rs`, commit
+      `0b7fde5`): reads an export file back and reports what applying it *would* do,
+      writing nothing. Refuses a newer `jarlidExport` version outright, matches stations by
+      token then name (tokens are per-account, so a file from elsewhere matches by name),
+      counts seeds with no `musicToken` as unusable rather than promising them, blocks a
+      QuickMix with the reason, and reports thumbs as not restorable. Where a seed list is
+      unknown it over-reports the work rather than claiming a station is already complete.
+      The Import button on the Stations page shows this preview and says plainly that
+      nothing was changed.
+- [ ] **Import APPLYING not started.** Needs `station.addMusic` verified against a
+      throwaway station first (the precedent is `crates/pandora/examples/verify-writes.rs`,
+      which the user authorised for exactly one disposable station). Guessing the method
+      name would be exactly the mistake the live probe caught for export — `albumName` did
+      not exist and would have written empty fields into the only backup.
 
 ## Still to verify
 
