@@ -25,6 +25,31 @@ const PLAYHEAD_INTERVAL: Duration = Duration::from_millis(250);
 /// that twitches four times a second is harder to read than one that does not.
 const TECHNICAL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// The engine's own view of the blend settings.
+///
+/// `crates/engine` cannot depend on this crate — the dependency runs the other way — so the two
+/// shapes are mirrored rather than shared, and this is the one place they meet.
+fn blend_of(blend: &crate::settings::Blend) -> engine::BlendConfig {
+    use crate::settings::BlendMode;
+    engine::BlendConfig {
+        enabled: blend.overlaps(),
+        beat_match: matches!(blend.mode, BlendMode::BeatMatched),
+        seconds: blend.seconds(),
+        max_pull: blend.max_pull(),
+    }
+}
+
+/// Push blend settings at a running engine, if there is one.
+///
+/// Not signed in means there is nothing to tell; the setting is still saved, and `attach` applies
+/// it as soon as an engine exists.
+pub fn apply_blend(app: &AppHandle, blend: &crate::settings::Blend) {
+    let Some(engine) = app.state::<NativeEngine>().try_engine() else {
+        return;
+    };
+    engine.set_blend(blend_of(blend));
+}
+
 /// Where the last-played station is remembered, so launching resumes what you were listening to
 /// rather than whatever happens to sort first.
 fn last_station_path(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -167,6 +192,7 @@ async fn attach(
     let saved = crate::settings::get(app);
     engine.set_volume(saved.volume.amplitude());
     engine.set_output(output_of(saved.output_device.as_deref()));
+    engine.set_blend(blend_of(&saved.blend));
 
     // Station list for the picker and the Stations page. Tokens go with it (switching
     // station and exporting one both need the token), and so do Pandora's special-station

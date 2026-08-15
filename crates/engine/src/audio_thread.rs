@@ -61,6 +61,12 @@ const RECOVERY_FORGIVENESS: Duration = Duration::from_secs(10);
 /// is well inside the time it takes to walk to the speakers and wonder why they are silent.
 const DEFAULT_DEVICE_POLL: Duration = Duration::from_secs(1);
 
+/// How long to cross from the prefetched buffer to the live stream when a blend hands over.
+///
+/// Both are the same track at the same instant, so this only has to cover a seek that did not
+/// land exactly where it was asked. Long enough for that, short enough not to be heard.
+const HANDOVER_CROSS: Duration = Duration::from_millis(50);
+
 enum Command {
     /// `paused: true` records the track without ever opening the device — see
     /// [`AudioThread::play_paused`].
@@ -75,6 +81,14 @@ enum Command {
     SetOutput(audio::Output),
     /// Move the playhead. Re-opens the stream at the new offset — see [`AudioThread::seek`].
     Seek(Duration),
+    /// Fade the next track in over the current one, from audio already decoded into memory.
+    /// `url` is that track, so the handover can re-open it live when the fade finishes.
+    StartBlend {
+        url: String,
+        pcm: std::sync::Arc<Vec<i16>>,
+        rate: f64,
+        over: Duration,
+    },
     Stop,
     Shutdown,
 }
@@ -122,6 +136,15 @@ struct Published {
     /// Worth publishing next to the source rate: the gap between them is the resampling that
     /// stops everything playing sharp.
     output_rate: AtomicU32,
+    output_channels: AtomicU32,
+    /// A blend is running: the two tracks overlap and the outgoing one is on its way out.
+    ///
+    /// The watchdog reads this and stands down. A finishing track has a drained queue and a
+    /// motionless position, which is precisely its definition of a stall — without this it would
+    /// "recover" from a blend by rebuilding the song that is deliberately ending.
+    blending: AtomicBool,
+    /// Set once a blend has handed over, so the engine can move its queue on. Cleared when read.
+    blend_completed: AtomicBool,
 }
 
 /// The track the thread is responsible for. Present whenever there is something to (re)build a
@@ -169,6 +192,8 @@ impl AudioThread {
             // Per-player, so it resets with each rebuild; the published total does not.
             let mut last_starved = Duration::ZERO;
             let mut recoveries = 0u32;
+            // The incoming track's URL while a blend runs, so the handover can re-open it live.
+            let mut blending: Option<String> = None;
             let mut recovered_at = Duration::ZERO;
 
             loop {
@@ -198,6 +223,8 @@ impl AudioThread {
                             last_decoded = Duration::ZERO;
                             last_decode = Instant::now();
                             thread_state.paused.store(start_paused, Ordering::Relaxed);
+                            blending = None;
+                            thread_state.blending.store(false, Ordering::Relaxed);
                             player = None; // stop the old device before opening a new one
                             current = Some(Current {
                                 url,
@@ -275,6 +302,23 @@ impl AudioThread {
                                 last_device_check = Instant::now();
                             }
                         }
+                        Ok(Command::StartBlend {
+                            url,
+                            pcm,
+                            rate,
+                            over,
+                        }) => {
+                            // Only meaningful with something playing to blend out of.
+                            if let Some(active) = &mut player {
+                                match active.blend_in(pcm, rate, over) {
+                                    Ok(()) => {
+                                        blending = Some(url);
+                                        thread_state.blending.store(true, Ordering::Relaxed);
+                                    }
+                                    Err(e) => eprintln!("could not start blend: {e}"),
+                                }
+                            }
+                        }
                         Ok(Command::Stop) => {
                             player = None; // dropping stops the device and the decode thread
                             current = None;
@@ -317,6 +361,9 @@ impl AudioThread {
                                 thread_state
                                     .output_rate
                                     .store(new_player.format().sample_rate, Ordering::Relaxed);
+                                thread_state
+                                    .output_channels
+                                    .store(new_player.format().channels as u32, Ordering::Relaxed);
                                 last_device_check = Instant::now();
                                 last_position = new_player.started_at();
                                 last_moved = Instant::now();
@@ -346,7 +393,7 @@ impl AudioThread {
                     }
                 }
 
-                if let Some(active) = &player {
+                if let Some(active) = &mut player {
                     let position = active.position();
                     thread_state
                         .position_ms
@@ -419,7 +466,7 @@ impl AudioThread {
                     // way: rebuild at the position actually reached. Only judged while playing — a
                     // paused player is *supposed* to look motionless, and its buffer is supposed to
                     // stay full.
-                    let reason = if paused {
+                    let reason = if paused || blending.is_some() {
                         None
                     } else if active.device_error() {
                         Some("audio device failed")
@@ -445,7 +492,38 @@ impl AudioThread {
                         None
                     };
 
-                    if active.is_finished() {
+                    // A finished blend becomes ordinary playback of the incoming track: the
+                    // primary voice is re-pointed at a live stream rather than the player being
+                    // rebuilt, so nothing is heard at the join.
+                    if blending.is_some() && active.blend_done() {
+                        let url = blending.take().expect("checked");
+                        let at = active.blend_position();
+                        match active.continue_with(&url, at, HANDOVER_CROSS) {
+                            Ok(landed) => {
+                                current = Some(Current {
+                                    url,
+                                    resume_at: landed,
+                                });
+                                last_position = landed;
+                                recovered_at = landed;
+                                last_moved = Instant::now();
+                                last_decode = Instant::now();
+                                last_decoded = Duration::ZERO;
+                                recoveries = 0;
+                                eprintln!(
+                                    "[blend] handed over at {:.2}s into the new track",
+                                    landed.as_secs_f64()
+                                );
+                                thread_state.blend_completed.store(true, Ordering::Relaxed);
+                            }
+                            // The blend played but the live stream would not open. Let the track
+                            // end normally rather than sitting on a buffer that will run dry.
+                            Err(e) => eprintln!("blend handover failed: {e}"),
+                        }
+                        thread_state.blending.store(false, Ordering::Relaxed);
+                    }
+
+                    if blending.is_none() && active.is_finished() {
                         thread_state.track_ended.store(true, Ordering::Relaxed);
                         thread_state.playing.store(false, Ordering::Relaxed);
                         player = None;
@@ -560,6 +638,50 @@ impl AudioThread {
     /// Seeking while paused is honoured: the target is remembered and resuming starts there.
     pub fn seek(&self, to: Duration) {
         let _ = self.commands.send(Command::Seek(to));
+    }
+
+    /// Fade `url` in over the current track, played from `pcm` until the handover.
+    pub fn start_blend(
+        &self,
+        url: String,
+        pcm: std::sync::Arc<Vec<i16>>,
+        rate: f64,
+        over: Duration,
+    ) {
+        let _ = self.commands.send(Command::StartBlend {
+            url,
+            pcm,
+            rate,
+            over,
+        });
+    }
+
+    /// The PCM format audio is being decoded to, so a prefetch can match it and be mixed
+    /// against what is playing without a second conversion.
+    pub fn output_format(&self) -> Option<audio::Format> {
+        let sample_rate = self.published.output_rate.load(Ordering::Relaxed);
+        let channels = self.published.output_channels.load(Ordering::Relaxed);
+        if sample_rate == 0 || channels == 0 {
+            return None;
+        }
+        Some(audio::Format {
+            sample_rate,
+            channels: channels as u16,
+            bits_per_sample: 16,
+        })
+    }
+
+    /// True while two tracks overlap.
+    pub fn blending(&self) -> bool {
+        self.published.blending.load(Ordering::Relaxed)
+    }
+
+    /// Whether a blend has handed over since this was last asked. Clears on read, so the engine
+    /// advances its queue exactly once per blend.
+    pub fn take_blend_completed(&self) -> bool {
+        self.published
+            .blend_completed
+            .swap(false, Ordering::Relaxed)
     }
 
     pub fn stop(&self) {

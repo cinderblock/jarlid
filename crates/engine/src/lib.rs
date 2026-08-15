@@ -25,6 +25,74 @@ pub use audio::{output_devices, Output};
 /// roughly four per request, so this refills well before the queue runs dry.
 const MIN_QUEUED: usize = 2;
 
+/// How much of the next track to pull into memory before a blend.
+///
+/// Only the overlap is played from here; the rest arrives live once the handover completes. More
+/// than enough for the longest overlap the settings allow, with room for the measurement the
+/// tempo tracker needs before it will say anything.
+const PREFETCH: Duration = Duration::from_secs(35);
+
+/// How far ahead of the blend to start preparing it. The fetch itself is well under a second —
+/// measured at ~120x realtime — so this is slack, not a budget.
+const PREPARE_LEAD: Duration = Duration::from_secs(15);
+
+/// How one track gives way to the next.
+///
+/// Mirrors the app's own settings rather than sharing them: the app depends on this crate, not
+/// the other way round, and a playback engine should not need a Tauri config file to know how to
+/// end a song.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlendConfig {
+    /// Overlap the tracks at all.
+    pub enabled: bool,
+    /// Pull the incoming track's tempo onto the outgoing one's. When they are further apart than
+    /// `max_pull` allows, there is no blend — a normal transition beats a bad mix.
+    pub beat_match: bool,
+    pub seconds: f32,
+    /// Permitted tempo pull, as a fraction. A DJ pitch-fader range.
+    pub max_pull: f32,
+}
+
+/// Off. Blending changes how every song ends, so it is asked for rather than assumed.
+impl Default for BlendConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            beat_match: true,
+            seconds: 8.0,
+            max_pull: 0.06,
+        }
+    }
+}
+
+impl BlendConfig {
+    /// The rate to play `incoming` at so its beats line up with `outgoing`, or `None` if that
+    /// cannot be done within the permitted pull.
+    ///
+    /// Half and double time count as matched: a 64 BPM track already lines up with a 128 BPM one,
+    /// so a DJ would mix them without touching either deck. Candidates are `outgoing · 2^k /
+    /// incoming` for k in -1, 0, 1, nearest to 1.0 winning. Doubling the *rate* is never the
+    /// answer — that raises the pitch an octave.
+    pub fn rate_for(&self, outgoing: Option<f32>, incoming: Option<f32>) -> Option<f64> {
+        if !self.beat_match {
+            // Crossfade only: play the incoming track at its own speed.
+            return Some(1.0);
+        }
+        let (Some(out), Some(inc)) = (outgoing, incoming) else {
+            return None;
+        };
+        if out <= 0.0 || inc <= 0.0 {
+            return None;
+        }
+        [0.5f32, 1.0, 2.0]
+            .into_iter()
+            .map(|octave| out * octave / inc)
+            .filter(|rate| (rate - 1.0).abs() <= self.max_pull)
+            .min_by(|a, b| (a - 1.0).abs().total_cmp(&(b - 1.0).abs()))
+            .map(|r| r as f64)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -87,6 +155,8 @@ pub struct Engine {
     /// Set for the duration of [`Engine::play_station_paused`] and consumed by the advance
     /// inside it, so the first track of a session can be loaded without starting it.
     start_paused: AtomicBool,
+    /// How to end a song. Read every tick of `run`, so a plain lock rather than the async one.
+    blend: std::sync::Mutex<BlendConfig>,
 }
 
 impl Engine {
@@ -111,6 +181,7 @@ impl Engine {
             audio: Arc::new(AudioThread::spawn()),
             events,
             start_paused: AtomicBool::new(false),
+            blend: std::sync::Mutex::new(BlendConfig::default()),
         };
 
         Ok((engine, receiver))
@@ -368,6 +439,62 @@ impl Engine {
     ///
     /// Kept as an explicit call rather than a hidden background task so a host app can own its
     /// own loop and interleave its own work.
+    /// Choose how one song gives way to the next. Takes effect at the next transition.
+    pub fn set_blend(&self, blend: BlendConfig) {
+        if let Ok(mut slot) = self.blend.lock() {
+            *slot = blend;
+        }
+    }
+
+    fn blend_config(&self) -> BlendConfig {
+        self.blend.lock().map(|b| *b).unwrap_or_default()
+    }
+
+    /// Pull the start of the next track into memory and decide whether it can be blended into.
+    ///
+    /// Decoding is far faster than playback when nothing throttles it — measured at ~120x — so
+    /// this costs well under a second and the second connection is open for about that long.
+    /// Runs on a blocking thread: the decode would otherwise stall the async runtime, and it must
+    /// never go near the audio thread.
+    async fn prepare_blend(&self, blend: &BlendConfig) -> Option<(String, Arc<Vec<i16>>, f64)> {
+        let format = self.audio.output_format()?;
+        let outgoing = self.audio.tempo().map(|t| t.bpm);
+        let url = {
+            let state = self.state.lock().await;
+            state.queue.first()?.audio_url.clone()
+        };
+
+        let fetch_url = url.clone();
+        let fetched =
+            tokio::task::spawn_blocking(move || audio::prefetch(&fetch_url, format, PREFETCH))
+                .await
+                .ok()?
+                .ok()?;
+
+        // The decision, made once. No match means no blend at all — a normal transition beats a
+        // bad mix, and this is where that is decided rather than halfway through a fade.
+        //
+        // Both tempos are logged because "declined" has two very different causes that look
+        // identical from outside: two songs genuinely too far apart, which is the common and
+        // correct answer, and a track whose tempo we never established, which is not.
+        let incoming = fetched.tempo.map(|t| t.bpm);
+        let rate = blend.rate_for(outgoing, incoming);
+        let show = |bpm: Option<f32>| match bpm {
+            Some(b) => format!("{b:.1}"),
+            None => "unknown".into(),
+        };
+        eprintln!(
+            "[blend] {} BPM -> {} BPM: {}",
+            show(outgoing),
+            show(incoming),
+            match rate {
+                Some(r) => format!("rate {r:.4} ({:+.1}%)", (r - 1.0) * 100.0),
+                None => "no match".into(),
+            }
+        );
+        Some((url, Arc::new(fetched.pcm), rate?))
+    }
+
     pub async fn run(&self) {
         // How long to wait before trying again after a failed advance. Long enough not to hammer
         // Pandora while another device holds the stream, short enough that playback resumes on
@@ -375,8 +502,90 @@ impl Engine {
         const RETRY: Duration = Duration::from_secs(10);
         let mut retry_at: Option<tokio::time::Instant> = None;
 
+        // What the next transition will use, once prepared. Cleared whenever the track changes,
+        // so a skip can never blend into a song that is no longer next.
+        let mut prepared: Option<(String, Arc<Vec<i16>>, f64)> = None;
+        // Which track we have already *tried* to prepare for, whether or not it produced a blend.
+        //
+        // Separate from `prepared` on purpose. Deciding not to blend is a perfectly ordinary
+        // outcome — most pairs of songs are nowhere near each other's tempo — and keying the
+        // retry off `prepared.is_none()` meant every decline was retried on the next tick, five
+        // times a second, for the whole approach to the end of the track. That is a hundred-odd
+        // pointless downloads of the next song per transition, against an account Pandora only
+        // permits one stream on.
+        let mut prepared_for: Option<String> = None;
+
         loop {
             tokio::time::sleep(Duration::from_millis(200)).await;
+
+            // A blend that has handed over is a track change that never went through `advance`:
+            // the audio thread swapped the stream underneath us, so the queue has to catch up.
+            if self.audio.take_blend_completed() {
+                let started = {
+                    let mut state = self.state.lock().await;
+                    if state.queue.is_empty() {
+                        None
+                    } else {
+                        let track = state.queue.remove(0);
+                        state.current = Some(track.clone());
+                        Some(track)
+                    }
+                };
+                prepared = None;
+                prepared_for = None;
+                if let Some(track) = started {
+                    let _ = self.events.send(Event::TrackStarted(Box::new(track)));
+                }
+            }
+
+            let blend = self.blend_config();
+            if blend.enabled && !self.audio.blending() {
+                let position = self.audio.position();
+                let duration = self
+                    .state
+                    .lock()
+                    .await
+                    .current
+                    .as_ref()
+                    .map(|t| Duration::from_secs(t.track_length))
+                    .unwrap_or_default();
+                let remaining = duration.saturating_sub(position);
+                let overlap = Duration::from_secs_f32(blend.seconds.clamp(2.0, 20.0));
+                let current_url = self
+                    .state
+                    .lock()
+                    .await
+                    .current
+                    .as_ref()
+                    .map(|t| t.audio_url.clone());
+
+                // Anything prepared for a track we are no longer playing is stale — a skip, or a
+                // station change. Throwing it away is cheaper than blending into the wrong song.
+                if prepared.is_some() && prepared_for != current_url {
+                    prepared = None;
+                }
+
+                if !duration.is_zero() && current_url.is_some() {
+                    if prepared_for != current_url && remaining <= overlap + PREPARE_LEAD {
+                        // Once per track, decision included.
+                        prepared_for = current_url.clone();
+                        prepared = self.prepare_blend(&blend).await;
+                    }
+                    if remaining <= overlap {
+                        if let Some((url, pcm, rate)) = prepared.take() {
+                            // Worth saying out loud: a blend is inaudible when it works, so
+                            // without this there is no way to tell "no blend was wanted" from
+                            // "a blend was attempted and went wrong".
+                            eprintln!(
+                                "[blend] starting: {:.1}s overlap at rate {rate:.4} ({:+.1}%)",
+                                overlap.as_secs_f32(),
+                                (rate - 1.0) * 100.0
+                            );
+                            self.audio.start_blend(url, pcm, rate, overlap);
+                        }
+                    }
+                }
+            }
 
             let due = retry_at.is_some_and(|at| tokio::time::Instant::now() >= at);
 

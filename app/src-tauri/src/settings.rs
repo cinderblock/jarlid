@@ -349,6 +349,10 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
 #[tauri::command]
 pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Settings, String> {
     save(&app, &settings)?;
+    // Reach the *running* engine, not only the next launch. Volume and output device already
+    // apply live from the UI; blending would otherwise appear to do nothing until a restart,
+    // which reads as a broken setting rather than a deferred one.
+    crate::native::apply_blend(&app, &settings.blend);
     Ok(settings)
 }
 
