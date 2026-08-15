@@ -26,7 +26,29 @@ use windows::Win32::System::Threading::{
     SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
 };
 
-use crate::{Decoder, Error, Format, Result, Source, Tempo};
+use crate::{Decoder, Error, Format, Result, Source, Tempo, Voice};
+
+/// How much audio the callback mixes in one pass, in samples.
+///
+/// Sized so a typical device period is one or two passes, and small enough to sit in the
+/// callback's own state rather than being allocated — the callback may never allocate, so the
+/// scratch buffer cannot be sized from whatever cpal happens to ask for.
+const MIX_BLOCK: usize = 1024;
+
+/// The queue, seen as a supply of PCM the mixer can read.
+///
+/// Whole frames only: `Voice` checks `available` before taking anything, so a queue that runs
+/// dry mid-frame is left alone rather than half-consumed. Popping two samples of a stereo frame
+/// and coming back later would swap the channels for the rest of the track.
+impl crate::Pcm for rtrb::Consumer<i16> {
+    fn available(&self) -> usize {
+        self.slots()
+    }
+
+    fn pop(&mut self) -> Option<i16> {
+        rtrb::Consumer::pop(self).ok()
+    }
+}
 
 /// Tells Windows this thread feeds an audio stream, for as long as the guard lives.
 ///
@@ -389,6 +411,7 @@ impl Player {
 
         let callback_shared = Arc::clone(&shared);
         let channels = config.channels() as u64;
+        let channel_count = config.channels() as usize;
 
         // A stream error means the callback stops being invoked — no more audio, and the queue
         // stops draining, so `is_finished()` would never fire either. Record it so the owner can
@@ -418,23 +441,55 @@ impl Player {
                 // Seeded at the target so opening a stream — including the rebuild after a stall
                 // — starts at the right level instead of fading up from silence.
                 let mut gain = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
+                // The track, read through the mixer rather than popped straight out of the queue.
+                // At the native rate this is arithmetically a wire — see `native_rate_is_a_wire`
+                // in `mixer` — so ordinary playback is untouched; what it buys is somewhere for a
+                // second track to arrive, and a rate that can move.
+                let mut voice = Voice::new(channel_count, 1.0);
+                // Mixing happens in `f32`, which needs somewhere to put it. On the closure rather
+                // than the stack per call, and fixed-size, because the callback must never
+                // allocate. Whatever the device asks for is processed in frame-aligned passes of
+                // at most this size.
+                let mut scratch = [0.0f32; MIX_BLOCK];
                 move |output: &mut [$sample], _: &cpal::OutputCallbackInfo| {
                     let paused = callback_shared.paused.load(Ordering::Relaxed);
                     let target = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
 
+                    let read_before = voice.frames_read();
                     let mut written = 0usize;
                     if !paused {
-                        for slot in output.iter_mut() {
-                            let Ok(sample) = consumer.pop() else { break };
-                            // A one-pole approaches its target without ever arriving; snap when
-                            // the remainder is below a 16-bit LSB so that "muted" is really zero
-                            // and the filter isn't left grinding on denormals forever.
-                            gain += (target - gain) * gain_step;
-                            if (target - gain).abs() < 1.0 / 65536.0 {
-                                gain = target;
+                        // Trim to whole frames so a pass boundary can never split one.
+                        let pass = MIX_BLOCK - (MIX_BLOCK % channel_count);
+                        for block in output.chunks_mut(pass) {
+                            let usable = block.len() - (block.len() % channel_count);
+                            if usable == 0 {
+                                break;
                             }
-                            *slot = $convert(sample as f32 * gain);
-                            written += 1;
+                            let mix = &mut scratch[..usable];
+                            mix.fill(0.0);
+
+                            // A voice that runs dry stops early and starves the rest of the
+                            // block, so what it produced is always a prefix.
+                            let starved_before = voice.starved();
+                            voice.mix_into(&mut consumer, mix);
+                            let dry = (voice.starved() - starved_before) as usize * channel_count;
+                            let produced = usable - dry;
+
+                            for (slot, mixed) in block.iter_mut().zip(mix.iter()).take(produced) {
+                                // A one-pole approaches its target without ever arriving; snap
+                                // when the remainder is below a 16-bit LSB so that "muted" is
+                                // really zero and the filter isn't left grinding on denormals
+                                // forever.
+                                gain += (target - gain) * gain_step;
+                                if (target - gain).abs() < 1.0 / 65536.0 {
+                                    gain = target;
+                                }
+                                *slot = $convert(*mixed * gain);
+                            }
+                            written += produced;
+                            if produced < usable {
+                                break;
+                            }
                         }
                     }
 
@@ -465,12 +520,21 @@ impl Player {
                             .fetch_add(short as u64, Ordering::Relaxed);
                     }
 
+                    // Both counters follow frames *taken from the queue*, not frames handed to
+                    // the device. They are the same number at the native rate, and they must not
+                    // be conflated once a voice can play at another one: at 1.04 the device eats
+                    // 4% more input than it emits output, and the queue has to be debited for
+                    // what was actually consumed or `drift` would accuse the pipeline of losing
+                    // audio. Position wants the same figure for a different reason — it is a
+                    // position *within the track*, and synced lyrics are timed against the
+                    // track's own clock rather than the device's.
+                    let consumed = voice.frames_read() - read_before;
                     callback_shared
                         .queued
-                        .fetch_sub(written as u64, Ordering::Relaxed);
+                        .fetch_sub(consumed * channels, Ordering::Relaxed);
                     callback_shared
                         .frames_played
-                        .fetch_add(written as u64 / channels, Ordering::Relaxed);
+                        .fetch_add(consumed, Ordering::Relaxed);
                 }
             }};
         }
