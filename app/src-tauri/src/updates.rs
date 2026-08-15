@@ -589,6 +589,14 @@ fn paused_now(app: &tauri::AppHandle) -> Option<bool> {
 /// already armed, so a click can only mean "don't wait".
 #[tauri::command]
 pub async fn update_action(app: tauri::AppHandle) -> Result<Status, String> {
+    // A dev build must never install a release over itself. [`spawn`] is already
+    // `#[cfg(not(debug_assertions))]` for exactly that reason, but the command stayed
+    // registered — so the badge was a second way in, one click wide. The frontend also stops
+    // offering the click, and this is the half that cannot be bypassed.
+    if cfg!(debug_assertions) {
+        return Ok(status(&app));
+    }
+
     let staged = app.state::<UpdateCtl>().is_staged();
     let armed = app.state::<UpdateCtl>().is_armed();
 

@@ -1,3 +1,4 @@
+mod build_info;
 mod diagnostics;
 mod export;
 mod import;
@@ -501,6 +502,7 @@ pub fn run() {
         // Remember main-window position/size across launches.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
+            build_info::build_id,
             export::cancel_export,
             export::export_stations,
             import::import_preview,

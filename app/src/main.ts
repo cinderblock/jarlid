@@ -656,6 +656,15 @@ function renderTechnical(t: Technical) {
 const versionEl = $("version");
 let baseVersion = "";
 let versionBusy = false;
+/// A debug build, where the updater is inert and the bar is a readout rather than a button.
+let devBuild = false;
+
+/// Identity of the tree this build came from — see `build_info.rs`.
+interface BuildId {
+  dev: boolean;
+  /// Set only when the tree is *not* exactly the tagged release: off the tag, or dirty.
+  git: { branch: string | null; hash: string; dirty: boolean } | null;
+}
 
 type Policy = "instant" | "afterSong" | "manualInstall" | "notifyOnly";
 interface UpdateStatus {
@@ -711,6 +720,9 @@ function renderVersion() {
 }
 
 attachTip(versionEl, () => {
+  // Nothing to offer: the updater's background loop is compiled out of a debug build, and
+  // `update_action` refuses one, so promising a check here would be a lie.
+  if (devBuild) return "Dev build — updates are disabled";
   const v = status.available;
   if (!v) return "Click to check for updates";
   if (!status.staged) return `Click to download v${v}`;
@@ -720,12 +732,43 @@ attachTip(versionEl, () => {
   return "Click to install now instead of waiting";
 });
 
-getVersion()
-  .then((v) => {
-    baseVersion = `v${v}`;
-    renderVersion();
-  })
-  .catch(() => {});
+// The version number identifies a *release* exactly — CI built it from the commit a `vX.Y.Z`
+// tag points at. It identifies a dev build barely at all: the same number sits on a tree that
+// may be several commits ahead, on a branch, with uncommitted edits on top. So a dev build
+// off its tag says which commit is actually running, and a release is untouched.
+//
+// Folded into `baseVersion` rather than appended afterwards, because `renderVersion` rewrites
+// the bar for every update state and the first status event would otherwise erase it.
+void (async () => {
+  const [v, build] = await Promise.all([
+    getVersion().catch(() => null),
+    invoke<BuildId>("build_id").catch((): BuildId => ({ dev: false, git: null })),
+  ]);
+  // Joined rather than concatenated so a failed `getVersion` degrades to the commit alone
+  // instead of a bar that opens with a stray separator.
+  const parts: string[] = [];
+  if (v) parts.push(`v${v}`);
+  if (build.git) {
+    // Detached HEAD has no branch to name, so the hash stands alone. Uncommitted work gets a
+    // star, because a hash on its own misrepresents a tree that has been edited since.
+    //
+    // The branch is clipped rather than the whole string: this bar is `position: fixed`
+    // opposite the technical readout, and branch names here run to the length of
+    // `t3code/layout-spacing-alignment-fixes`. A CSS ellipsis would trim the *end*, which is
+    // exactly the hash — the one part that cannot be guessed from context.
+    const b = build.git.branch;
+    const short = b && b.length > 24 ? `${b.slice(0, 23)}…` : b;
+    const where = short ? `${short}@${build.git.hash}` : build.git.hash;
+    parts.push(`${where}${build.git.dirty ? "*" : ""}`);
+  }
+  baseVersion = parts.join(" · ");
+  if (build.dev) {
+    devBuild = true;
+    // Stop it presenting as a button — there is nothing behind the click.
+    versionEl.classList.add("readonly");
+  }
+  renderVersion();
+})();
 
 invoke<UpdateStatus>("update_status")
   .then((s) => {
@@ -759,6 +802,9 @@ listen("app://update-stood-down", () => {
 });
 
 versionEl.addEventListener("click", async () => {
+  // The Rust command refuses in a debug build anyway; bailing here is what keeps the bar
+  // from flashing "checking…" at something that was never going to happen.
+  if (devBuild) return;
   if (versionBusy) return;
   versionBusy = true;
   const wasKnown = !!status.available;

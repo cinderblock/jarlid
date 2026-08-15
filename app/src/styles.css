@@ -407,6 +407,14 @@ body.remote #history {
 #version.update:hover {
   text-decoration: underline;
 }
+/* A dev build's bar is a readout, not a control: the updater's loop is compiled out and
+   `update_action` refuses, so it must not invite a click it will not honour. */
+#version.readonly,
+#version.readonly:hover {
+  cursor: default;
+  color: var(--faint);
+  text-decoration: none;
+}
 
 /* Technical readout: what is actually playing and whether it is playing well. Deliberately
    the mirror image of the version badge opposite it — same size, same faintness, same
