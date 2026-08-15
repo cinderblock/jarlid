@@ -919,7 +919,10 @@ body.remote #remote-vol-wrap {
   border-radius: 18px;
   padding: 34px 40px;
   text-align: center;
-  max-width: 420px;
+  /* A definite width, not just a max: the fields below are `width: 100%`, and against
+     a shrink-to-fit card that would resolve circularly against each input's intrinsic
+     size instead of the card. */
+  width: min(420px, calc(100vw - 48px));
 }
 #login-hint h2 {
   margin: 0 0 10px;
@@ -938,6 +941,66 @@ body.remote #remote-vol-wrap {
   font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
+}
+
+/* Sign-in form.
+   The card around it is centred prose, but a form is not prose: a `label` is inline and
+   an `input` is inline-block, so without this they flow like words -- "Email [field]
+   Password" wrapping onto one line, the button beside the password box. Stacking them
+   and aligning left is what makes each field's start findable.
+
+   This block existed and was deleted wholesale by an unrelated commit (26195fb, the
+   station-preferences export). Nobody noticed for months because the card is only shown
+   when signed out, and a bug meant it was never shown at all -- so the form has never
+   actually been looked at since. Restored in the theme's tokens rather than as it was:
+   the original hardcoded white overlays, which was fine when dark was the only theme and
+   is not now. */
+#login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 18px;
+  text-align: left;
+}
+#login-form label {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+#login-form input {
+  width: 100%;
+  background: rgba(var(--wash), 0.06);
+  border: 1px solid rgba(var(--wash), 0.14);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: inherit;
+  font: inherit;
+  margin-bottom: 8px;
+}
+#login-form input::placeholder {
+  color: var(--faint);
+}
+#login-form input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+  background: rgba(var(--wash), 0.1);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+#login-form button {
+  width: 100%;
+  margin-top: 6px;
+}
+#login-form button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+#login-error {
+  color: var(--bad-ink);
+  font-size: 0.82rem;
+  margin: 10px 0 0;
+  /* Pandora's errors can be long; keep the card from stretching off-screen. */
+  overflow-wrap: anywhere;
 }
 
 /* ---- responsive: stack on narrow (portrait) ----
