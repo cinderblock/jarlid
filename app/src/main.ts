@@ -662,9 +662,18 @@ let devBuild = false;
 /// Identity of the tree this build came from — see `build_info.rs`.
 interface BuildId {
   dev: boolean;
-  /// Set only when the tree is *not* exactly the tagged release: off the tag, or dirty.
-  git: { branch: string | null; hash: string; dirty: boolean } | null;
+  /// Set whenever git could be read: null in a release, or outside a repo. Present even on
+  /// the tag, because the click copies `full` regardless of what the bar says.
+  git: {
+    branch: string | null;
+    hash: string;
+    full: string;
+    dirty: boolean;
+    tagged: boolean;
+  } | null;
 }
+/// The full sha to put on the clipboard, once a dev build has told us one.
+let devHash: string | null = null;
 
 type Policy = "instant" | "afterSong" | "manualInstall" | "notifyOnly";
 interface UpdateStatus {
@@ -720,9 +729,11 @@ function renderVersion() {
 }
 
 attachTip(versionEl, () => {
-  // Nothing to offer: the updater's background loop is compiled out of a debug build, and
-  // `update_action` refuses one, so promising a check here would be a lie.
-  if (devBuild) return "Dev build — updates are disabled";
+  // Updates are compiled out of a debug build, so there is no check to promise. Say what the
+  // click does instead — and that it is the *full* sha, not the short one on screen.
+  if (devBuild) {
+    return devHash ? "Click to copy the full commit hash" : "Dev build — updates are disabled";
+  }
   const v = status.available;
   if (!v) return "Click to check for updates";
   if (!status.staged) return `Click to download v${v}`;
@@ -748,7 +759,10 @@ void (async () => {
   // instead of a bar that opens with a stray separator.
   const parts: string[] = [];
   if (v) parts.push(`v${v}`);
-  if (build.git) {
+  if (build.git) devHash = build.git.full;
+  // Name the commit only when the tree is not what the tag contains. Sitting clean on the
+  // tag the number is the whole truth, and the extra text would be scenery.
+  if (build.git && (!build.git.tagged || build.git.dirty)) {
     // Detached HEAD has no branch to name, so the hash stands alone. Uncommitted work gets a
     // star, because a hash on its own misrepresents a tree that has been edited since.
     //
@@ -764,8 +778,9 @@ void (async () => {
   baseVersion = parts.join(" · ");
   if (build.dev) {
     devBuild = true;
-    // Stop it presenting as a button — there is nothing behind the click.
-    versionEl.classList.add("readonly");
+    // Still a button, just a different one: with no hash to hand over there is nothing behind
+    // the click, so only then does it stop presenting as one.
+    versionEl.classList.toggle("readonly", !devHash);
   }
   renderVersion();
 })();
@@ -801,10 +816,49 @@ listen("app://update-stood-down", () => {
   renderVersion();
 });
 
+/// Put text on the clipboard, without taking a dependency for it.
+///
+/// `navigator.clipboard` is the right call and should work — Tauri serves the app from
+/// `tauri.localhost`, which Chromium treats as a secure context, and a click is the user
+/// activation it wants. The `execCommand` path is the old synchronous fallback for anywhere
+/// that turns out not to be true; it is deprecated rather than gone, and this is dev-only.
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      // Off-screen rather than hidden: `display:none` cannot be selected.
+      ta.style.cssText = "position:fixed;top:-9999px;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
 versionEl.addEventListener("click", async () => {
-  // The Rust command refuses in a debug build anyway; bailing here is what keeps the bar
-  // from flashing "checking…" at something that was never going to happen.
-  if (devBuild) return;
+  // A dev build never installs anything — the loop is compiled out and `update_action`
+  // refuses — so the click is free to do the thing you actually want at a version bar you
+  // are staring at while debugging: hand you the commit.
+  if (devBuild) {
+    if (versionBusy || !devHash) return;
+    versionBusy = true;
+    const ok = await copyText(devHash);
+    versionEl.textContent = ok ? "commit copied" : "copy failed";
+    setTimeout(() => {
+      versionBusy = false;
+      renderVersion();
+    }, 1400);
+    return;
+  }
   if (versionBusy) return;
   versionBusy = true;
   const wasKnown = !!status.available;

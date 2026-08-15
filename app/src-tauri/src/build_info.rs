@@ -22,10 +22,21 @@ use serde::Serialize;
 pub struct GitId {
     /// `None` on a detached HEAD, where there is no branch to name.
     pub branch: Option<String>,
-    /// Abbreviated commit hash.
+    /// Abbreviated commit hash — what the bar shows.
     pub hash: String,
+    /// The full 40-character sha, for copying.
+    ///
+    /// Deliberately not the abbreviated one: the short hash is already on screen and can be
+    /// retyped, so copying it adds nothing. The full sha is the part you cannot get by
+    /// reading, and it is what pastes unambiguously into anything.
+    pub full: String,
     /// Tracked files differ from HEAD, so the hash alone does not describe what is running.
     pub dirty: bool,
+    /// HEAD is exactly the commit `v{version}` points at.
+    ///
+    /// The bar stays quiet about the commit when this holds and the tree is clean — but the
+    /// hash is still reported, because clicking to copy it must work in that state too.
+    pub tagged: bool,
 }
 
 /// What the version bar needs to describe this build.
@@ -34,11 +45,11 @@ pub struct GitId {
 pub struct BuildId {
     /// A debug build. The updater does nothing in one, so the bar is a readout, not a button.
     pub dev: bool,
-    /// Set only when the tree is **not** exactly the tagged release — off the tag, or dirty.
+    /// Set whenever git could be read at all — so `None` in a release, or outside a repo.
     ///
-    /// `None` is the ordinary case for a release, and also for a dev build sitting clean on
-    /// its own tag. The extra text marks a *difference*; it would be furniture if it were
-    /// always there.
+    /// Present even when the tree *is* exactly the tagged release. Whether the bar mentions
+    /// the commit is a separate question ([`GitId::tagged`]); the hash has to be here either
+    /// way, because clicking the bar copies it.
     pub git: Option<GitId>,
 }
 
@@ -52,6 +63,10 @@ pub fn build_id() -> BuildId {
 
 /// Everything the decision needs, as read from git. Separated from [`describe`] so the
 /// decision is testable — the same split `updates.rs` makes for the same reason.
+///
+/// Debug-only, like everything that reads git: a release never builds one. `test` is in the
+/// cfg as well so `cargo test --release` still compiles the tests below.
+#[cfg(any(debug_assertions, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Facts {
     head: String,
@@ -63,21 +78,22 @@ struct Facts {
     tag_commit: Option<String>,
 }
 
-/// Whether this tree differs from the tagged release, and how.
+/// Turn what git said into what the bar needs.
 ///
 /// Pure, so the one part where a mistake is visible to every dev every day can be tested
-/// without a repo in a particular state.
-fn describe(f: &Facts) -> Option<GitId> {
-    // Exactly the tagged release, byte for byte. Nothing worth adding to the bar.
-    if f.tag_commit.as_deref() == Some(f.head.as_str()) && !f.dirty {
-        return None;
-    }
-    Some(GitId {
+/// without needing a repo in a particular state.
+#[cfg(any(debug_assertions, test))]
+fn describe(f: &Facts) -> GitId {
+    GitId {
         // A detached HEAD has no branch to name; `--abbrev-ref` says "HEAD" and means it.
         branch: f.branch.clone().filter(|b| b != "HEAD"),
         hash: f.short.clone(),
+        full: f.head.clone(),
         dirty: f.dirty,
-    })
+        // A tag that does not exist gives `None`, which must read as "not on it". Claiming to
+        // be the release is the one wrong answer here.
+        tagged: f.tag_commit.as_deref() == Some(f.head.as_str()),
+    }
 }
 
 /// Compiled out of a release entirely: no subprocesses, no git, nothing to go wrong in a
@@ -98,13 +114,13 @@ fn git_id() -> Option<GitId> {
     // which reads correctly as "not on it".
     let tag = format!("v{}^{{commit}}", env!("CARGO_PKG_VERSION"));
 
-    describe(&Facts {
+    Some(describe(&Facts {
         head: git(&["rev-parse", "HEAD"])?,
         short: git(&["rev-parse", "--short", "HEAD"])?,
         branch: git(&["rev-parse", "--abbrev-ref", "HEAD"]),
         dirty: !git(&["status", "--porcelain"])?.is_empty(),
         tag_commit: git(&["rev-parse", "--verify", "--quiet", &tag]),
-    })
+    }))
 }
 
 /// Run git in the repo and return trimmed stdout, or `None` for any failure at all.
@@ -143,11 +159,20 @@ mod tests {
         }
     }
 
-    /// The whole point of the `Option`: a clean checkout of the tagged release says nothing
-    /// extra, so the bar stays exactly as it has always been.
+    /// The display rule the frontend applies. Stated here so the tests below can assert it
+    /// alongside the facts it is derived from.
+    fn names_commit(g: &GitId) -> bool {
+        !g.tagged || g.dirty
+    }
+
+    /// A clean checkout of the tagged release says nothing extra, so the bar stays exactly as
+    /// it has always been — but the hash is still reported, because the click copies it.
     #[test]
-    fn the_tagged_release_adds_nothing() {
-        assert_eq!(describe(&on_tag()), None);
+    fn the_tagged_release_adds_nothing_but_still_offers_its_hash() {
+        let g = describe(&on_tag());
+        assert!(g.tagged);
+        assert!(!names_commit(&g), "a clean tagged build names no commit");
+        assert_eq!(g.full, HEAD, "the hash must still be there to copy");
     }
 
     /// One commit past the tag and the version number is no longer the truth.
@@ -157,25 +182,30 @@ mod tests {
             tag_commit: Some(OTHER.into()),
             ..on_tag()
         };
+        let g = describe(&f);
+        assert!(names_commit(&g));
         assert_eq!(
-            describe(&f),
-            Some(GitId {
+            g,
+            GitId {
                 branch: Some("master".into()),
                 hash: "f15dc14".into(),
+                full: HEAD.into(),
                 dirty: false,
-            })
+                tagged: false,
+            }
         );
     }
 
     /// Sitting on the tag but with edits on top is still not the tagged release — this is the
-    /// case a hash-only check would call clean and wrongly stay quiet about.
+    /// case a tag-only check would call clean and wrongly stay quiet about.
     #[test]
     fn dirty_on_the_tag_still_speaks_up() {
-        let f = Facts {
+        let g = describe(&Facts {
             dirty: true,
             ..on_tag()
-        };
-        assert_eq!(describe(&f).map(|g| g.dirty), Some(true));
+        });
+        assert!(g.tagged, "still on the tag");
+        assert!(names_commit(&g), "but no longer what the tag contains");
     }
 
     /// `rev-parse --abbrev-ref` answers the literal string "HEAD" when detached. Printing
@@ -187,7 +217,7 @@ mod tests {
             tag_commit: Some(OTHER.into()),
             ..on_tag()
         };
-        assert_eq!(describe(&f).and_then(|g| g.branch), None);
+        assert_eq!(describe(&f).branch, None);
     }
 
     /// No tag of this version anywhere — a fresh clone with no tags fetched, or a version
@@ -195,11 +225,22 @@ mod tests {
     /// it": claiming to be the release is the one wrong answer.
     #[test]
     fn a_missing_tag_is_never_mistaken_for_being_on_it() {
-        let f = Facts {
+        let g = describe(&Facts {
             tag_commit: None,
             ..on_tag()
-        };
-        assert_eq!(describe(&f).map(|g| g.hash), Some("f15dc14".into()));
+        });
+        assert!(!g.tagged);
+        assert!(names_commit(&g));
+    }
+
+    /// The copied value is the full sha, not the abbreviated one on screen. Copying what is
+    /// already legible would be a pointless button.
+    #[test]
+    fn the_copied_hash_is_the_full_one() {
+        let g = describe(&on_tag());
+        assert_eq!(g.full.len(), 40);
+        assert!(g.full.starts_with(&g.hash));
+        assert_ne!(g.full, g.hash);
     }
 
     /// A release build must never pay for any of this, and must never show it.
