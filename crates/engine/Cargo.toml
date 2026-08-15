@@ -19,3 +19,7 @@ keyring = { version = "3", features = ["windows-native"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+# Examples only. The `concurrent-streams` probe needs to hold raw HTTP reads open itself, below
+# the decoder, to ask a question about Pandora's *connection* limits rather than about decoding.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = "0.3"
