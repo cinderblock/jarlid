@@ -1095,13 +1095,29 @@ listen<Playhead>("engine://playhead", (e) => onPlayhead(e.payload));
 listen<{ thumbUp: boolean; thumbDown: boolean }>("engine://thumbs", (e) =>
   setThumbs(e.payload.thumbUp, e.payload.thumbDown)
 );
+
+function showLogin() {
+  player.hidden = true;
+  loginHint.hidden = false;
+}
+
 listen("engine://needs-login", () => {
   // Authoritative now: the native engine emits this only when the credential store is empty or
   // the saved credentials were rejected. The old `everPlayed` guard existed because Pandora's
   // page fired spurious login signals during its initial load; there is no page any more.
-  player.hidden = true;
-  loginHint.hidden = false;
+  showLogin();
 });
+
+// Ask as well as listen. On a fresh install the engine gives up on the empty credential store in
+// microseconds — before this module has been evaluated at all — so the event above was reliably
+// emitted into a webview with no listener yet and dropped. Nothing else unhides the card, which
+// left a new machine with genuinely no way to sign in. Asking cannot race: the backend latches
+// the state, and whichever of the two arrives second just sets an already-set flag.
+invoke<boolean>("native_needs_login")
+  .then((needed) => {
+    if (needed) showLogin();
+  })
+  .catch(() => {});
 
 // ---- toast --------------------------------------------------------------
 // Engine problems used to be written into #login-error, which lives inside the sign-in card and

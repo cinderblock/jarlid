@@ -329,8 +329,12 @@ signOutBtn.addEventListener("click", async () => {
   signOutBtn.textContent = "Sign out";
   try {
     await invoke("native_sign_out");
-    accountEl.textContent = "Signed out. Restart Jarlid to sign in again.";
+    accountEl.textContent = "Not signed in";
     signOutBtn.hidden = true;
+    // Signing out puts the sign-in card back up, but it sits behind this page — so get out of
+    // its way. It used to say "restart Jarlid to sign in again", which was only true because
+    // the card never appeared on its own.
+    close();
   } catch (e) {
     accountEl.textContent = `Could not sign out: ${e}`;
   }
