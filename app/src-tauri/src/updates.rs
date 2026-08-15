@@ -10,6 +10,9 @@
 //! - **No engine at all** — signed out, sitting on the login card. There is no playback to
 //!   protect, so after [`UNKNOWN_SETTLE`] the install simply goes ahead. It comes back
 //!   *playing*, because being signed out is not somebody asking for silence.
+//! - **A network player owns playback.** Jarlid only watches a WiiM; it never streams to one,
+//!   so the speaker plays straight through a restart. This is the safest moment of the lot —
+//!   the only requirement is coming back *paused*, so local audio does not start over the top.
 //! - **A track boundary.** Interrupting a running song is acceptable if we truly have to,
 //!   but always prefer waiting a couple of minutes for it to end. [`MAX_WAIT`] is a backstop
 //!   for when no boundary ever arrives.
@@ -298,12 +301,16 @@ fn build_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater
 
 /// Why an install was held back. Every hold is worth being able to explain afterwards —
 /// "why didn't it update?" is otherwise unanswerable.
+///
+/// There is deliberately no `Remote` variant. A network player owning playback was once a
+/// hold of its own; it is now a *safe* moment that merely has to be taken silently, so the
+/// only thing it can still hold on is [`Hold::MidSong`], and only in the barely-reachable
+/// case where local audio is running alongside it.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Hold {
     NothingStaged,
     NotArmed,
     Exporting,
-    Remote,
     MidSong,
     Unknown,
 }
@@ -314,7 +321,6 @@ impl Hold {
             Hold::NothingStaged => "nothing staged",
             Hold::NotArmed => "waiting to be asked",
             Hold::Exporting => "an export is running",
-            Hold::Remote => "a network player owns playback",
             Hold::MidSong => "a song is playing",
             Hold::Unknown => "there is no engine to ask what playback is doing",
         }
@@ -383,10 +389,27 @@ fn decide(c: Conditions) -> Result<Resume, Hold> {
     if c.exporting {
         return Err(Hold::Exporting);
     }
-    // A renderer owns playback; there is no local track boundary to ride, and restarting
-    // would only drop the display.
+    // A renderer owns playback — and Jarlid is only *watching* it. Nothing is streamed from
+    // here (there is no `SetAVTransportURI` anywhere in `upnp.rs`; for LinkPlay devices the
+    // device's own sources are read back), so the speaker keeps playing across a restart no
+    // matter what this process does. On the audio that matters, this is the safest moment
+    // there is.
+    //
+    // What it must not do is come back *playing*, which would start local audio over the top
+    // of the renderer — two sources at once. That, not the momentary loss of the overlay, is
+    // the real hazard, and `Resume::Paused` is the whole of the answer to it.
+    //
+    // This used to be a flat `Err(Hold::Remote)`, which made remote the one hold with no
+    // backstop behind it: an evening of listening on the speaker meant an update that never
+    // landed and no clock even running toward it.
     if c.remote {
-        return Err(Hold::Remote);
+        return match c.playback {
+            // Local audio playing *as well* is a song being cut off like any other, and still
+            // has to justify itself. Barely reachable — a moving local playhead is what keeps
+            // `remote_active` false — but the rule should not depend on that.
+            Playback::Playing if !c.may_interrupt => Err(Hold::MidSong),
+            _ => Ok(Resume::Paused),
+        };
     }
     match c.playback {
         // Needs no mandate at all: nothing is being cut off, and `Resume::Paused` means the
@@ -425,11 +448,16 @@ pub fn on_track_boundary(app: &tauri::AppHandle) {
 }
 
 /// `force` is an explicit request: it waives the guards that exist purely to avoid
-/// surprising the listener (not armed, a renderer owning playback, and the requirement of a
-/// mandate to interrupt), because a deliberate request is not a surprise. It does **not**
-/// waive the export guard, which protects work in progress rather than anyone's comfort —
-/// nor does it override `playback`, because "install now" is not a request to start music —
-/// nor, when we cannot tell what playback is doing, a request for silence.
+/// surprising the listener (not armed, and the requirement of a mandate to interrupt),
+/// because a deliberate request is not a surprise. It does **not** waive the export guard,
+/// which protects work in progress rather than anyone's comfort — nor does it override
+/// `playback`, because "install now" is not a request to start music — nor, when we cannot
+/// tell what playback is doing, a request for silence.
+///
+/// It no longer clears `remote` either. That was right while a renderer *blocked* the
+/// install and the flag was a thing to get past; now the flag only says "come back silent,
+/// there is a speaker playing", and forcing past that would start local audio over the top
+/// of it. A click asks to install now, not to seize the music back.
 fn try_install(
     app: &tauri::AppHandle,
     playback: Playback,
@@ -441,7 +469,6 @@ fn try_install(
     let mut c = conditions(app, playback, may_interrupt);
     if force {
         c.armed = true;
-        c.remote = false;
         c.may_interrupt = true;
     }
     let resume = match decide(c) {
@@ -810,17 +837,83 @@ mod tests {
         );
     }
 
-    /// A WiiM owns playback: the local "track ended" is meaningless, and restarting would
-    /// just drop the display the listener is watching.
+    /// A WiiM owning playback is a *safe* moment — but only a silent one.
+    ///
+    /// Jarlid never streams to the renderer, so the speaker plays straight through a restart
+    /// and nothing audible is at risk. The one thing that would break it is coming back
+    /// `Playing`, which starts local audio over the top of the speaker. So every remote path
+    /// must resolve to `Resume::Paused`, whatever the local engine happens to be doing and
+    /// whoever asked.
     #[test]
-    fn never_restarts_while_a_network_player_owns_playback() {
-        assert_eq!(
-            decide(Conditions {
-                remote: true,
-                ..ready()
-            }),
-            Err(Hold::Remote)
-        );
+    fn a_renderer_playing_is_a_safe_moment_but_a_silent_one() {
+        for playback in [Playback::Paused, Playback::Unknown, Playback::Playing] {
+            for may_interrupt in [true, false] {
+                let outcome = decide(Conditions {
+                    remote: true,
+                    playback,
+                    may_interrupt,
+                    ..ready()
+                });
+                // Local audio running alongside the renderer still needs a mandate; that is
+                // the only case allowed to hold here.
+                if playback == Playback::Playing && !may_interrupt {
+                    assert_eq!(outcome, Err(Hold::MidSong), "a local song is still a song");
+                    continue;
+                }
+                assert_eq!(
+                    outcome,
+                    Ok(Resume::Paused),
+                    "{playback:?}/{may_interrupt} must install, and must come back silent"
+                );
+            }
+        }
+    }
+
+    /// The regression the old `Hold::Remote` created: it was the only hold with no backstop
+    /// behind it, so an evening of listening on the speaker meant an update that never landed
+    /// and no clock even running toward one.
+    ///
+    /// The settle period is not a fourth clock — while a renderer plays, the local engine
+    /// genuinely *is* paused, so `PAUSE_SETTLE` already governs this. That only holds if the
+    /// remote case leaves `ready` true, which is what this asserts.
+    #[test]
+    fn a_renderer_no_longer_freezes_every_clock() {
+        let remote = Conditions {
+            remote: true,
+            playback: Playback::Paused,
+            ..ready()
+        };
+        // `spawn` computes `ready` exactly this way.
+        let is_ready = decide(Conditions {
+            may_interrupt: true,
+            ..remote
+        })
+        .is_ok();
+        assert!(is_ready, "a countdown must be able to run during remote");
+
+        let mut w = Waiting::default();
+        for _ in 0..(PAUSE_SETTLE.as_secs() / TICK.as_secs() + 1) {
+            w.tick(is_ready, Playback::Paused, TICK);
+        }
+        assert!(w.paused >= PAUSE_SETTLE, "the settle is reached");
+    }
+
+    /// A click cannot seize the music back from the speaker.
+    ///
+    /// `force` used to clear `remote`, which was right while it was a thing to get *past*.
+    /// Now the flag only says "come back silent", and clearing it would make an explicit
+    /// install start local audio over a playing renderer.
+    #[test]
+    fn forcing_an_install_still_comes_back_silent_under_a_renderer() {
+        // Exactly what `try_install(force: true)` builds — note `remote` is left alone.
+        let forced = Conditions {
+            armed: true,
+            may_interrupt: true,
+            remote: true,
+            playback: Playback::Unknown,
+            ..ready()
+        };
+        assert_eq!(decide(forced), Ok(Resume::Paused));
     }
 
     /// The whole point: a paused app updates on its own, with no mandate to interrupt
@@ -889,6 +982,10 @@ mod tests {
 
     /// Only an observed pause may arm the silent restart. Stated as an exhaustive match so
     /// adding a fourth state forces a decision here rather than defaulting to silence.
+    ///
+    /// Scoped to local playback — `ready()` sets `remote: false`. A renderer owning playback
+    /// also comes back silent, for the opposite reason: not because someone asked for
+    /// silence, but because local audio must not start over the top of the speaker.
     #[test]
     fn only_a_real_pause_arms_a_silent_restart() {
         for playback in [Playback::Playing, Playback::Paused, Playback::Unknown] {
@@ -920,6 +1017,9 @@ mod tests {
     }
 
     /// Guard precedence: report the one a user would most want explained.
+    ///
+    /// An export outranks everything, including a renderer — it is protecting work rather
+    /// than comfort, and unlike playback it cannot be resumed from where it was cut.
     #[test]
     fn reports_the_most_important_hold_first() {
         let c = Conditions {
@@ -931,13 +1031,6 @@ mod tests {
             may_interrupt: false,
         };
         assert_eq!(decide(c), Err(Hold::Exporting));
-        assert_eq!(
-            decide(Conditions {
-                exporting: false,
-                ..c
-            }),
-            Err(Hold::Remote)
-        );
         assert_eq!(
             decide(Conditions {
                 exporting: false,
@@ -953,9 +1046,10 @@ mod tests {
     /// the export guard. Mirrors what `try_install(force: true)` builds.
     #[test]
     fn an_explicit_request_waives_only_the_courtesy_guards() {
+        // `remote` is deliberately absent: force no longer clears it, because it no longer
+        // blocks anything — it only requires the restart to be silent.
         let forced = |c: Conditions| Conditions {
             armed: true,
-            remote: false,
             may_interrupt: true,
             ..c
         };
