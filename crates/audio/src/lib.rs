@@ -14,9 +14,13 @@ mod player;
 // Pure DSP with no platform surface, so it is not gated: its tests are what stand between a
 // plausible-looking BPM and a wrong one, and they should run wherever `cargo test` does.
 mod tempo;
+// Also ungated: it is arithmetic that runs in the output callback, where a mistake is audible
+// and a sound card is the worst possible place to discover one.
+mod mixer;
 
 #[cfg(windows)]
 pub use media_foundation::Decoder;
+pub use mixer::{Curve, Pcm, Voice, MAX_CHANNELS};
 #[cfg(windows)]
 pub use player::{default_output_name, output_devices, Output, Player};
 pub use tempo::{Tempo, TempoTracker};
