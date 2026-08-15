@@ -7,6 +7,7 @@
 //! One thing genuinely improves: the old playhead had to *infer* paused state, because Pandora's
 //! DOM and audio elements misreported it. Here we own the player, so `paused` is authoritative.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,13 +65,24 @@ fn station_payload(stations: &[pandora::TunerStation]) -> serde_json::Value {
     )
 }
 
-/// Managed app state. `None` until sign-in succeeds.
+/// Managed app state. `engine` is `None` until sign-in succeeds.
 #[derive(Clone, Default)]
-pub struct NativeEngine(Arc<Mutex<Option<Arc<Engine>>>>);
+pub struct NativeEngine {
+    engine: Arc<Mutex<Option<Arc<Engine>>>>,
+    /// Latched "there are no usable credentials, so the UI must ask for some".
+    ///
+    /// The `engine://needs-login` event alone was not enough. On a fresh install
+    /// [`Engine::start_from_saved`] fails on an empty credential store in microseconds — a keyring
+    /// miss, no network — so the event was emitted long before the webview had evaluated
+    /// `main.ts` and registered its listener. A Tauri emit has no replay: the event went nowhere,
+    /// the sign-in card stayed hidden, and there was no way to log in at all. This latch lets the
+    /// UI *ask* on startup instead of only listening.
+    needs_login: Arc<AtomicBool>,
+}
 
 impl NativeEngine {
     async fn get(&self) -> Result<Arc<Engine>, String> {
-        self.0
+        self.engine
             .lock()
             .await
             .clone()
@@ -89,8 +101,20 @@ impl NativeEngine {
     /// stopping the audio rather than block the handover, and the process exit stops it a
     /// beat later anyway.
     pub fn try_engine(&self) -> Option<Arc<Engine>> {
-        self.0.try_lock().ok().and_then(|g| g.clone())
+        self.engine.try_lock().ok().and_then(|g| g.clone())
     }
+}
+
+/// Latch "we need credentials" and tell the UI.
+///
+/// Both halves are load-bearing. The event drives a UI that is already listening; the latch
+/// answers [`native_needs_login`] for one that is not yet. Emitting without latching is what made
+/// a fresh install unusable — see [`NativeEngine::needs_login`].
+fn require_login(app: &AppHandle) {
+    app.state::<NativeEngine>()
+        .needs_login
+        .store(true, Ordering::Relaxed);
+    let _ = app.emit("engine://needs-login", json!({}));
 }
 
 /// Start the engine from saved credentials at launch, or ask the UI for a login.
@@ -105,11 +129,11 @@ pub fn init(app: &AppHandle) {
             Ok((started, events)) => attach(&app, started, events, resume_paused).await,
             Err(engine::Error::NotSignedIn) => {
                 // Normal first run — not an error worth logging as one.
-                let _ = app.emit("engine://needs-login", json!({}));
+                require_login(&app);
             }
             Err(e) => {
                 eprintln!("[native] could not start from saved credentials: {e}");
-                let _ = app.emit("engine://needs-login", json!({}));
+                require_login(&app);
             }
         }
     });
@@ -125,7 +149,12 @@ async fn attach(
     resume_paused: bool,
 ) {
     let engine = Arc::new(started);
-    *app.state::<NativeEngine>().0.lock().await = Some(Arc::clone(&engine));
+    {
+        let state = app.state::<NativeEngine>();
+        *state.engine.lock().await = Some(Arc::clone(&engine));
+        // Whatever we were asking for, we have it now.
+        state.needs_login.store(false, Ordering::Relaxed);
+    }
 
     // The saved level and endpoint, applied before anything can be heard. The engine starts
     // every player at unity on the default device, so without this a restart — including the one
@@ -311,15 +340,32 @@ pub async fn native_sign_in(
 }
 
 #[tauri::command]
-pub async fn native_sign_out(state: tauri::State<'_, NativeEngine>) -> Result<(), String> {
+pub async fn native_sign_out(
+    app: AppHandle,
+    state: tauri::State<'_, NativeEngine>,
+) -> Result<(), String> {
     engine::credentials::clear().map_err(|e| e.to_string())?;
-    *state.0.lock().await = None;
+    *state.engine.lock().await = None;
+    // Bring the sign-in card straight back rather than leaving a signed-out app looking like a
+    // signed-in one that has stopped working. The UI is listening by now, but latch it too so a
+    // restart before signing back in still lands on the card.
+    require_login(&app);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn native_is_signed_in() -> Result<bool, String> {
     Ok(engine::credentials::exists())
+}
+
+/// Whether the UI should be showing the sign-in card, asked rather than waited for.
+///
+/// `false` while startup is still in flight — the engine may yet come up from saved credentials,
+/// and the `engine://needs-login` event covers the case where it does not. The startup query and
+/// the event are deliberately redundant: whichever happens second is a no-op.
+#[tauri::command]
+pub async fn native_needs_login(state: tauri::State<'_, NativeEngine>) -> Result<bool, String> {
+    Ok(state.needs_login.load(Ordering::Relaxed))
 }
 
 /// Station list for the picker: name plus the token playback needs.
