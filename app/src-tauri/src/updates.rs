@@ -2,11 +2,14 @@
 //!
 //! The download happens invisibly in the background; the *install* — which exits the
 //! process and relaunches it — waits for a moment that costs the listener nothing. There
-//! are two such moments, in order of preference:
+//! are three such moments, in order of preference:
 //!
 //! - **Paused.** The best one: nothing is being cut off, and the app is told to come back
 //!   paused (see [`arm_resume_paused`]) so the restart is inaudible. [`PAUSE_SETTLE`] keeps
 //!   a five-second pause from restarting the app.
+//! - **No engine at all** — signed out, sitting on the login card. There is no playback to
+//!   protect, so after [`UNKNOWN_SETTLE`] the install simply goes ahead. It comes back
+//!   *playing*, because being signed out is not somebody asking for silence.
 //! - **A track boundary.** Interrupting a running song is acceptable if we truly have to,
 //!   but always prefer waiting a couple of minutes for it to end. [`MAX_WAIT`] is a backstop
 //!   for when no boundary ever arrives.
@@ -59,6 +62,24 @@ const MAX_WAIT: Duration = Duration::from_secs(6 * 60);
 /// last-moment re-check in [`try_install`] is what covers the case that actually matters,
 /// which is playback running at the instant of the install.
 const PAUSE_SETTLE: Duration = Duration::from_secs(30);
+
+/// How long we must have had *no engine to ask* before installing anyway.
+///
+/// [`Playback::Unknown`] has two very different causes that look identical from here. One is
+/// a blink — the seconds between launch and sign-in finishing, or a momentarily contended
+/// engine mutex — where waiting is obviously right. The other is sitting on the login card
+/// signed out, which is not a blink at all: no engine will exist until somebody types a
+/// password, so "wait for playback to be genuinely stopped" waits forever.
+///
+/// That forever was a real bug. An update would stage, arm, announce itself on the badge and
+/// then sit there, because the loop had no arm for `Unknown` and neither [`Waiting`] clock
+/// advanced. Clicking the badge a second time installed it instantly — the click path always
+/// worked — so the update was only ever one click away, which is exactly what made it look
+/// like the app had simply stopped caring.
+///
+/// Long enough to outlast the login blink by a wide margin, short enough that "get it over
+/// with" is honest. Combined with [`TICK`] the real latency is up to about eighty seconds.
+const UNKNOWN_SETTLE: Duration = Duration::from_secs(60);
 
 /// How often the loop wakes to re-evaluate. Coarse on purpose.
 const TICK: Duration = Duration::from_secs(20);
@@ -149,6 +170,13 @@ struct Waiting {
     playing: Duration,
     /// The *current* pause, reset the moment playback resumes.
     paused: Duration,
+    /// The *current* stretch with no engine to ask, reset the moment one answers.
+    ///
+    /// A third clock rather than a change to the other two, deliberately. `playing` and
+    /// `paused` must keep holding their value across a blind spot, for the reason above; this
+    /// one measures the blind spot itself, which is a different question with a different
+    /// answer. Folding them together is what the v1.4.1 regression did.
+    unknown: Duration,
 }
 
 impl Waiting {
@@ -159,12 +187,17 @@ impl Waiting {
             (true, Playback::Playing) => {
                 self.playing += dt;
                 self.paused = Duration::ZERO;
+                self.unknown = Duration::ZERO;
             }
-            (true, Playback::Paused) => self.paused += dt,
-            // Neither clock may advance on a guess. Holding rather than resetting means a
-            // blind spot — a sign-out, a moment mid-login — does not quietly discard a
-            // legitimate wait that was already under way.
-            (true, Playback::Unknown) => {}
+            (true, Playback::Paused) => {
+                self.paused += dt;
+                self.unknown = Duration::ZERO;
+            }
+            // The other two clocks may not advance on a guess. Holding rather than resetting
+            // means a blind spot — a sign-out, a moment mid-login — does not quietly discard
+            // a legitimate wait that was already under way. Only `unknown` runs here, and it
+            // measures exactly how long the guessing has been going on.
+            (true, Playback::Unknown) => self.unknown += dt,
         }
     }
 }
@@ -329,7 +362,8 @@ struct Conditions {
     /// the track boundary, where a track having just ended is proof.
     playback: Playback,
     /// The caller has a mandate to cut off a running song: a track just ended, the backstop
-    /// expired, or the user asked for it. Without one, playing audio is left alone.
+    /// expired, the user asked for it, or there is demonstrably nothing to cut off because no
+    /// engine has existed for a sustained stretch. Without one, playing audio is left alone.
     may_interrupt: bool,
 }
 
@@ -581,6 +615,25 @@ pub async fn update_action(app: tauri::AppHandle) -> Result<Status, String> {
         && settings::get(&app).update_policy.downloads_automatically()
     {
         stage(&app).await?;
+        // …and having downloaded and armed it, a click that found nothing to protect should
+        // not need repeating.
+        //
+        // `staged` and `armed` were both read at the top, before this call made them true, so
+        // the "already armed → means now" branch could not have run for this click. On the
+        // login card that left the badge announcing an update that then sat still until the
+        // listener clicked a second time. Only the blind case is settled here: `Playing` must
+        // still wait for the boundary the badge promises, and `Paused` is the silent-restart
+        // path, which is [`PAUSE_SETTLE`]'s to schedule rather than a click's to force.
+        let playback = playback(&app).await;
+        if playback == Playback::Unknown {
+            try_install(
+                &app,
+                playback,
+                true,
+                "user asked, nothing to interrupt",
+                false,
+            );
+        }
     }
     Ok(status(&app))
 }
@@ -654,9 +707,22 @@ pub fn spawn(app: &tauri::AppHandle) {
                 Playback::Playing if waiting.playing >= MAX_WAIT => {
                     try_install(&app, playback, true, "backstop (no track boundary)", false);
                 }
-                // Unknown never triggers an install on its own. Waiting costs nothing: the
-                // boundary path picks it up as soon as anything is playing, and the paused
-                // path as soon as playback is genuinely stopped.
+                // No engine for a sustained stretch: signed out, sitting on the login card.
+                // The mandate is real rather than assumed — nothing is playing *because there
+                // is nothing that can play* — so this passes `may_interrupt`, and `decide`
+                // turns it into a restart that comes back playing rather than a silent one.
+                Playback::Unknown if waiting.unknown >= UNKNOWN_SETTLE => {
+                    try_install(
+                        &app,
+                        playback,
+                        true,
+                        "signed out, nothing to interrupt",
+                        false,
+                    );
+                }
+                // A blind spot that has not lasted long enough to be anything but the gap
+                // around sign-in. The boundary path picks it up as soon as anything plays,
+                // and the paused path as soon as playback is genuinely stopped.
                 _ => {}
             }
         }
@@ -991,10 +1057,11 @@ mod tests {
     /// Nothing staged means nothing to wait for — including after a failed install put the
     /// bytes back, which starts the clocks over rather than resuming a spent countdown.
     #[test]
-    fn losing_the_staged_update_resets_both_clocks() {
+    fn losing_the_staged_update_resets_every_clock() {
         let mut w = Waiting::default();
         w.tick(true, Playback::Playing, TICK);
         w.tick(true, Playback::Paused, TICK);
+        w.tick(true, Playback::Unknown, TICK);
         w.tick(false, Playback::Paused, TICK);
         assert_eq!(w, Waiting::default());
     }
@@ -1019,5 +1086,92 @@ mod tests {
         w.tick(true, Playback::Playing, TICK);
         assert_eq!(w.playing, TICK);
         assert!(w.playing < MAX_WAIT);
+    }
+
+    /// The bug this clock exists for.
+    ///
+    /// Sitting on the login card with an update staged and armed, the badge said "updating
+    /// to vX" and then nothing happened — for as long as you cared to wait. There was no
+    /// `Unknown` arm in the loop and neither other clock advanced, so the countdown that the
+    /// badge was implicitly promising did not exist. Clicking a second time installed
+    /// instantly, which is what made it look like the app had simply forgotten.
+    #[test]
+    fn sitting_signed_out_eventually_installs() {
+        let mut w = Waiting::default();
+        let mut ticks = 0;
+        while w.unknown < UNKNOWN_SETTLE {
+            w.tick(true, Playback::Unknown, TICK);
+            ticks += 1;
+            assert!(ticks < 100, "the signed-out wait never completes");
+        }
+        assert!(
+            Duration::from_secs(ticks * TICK.as_secs()) <= Duration::from_secs(90),
+            "'get the update over with' should not mean a minute and a half"
+        );
+
+        // And it must go ahead rather than come back silent: nobody paused anything.
+        assert_eq!(
+            decide(Conditions {
+                playback: Playback::Unknown,
+                may_interrupt: true,
+                ..ready()
+            }),
+            Ok(Resume::Playing)
+        );
+    }
+
+    /// The blink this clock must *not* fire on.
+    ///
+    /// Every launch spends a few seconds with no engine while sign-in finishes. Restarting
+    /// the app there would be the update interrupting the one thing the listener is actually
+    /// waiting for, so a blind spot that resolves must leave nothing banked behind it.
+    #[test]
+    fn the_login_blink_does_not_restart_the_app() {
+        let mut w = Waiting::default();
+        w.tick(true, Playback::Unknown, TICK);
+        assert!(w.unknown < UNKNOWN_SETTLE, "one tick must not be enough");
+
+        // Sign-in lands and music starts: the blind stretch is over and did not count.
+        w.tick(true, Playback::Playing, TICK);
+        assert_eq!(w.unknown, Duration::ZERO);
+
+        // Same when it resolves to a genuine pause rather than playback.
+        let mut w = Waiting::default();
+        w.tick(true, Playback::Unknown, TICK);
+        w.tick(true, Playback::Paused, TICK);
+        assert_eq!(w.unknown, Duration::ZERO);
+
+        assert!(
+            UNKNOWN_SETTLE > TICK,
+            "a single blind sample must never be enough to restart the app"
+        );
+        assert!(
+            UNKNOWN_SETTLE < MAX_WAIT,
+            "an app with nothing to interrupt should not wait longer than one that has"
+        );
+    }
+
+    /// The v1.4.1 invariant, restated against the new clock.
+    ///
+    /// `unknown` exists precisely so that "we cannot tell" stops being folded into "paused".
+    /// Time spent blind must therefore leave the pause clock alone — otherwise a signed-out
+    /// stretch would bank `PAUSE_SETTLE` and arm the silent restart all over again.
+    #[test]
+    fn blind_time_never_leaks_into_the_pause_clock() {
+        let mut w = Waiting::default();
+        for _ in 0..20 {
+            w.tick(true, Playback::Unknown, TICK);
+        }
+        assert!(w.unknown >= PAUSE_SETTLE, "the blind clock did run");
+        assert_eq!(
+            w.paused,
+            Duration::ZERO,
+            "being signed out is not being paused"
+        );
+        assert_eq!(
+            w.playing,
+            Duration::ZERO,
+            "and it is certainly not being played"
+        );
     }
 }

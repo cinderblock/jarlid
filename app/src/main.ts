@@ -202,8 +202,12 @@ function highlightLine(position: number) {
 async function onNowPlaying(np: NowPlaying) {
   lastLocalNp = np;
   if (remoteMode) return; // remote overlay owns the screen; re-rendered on exit
+  const wasSignedOut = isSignedOut();
   loginHint.hidden = true;
   player.hidden = false;
+  // Signing in changes what the update badge should say, and does it without any playhead
+  // event to notice it by. Only on the transition — this runs on every track.
+  if (wasSignedOut) renderVersion();
 
   titleInner.textContent = np.title || "—";
   titleInner.style.transform = "translateX(0)";
@@ -662,6 +666,16 @@ interface UpdateStatus {
 }
 let status: UpdateStatus = { available: null, staged: false, armed: false, policy: "afterSong" };
 
+/// Whether the login card is up — which is exactly "there is no engine to ask what playback
+/// is doing", the frontend's version of the updater's `Playback::Unknown`.
+///
+/// Read off the card rather than kept in a parallel flag: `showLogin` and `onNowPlaying`
+/// already move it in lockstep with whether an engine exists, and a second copy of that
+/// state is a second thing that can be wrong.
+function isSignedOut(): boolean {
+  return !loginHint.hidden;
+}
+
 function renderVersion() {
   const v = status.available;
   versionEl.classList.toggle("update", !!v);
@@ -679,8 +693,18 @@ function renderVersion() {
     versionEl.textContent = `v${v} ready to install`;
     return;
   }
-  // Armed: say when. Paused is the moment the updater prefers — it installs within about a
-  // minute and comes back paused — so "after this song" would be a lie there.
+  // Armed: say when. The three cases match the updater's own, and the third is the one this
+  // used to get wrong. `lastPlayhead` starts out `paused: true` and no playhead events arrive
+  // while signed out, so a login-card session read as "paused" and the badge promised a
+  // silent install that the updater had no intention of performing — the same conflation of
+  // "cannot tell" with "paused" that v1.4.1 fixed on the Rust side.
+  if (isSignedOut()) {
+    // Nothing to wait for: no song to finish, no pause to respect.
+    versionEl.textContent = `updating to v${v} shortly`;
+    return;
+  }
+  // Paused is the moment the updater prefers — it installs within about a minute and comes
+  // back paused — so "after this song" would be a lie there.
   versionEl.textContent = lastPlayhead.paused
     ? `updating to v${v} while paused`
     : `updating to v${v} after this song`;
@@ -690,7 +714,9 @@ attachTip(versionEl, () => {
   const v = status.available;
   if (!v) return "Click to check for updates";
   if (!status.staged) return `Click to download v${v}`;
-  if (!status.armed) return "Click to install after this song";
+  if (!status.armed) {
+    return isSignedOut() ? "Click to install now" : "Click to install after this song";
+  }
   return "Click to install now instead of waiting";
 });
 
@@ -1174,6 +1200,9 @@ listen<{ thumbUp: boolean; thumbDown: boolean }>("engine://thumbs", (e) =>
 function showLogin() {
   player.hidden = true;
   loginHint.hidden = false;
+  // Signing out is the other transition the badge has to hear about: with no engine behind
+  // it, an armed update installs shortly rather than waiting for a song or a pause.
+  renderVersion();
 }
 
 // Ask as well as listen, and in that order.
