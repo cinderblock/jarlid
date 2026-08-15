@@ -233,11 +233,26 @@ impl crate::Pcm for Prefetch {
 /// Sent through a lock-free queue rather than a mutex for the usual reason: the callback may not
 /// wait for anything. Everything expensive — cloning the `Arc`, building the voice — happens on
 /// the sending side, so the callback only moves a value out of a queue.
-struct Handoff {
-    source: Prefetch,
-    voice: Voice,
-    /// What the outgoing track should do while this fades in.
-    fade_frames: u64,
+enum Handoff {
+    /// Fade the next track in over the top of this one, played from memory.
+    Blend {
+        source: Prefetch,
+        voice: Voice,
+        /// What the outgoing track should do while this fades in.
+        fade_frames: u64,
+    },
+    /// Re-point the primary voice at a new stream: the incoming track, now live.
+    ///
+    /// This is what makes the end of a blend gapless. Replacing the whole player instead would
+    /// mean a fresh output stream, and the 200-400 ms it takes to open and seek one would land
+    /// in the middle of a song rather than in the silence between two.
+    Primary {
+        consumer: rtrb::Consumer<i16>,
+        voice: Voice,
+        /// Long enough to hide a seek that did not land exactly where it was asked, short
+        /// enough not to be heard as a fade.
+        cross_frames: u64,
+    },
 }
 
 /// Plays one track. Create a [`Player`] per track; the caller sequences them.
@@ -260,8 +275,136 @@ pub struct Player {
     /// the `Arc` is never the last one. Freeing six megabytes on the audio thread would be a
     /// dropout with no obvious cause.
     _blend_held: Option<Arc<Vec<i16>>>,
+    /// Spent ring buffers coming back from the callback, to be dropped on this side.
+    retire_rx: rtrb::Consumer<rtrb::Consumer<i16>>,
+    /// What the counters read when the primary was last re-pointed, and where in the new track
+    /// that was.
+    ///
+    /// The counters are never reset. Zeroing them at a handover is a race from either side — the
+    /// incoming decode thread is already filling the new queue before the callback processes the
+    /// swap, so a reset lands after some increments and `queued`, decremented with `fetch_sub`,
+    /// can be driven below zero and wrap. Subtracting a base has no such window, and `drift`
+    /// stays honest because every term shifts by the same amount.
+    base_frames: u64,
+    base_decoded: u64,
+    track_start: Duration,
     // Dropping the stream stops the device, so it must outlive playback.
     _stream: cpal::Stream,
+}
+
+/// Spawn the thread that keeps the queue topped up for one track.
+///
+/// Extracted so a blend handover can start a second one against the same player. This is
+/// the most delicate loop in the app — see the note about never discarding decoded samples
+/// — and having two copies of it drift apart is a worse risk than the indirection.
+fn spawn_decode(
+    mut decoder: Decoder,
+    first_chunk: Option<Vec<u8>>,
+    decode_shared: Arc<Shared>,
+    mut producer: rtrb::Producer<i16>,
+    format: Format,
+) {
+    std::thread::spawn(move || {
+        // Held for the life of the thread: this is the thread whose starvation is audible.
+        let _priority = AudioPriority::raise();
+
+        // The chunk already decoded to establish the true start position; play it, don't
+        // re-read it.
+        let Some(first) = first_chunk else {
+            // Nothing in the stream at all — an ending, not a fault.
+            decode_shared
+                .decoder_finished
+                .store(true, Ordering::Relaxed);
+            return;
+        };
+        let mut pending: Vec<i16> = first
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let mut cursor = 0usize;
+
+        // Tempo is measured here rather than looked up: Pandora's track model carries no BPM,
+        // key or any other musicological field, so the only source of the number is the audio
+        // itself. This thread is the right place for it — it sees every decoded sample exactly
+        // once and in order, and unlike the output callback it is allowed to think. The work
+        // is a few milliseconds once a second, against a decode-stall watchdog measured in
+        // seconds.
+        let mut tempo = crate::TempoTracker::new(format.sample_rate, format.channels);
+
+        loop {
+            if decode_shared.stopped.load(Ordering::Relaxed) {
+                return;
+            }
+
+            // Drain whatever is left over before decoding anything new.
+            if cursor < pending.len() {
+                let mut pushed = 0u64;
+                while cursor < pending.len() {
+                    if producer.push(pending[cursor]).is_err() {
+                        break;
+                    }
+                    cursor += 1;
+                    pushed += 1;
+                }
+                if pushed > 0 {
+                    decode_shared.queued.fetch_add(pushed, Ordering::Relaxed);
+                    decode_shared
+                        .total_decoded
+                        .fetch_add(pushed, Ordering::Relaxed);
+                }
+                if cursor < pending.len() {
+                    // Still full: wait for the callback to consume, then resume mid-buffer.
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                continue;
+            }
+
+            pending.clear();
+            cursor = 0;
+
+            match decoder.next_chunk() {
+                Ok(Some(chunk)) => {
+                    pending.extend(
+                        chunk
+                            .chunks_exact(2)
+                            .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
+                    );
+                    // `pending` was cleared immediately above, so this is exactly the new
+                    // samples — the tracker must see each one once, and the drain loop above
+                    // can revisit `pending` many times before it empties.
+                    tempo.push(&pending);
+                    if let Some(measured) = tempo.tempo() {
+                        decode_shared
+                            .bpm
+                            .store(measured.bpm.to_bits(), Ordering::Relaxed);
+                        decode_shared
+                            .bpm_confidence
+                            .store(measured.confidence.to_bits(), Ordering::Relaxed);
+                        decode_shared
+                            .beat_phase
+                            .store(measured.beat_phase.to_bits(), Ordering::Relaxed);
+                    }
+                }
+                // End of track: stop producing and let the queue drain so the ending isn't
+                // clipped.
+                Ok(None) => {
+                    decode_shared
+                        .decoder_finished
+                        .store(true, Ordering::Relaxed);
+                    return;
+                }
+                // A decode error is *not* an ending, and conflating the two silently ate the
+                // rest of the song: the queue drained, `is_finished()` went true, and the
+                // engine advanced as though the track had played out. Flagged separately so
+                // the owner can re-open and resume where the listener actually is.
+                Err(e) => {
+                    eprintln!("decode stopped: {e}");
+                    decode_shared.decode_error.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+    });
 }
 
 impl Player {
@@ -331,7 +474,7 @@ impl Player {
         let capacity = format.sample_rate as usize
             * format.channels as usize
             * TARGET_BUFFER.as_secs() as usize;
-        let (mut producer, mut consumer) = rtrb::RingBuffer::<i16>::new(capacity);
+        let (producer, mut consumer) = rtrb::RingBuffer::<i16>::new(capacity);
 
         // Seed both counters, not just the position: `drift()` is `decoded - position - buffered`,
         // so seeding the position alone would leave it saturated at zero and silently retire the
@@ -365,108 +508,7 @@ impl Player {
         // not fit before fetching the next chunk, which both lost audio and — when the dropped
         // count was odd — permanently shifted left/right interleaving, garbling everything after
         // it. Anything that doesn't fit stays in `pending` until there is room.
-        let decode_shared = Arc::clone(&shared);
-        std::thread::spawn(move || {
-            // Held for the life of the thread: this is the thread whose starvation is audible.
-            let _priority = AudioPriority::raise();
-
-            // The chunk already decoded to establish the true start position; play it, don't
-            // re-read it.
-            let Some(first) = first_chunk else {
-                // Nothing in the stream at all — an ending, not a fault.
-                decode_shared
-                    .decoder_finished
-                    .store(true, Ordering::Relaxed);
-                return;
-            };
-            let mut pending: Vec<i16> = first
-                .chunks_exact(2)
-                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
-                .collect();
-            let mut cursor = 0usize;
-
-            // Tempo is measured here rather than looked up: Pandora's track model carries no BPM,
-            // key or any other musicological field, so the only source of the number is the audio
-            // itself. This thread is the right place for it — it sees every decoded sample exactly
-            // once and in order, and unlike the output callback it is allowed to think. The work
-            // is a few milliseconds once a second, against a decode-stall watchdog measured in
-            // seconds.
-            let mut tempo = crate::TempoTracker::new(format.sample_rate, format.channels);
-
-            loop {
-                if decode_shared.stopped.load(Ordering::Relaxed) {
-                    return;
-                }
-
-                // Drain whatever is left over before decoding anything new.
-                if cursor < pending.len() {
-                    let mut pushed = 0u64;
-                    while cursor < pending.len() {
-                        if producer.push(pending[cursor]).is_err() {
-                            break;
-                        }
-                        cursor += 1;
-                        pushed += 1;
-                    }
-                    if pushed > 0 {
-                        decode_shared.queued.fetch_add(pushed, Ordering::Relaxed);
-                        decode_shared
-                            .total_decoded
-                            .fetch_add(pushed, Ordering::Relaxed);
-                    }
-                    if cursor < pending.len() {
-                        // Still full: wait for the callback to consume, then resume mid-buffer.
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    continue;
-                }
-
-                pending.clear();
-                cursor = 0;
-
-                match decoder.next_chunk() {
-                    Ok(Some(chunk)) => {
-                        pending.extend(
-                            chunk
-                                .chunks_exact(2)
-                                .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
-                        );
-                        // `pending` was cleared immediately above, so this is exactly the new
-                        // samples — the tracker must see each one once, and the drain loop above
-                        // can revisit `pending` many times before it empties.
-                        tempo.push(&pending);
-                        if let Some(measured) = tempo.tempo() {
-                            decode_shared
-                                .bpm
-                                .store(measured.bpm.to_bits(), Ordering::Relaxed);
-                            decode_shared
-                                .bpm_confidence
-                                .store(measured.confidence.to_bits(), Ordering::Relaxed);
-                            decode_shared
-                                .beat_phase
-                                .store(measured.beat_phase.to_bits(), Ordering::Relaxed);
-                        }
-                    }
-                    // End of track: stop producing and let the queue drain so the ending isn't
-                    // clipped.
-                    Ok(None) => {
-                        decode_shared
-                            .decoder_finished
-                            .store(true, Ordering::Relaxed);
-                        return;
-                    }
-                    // A decode error is *not* an ending, and conflating the two silently ate the
-                    // rest of the song: the queue drained, `is_finished()` went true, and the
-                    // engine advanced as though the track had played out. Flagged separately so
-                    // the owner can re-open and resume where the listener actually is.
-                    Err(e) => {
-                        eprintln!("decode stopped: {e}");
-                        decode_shared.decode_error.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                }
-            }
-        });
+        spawn_decode(decoder, first_chunk, Arc::clone(&shared), producer, format);
 
         let callback_shared = Arc::clone(&shared);
         let channels = config.channels() as u64;
@@ -476,6 +518,9 @@ impl Player {
         // type, so this moves a whole prepared voice across without the callback waiting on a
         // lock or building anything itself.
         let (blend_tx, mut blend_rx) = rtrb::RingBuffer::<Handoff>::new(1);
+        // Spent queues travel back out. Two slots so a handover never blocks on the control
+        // thread not having drained yet.
+        let (mut retire_tx, retire_rx) = rtrb::RingBuffer::<rtrb::Consumer<i16>>::new(2);
 
         // A stream error means the callback stops being invoked — no more audio, and the queue
         // stops draining, so `is_finished()` would never fire either. Record it so the owner can
@@ -523,9 +568,45 @@ impl Player {
 
                     // A blend that has been handed over starts on this callback. Popping a queue
                     // is the whole cost here; the voice and the `Arc` were built by the sender.
-                    if let Ok(handoff) = blend_rx.pop() {
-                        voice.fade_to(0.0, handoff.fade_frames, crate::Curve::EqualPower);
-                        blend = Some((handoff.voice, handoff.source));
+                    match blend_rx.pop() {
+                        Ok(Handoff::Blend {
+                            source,
+                            voice: incoming,
+                            fade_frames,
+                        }) => {
+                            voice.fade_to(0.0, fade_frames, crate::Curve::EqualPower);
+                            blend = Some((incoming, source));
+                        }
+                        Ok(Handoff::Primary {
+                            consumer: fresh,
+                            voice: primary,
+                            cross_frames,
+                        }) => {
+                            // The spent queue must leave by the other door. `rtrb` frees the
+                            // shared buffer when both halves are gone, and the producer half went
+                            // with the decode thread that finished the outgoing track — so
+                            // dropping this here would deallocate megabytes on the audio thread.
+                            let spent = std::mem::replace(&mut consumer, fresh);
+                            let _ = retire_tx.push(spent);
+                            voice = primary;
+                            // Hand over from memory to the live stream. Both are the same track at
+                            // the same instant, so this is only wide enough to cover a seek that
+                            // landed a little off.
+                            if let Some((incoming, _)) = blend.as_mut() {
+                                incoming.fade_to(0.0, cross_frames, crate::Curve::EqualPower);
+                            }
+                            callback_shared.blend_done.store(false, Ordering::Relaxed);
+                        }
+                        Err(_) => {}
+                    }
+
+                    // Once the incoming voice has gone quiet its buffer is finished with. Dropping
+                    // it here is only an `Arc` decrement — the player holds the last reference —
+                    // and leaving it in place would keep mixing a source that has run dry.
+                    if let Some((incoming, _)) = blend.as_ref() {
+                        if incoming.faded() && incoming.gain() <= 0.0 {
+                            blend = None;
+                        }
                     }
 
                     let read_before = voice.frames_read();
@@ -679,6 +760,10 @@ impl Player {
             started_at,
             blend_tx,
             _blend_held: None,
+            retire_rx,
+            base_frames: 0,
+            base_decoded: 0,
+            track_start: Duration::ZERO,
             device_name,
             _stream: stream,
         })
@@ -710,8 +795,13 @@ impl Player {
     /// Derived from frames delivered to the device, so it stays honest even though decoding runs
     /// well ahead — which is exactly what synced lyrics need.
     pub fn position(&self) -> Duration {
-        let frames = self.shared.frames_played.load(Ordering::Relaxed);
-        Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
+        let frames = self
+            .shared
+            .frames_played
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.base_frames);
+        self.track_start
+            + Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
     }
 
     pub fn set_paused(&self, paused: bool) {
@@ -790,9 +880,14 @@ impl Player {
     /// being dropped, which sounds like the track playing too fast and, if an odd number is lost,
     /// permanently swaps the stereo channels. See [`Player::drift`].
     pub fn decoded(&self) -> Duration {
-        let samples = self.shared.total_decoded.load(Ordering::Relaxed);
+        let samples = self
+            .shared
+            .total_decoded
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.base_decoded);
         let frames = samples / self.format.channels.max(1) as u64;
-        Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
+        self.track_start
+            + Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
     }
 
     /// How far `decoded()` has run ahead of what has been played plus what is still queued.
@@ -843,7 +938,7 @@ impl Player {
         voice.glide_rate_to(rate, 0);
         voice.fade_to(1.0, frames, crate::Curve::EqualPower);
 
-        let handoff = Handoff {
+        let handoff = Handoff::Blend {
             source: Prefetch {
                 pcm: Arc::clone(&pcm),
                 at: 0,
@@ -862,6 +957,74 @@ impl Player {
     /// True once the incoming track has fully faded in and the outgoing one is silent.
     pub fn blend_done(&self) -> bool {
         self.shared.blend_done.load(Ordering::Relaxed)
+    }
+
+    /// Take the blend over with a live stream, and become that track's player.
+    ///
+    /// Call once [`Player::blend_done`] is true and the outgoing track has finished. `url` is the
+    /// incoming track and `at` is where in it to pick up — normally [`Player::blend_position`],
+    /// which says how much of it has already been heard from memory. Returns where the seek
+    /// **actually** landed, which is not always where it was aimed.
+    ///
+    /// This re-points the primary voice instead of replacing the player, and that is the whole
+    /// point: building a fresh player would mean a fresh output stream, and the couple of hundred
+    /// milliseconds it takes to open and seek one would land in the middle of a song rather than
+    /// in the silence between two.
+    ///
+    /// Afterwards every accessor describes the new track — [`Player::position`] counts from its
+    /// start, not from the blend.
+    pub fn continue_with(&mut self, url: &str, at: Duration, cross: Duration) -> Result<Duration> {
+        // Anything the callback has finished with, dropped here rather than there.
+        while self.retire_rx.pop().is_ok() {}
+
+        let mut decoder = Decoder::open_at(url, Some(self.format))?;
+        if !at.is_zero() {
+            let _ = decoder.seek(at);
+        }
+        // Same reasoning as `play_on`: decode one chunk up front so the clock is seeded from
+        // where the seek landed rather than where it was aimed.
+        let first_chunk = decoder.next_chunk()?;
+        let landed = decoder.last_timestamp().unwrap_or(Duration::ZERO);
+
+        // Read the counters before the incoming decode thread can touch them. Safe from this
+        // thread precisely because the outgoing one has already exited — a finished track is the
+        // only state this is ever called in.
+        self.base_frames = self.shared.frames_played.load(Ordering::Relaxed);
+        self.base_decoded = self.shared.total_decoded.load(Ordering::Relaxed);
+        self.track_start = landed;
+
+        // The old track's ending is not the new one's. Cleared before the thread that will set
+        // them again for real.
+        self.shared.decoder_finished.store(false, Ordering::Relaxed);
+        self.shared.decode_error.store(false, Ordering::Relaxed);
+
+        let capacity = self.format.sample_rate as usize
+            * self.format.channels as usize
+            * TARGET_BUFFER.as_secs() as usize;
+        let (producer, consumer) = rtrb::RingBuffer::<i16>::new(capacity);
+        spawn_decode(
+            decoder,
+            first_chunk,
+            Arc::clone(&self.shared),
+            producer,
+            self.format,
+        );
+
+        let cross_frames = (cross.as_secs_f64() * self.format.sample_rate as f64) as u64;
+        let mut voice = Voice::new(self.format.channels as usize, 0.0);
+        voice.fade_to(1.0, cross_frames, crate::Curve::EqualPower);
+
+        self.blend_tx
+            .push(Handoff::Primary {
+                consumer,
+                voice,
+                cross_frames,
+            })
+            .map_err(|_| Error::Unsupported("the handoff queue is full".into()))?;
+
+        // The prefetched audio is finished with once the cross completes; the callback drops its
+        // reference, and this releases the last one when the player goes.
+        Ok(landed)
     }
 
     /// How far into the incoming track the blend has played.
