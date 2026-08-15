@@ -1101,23 +1101,31 @@ function showLogin() {
   loginHint.hidden = false;
 }
 
-listen("engine://needs-login", () => {
-  // Authoritative now: the native engine emits this only when the credential store is empty or
-  // the saved credentials were rejected. The old `everPlayed` guard existed because Pandora's
-  // page fired spurious login signals during its initial load; there is no page any more.
-  showLogin();
-});
-
-// Ask as well as listen. On a fresh install the engine gives up on the empty credential store in
-// microseconds — before this module has been evaluated at all — so the event above was reliably
-// emitted into a webview with no listener yet and dropped. Nothing else unhides the card, which
-// left a new machine with genuinely no way to sign in. Asking cannot race: the backend latches
-// the state, and whichever of the two arrives second just sets an already-set flag.
-invoke<boolean>("native_needs_login")
-  .then((needed) => {
-    if (needed) showLogin();
-  })
-  .catch(() => {});
+// Ask as well as listen, and in that order.
+//
+// Listening alone was not enough. On a fresh install the engine gives up on the empty credential
+// store in microseconds — before this module has been evaluated at all — so `engine://needs-login`
+// was reliably emitted into a webview with no listener yet, and a Tauri emit has no replay. The
+// event went nowhere, nothing else unhides the card, and a new machine had no way to sign in.
+// Asking covers that, because the backend latches the state rather than only announcing it.
+//
+// The order is what covers the other direction. `listen` registers asynchronously, so querying
+// first would leave a window where the latch is set after the read but before the listener
+// exists — missed by both halves. Registering first means anything the query is too early to see,
+// the event still catches. The two are redundant on purpose; whichever lands second is a no-op.
+//
+// Authoritative either way: the engine reports this only when the credential store is empty or the
+// saved credentials were rejected. The old `everPlayed` guard existed because Pandora's page fired
+// spurious login signals during its initial load; there is no page any more.
+void (async () => {
+  try {
+    await listen("engine://needs-login", showLogin);
+    if (await invoke<boolean>("native_needs_login")) showLogin();
+  } catch {
+    // Not worth a toast. If the query failed the listener is still registered, and the card is
+    // reachable the moment the engine says so.
+  }
+})();
 
 // ---- toast --------------------------------------------------------------
 // Engine problems used to be written into #login-error, which lives inside the sign-in card and
