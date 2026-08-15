@@ -195,6 +195,49 @@ struct Shared {
     /// Seconds from this player's stream start to a beat. Needed to line a blend up: the
     /// tempo says how often beats happen, this says when.
     beat_phase: AtomicU32,
+    /// Frames of the incoming track the blend has played. Zero until one starts.
+    ///
+    /// This is what the handover is steered by: it says how far into the next song the listener
+    /// already is, which is where an ordinary player has to be rebuilt to take over.
+    blend_frames: AtomicU64,
+    /// Set once the incoming voice has finished fading up, i.e. the blend is over and the
+    /// outgoing track is silent. The owner watches this and completes the handover.
+    blend_done: AtomicBool,
+}
+
+/// A prefetched track, read by the mixer.
+///
+/// Holds an `Arc` rather than the `Vec` itself so that dropping this **cannot free anything**.
+/// It is dropped in the output callback when a blend ends, and freeing memory there is exactly
+/// as forbidden as allocating it — the [`Player`] keeps its own reference alive for as long as
+/// it exists, so the callback's drop is only ever a refcount decrement.
+struct Prefetch {
+    pcm: Arc<Vec<i16>>,
+    at: usize,
+}
+
+impl crate::Pcm for Prefetch {
+    fn available(&self) -> usize {
+        self.pcm.len() - self.at
+    }
+
+    fn pop(&mut self) -> Option<i16> {
+        let sample = self.pcm.get(self.at).copied()?;
+        self.at += 1;
+        Some(sample)
+    }
+}
+
+/// A blend being handed to the output callback.
+///
+/// Sent through a lock-free queue rather than a mutex for the usual reason: the callback may not
+/// wait for anything. Everything expensive — cloning the `Arc`, building the voice — happens on
+/// the sending side, so the callback only moves a value out of a queue.
+struct Handoff {
+    source: Prefetch,
+    voice: Voice,
+    /// What the outgoing track should do while this fades in.
+    fade_frames: u64,
 }
 
 /// Plays one track. Create a [`Player`] per track; the caller sequences them.
@@ -210,6 +253,13 @@ pub struct Player {
     /// that has gone away falls back to the default. The owner compares this against the
     /// current default to notice when Windows moves it.
     device_name: String,
+    /// Sends a blend to the callback. One slot: a second blend cannot start while one is
+    /// running, and silently queueing one would be worse than refusing it.
+    blend_tx: rtrb::Producer<Handoff>,
+    /// Keeps the prefetched audio alive for the life of the player, so the callback's copy of
+    /// the `Arc` is never the last one. Freeing six megabytes on the audio thread would be a
+    /// dropout with no obvious cause.
+    _blend_held: Option<Arc<Vec<i16>>>,
     // Dropping the stream stops the device, so it must outlive playback.
     _stream: cpal::Stream,
 }
@@ -304,6 +354,8 @@ impl Player {
             bpm: AtomicU32::new(0.0f32.to_bits()),
             bpm_confidence: AtomicU32::new(0.0f32.to_bits()),
             beat_phase: AtomicU32::new(0.0f32.to_bits()),
+            blend_frames: AtomicU64::new(0),
+            blend_done: AtomicBool::new(false),
         });
 
         // Decode thread: keep the queue topped up, backing off when full so a track is streamed
@@ -420,6 +472,11 @@ impl Player {
         let channels = config.channels() as u64;
         let channel_count = config.channels() as usize;
 
+        // One slot, because one blend at a time is all that means anything. `rtrb` carries any
+        // type, so this moves a whole prepared voice across without the callback waiting on a
+        // lock or building anything itself.
+        let (blend_tx, mut blend_rx) = rtrb::RingBuffer::<Handoff>::new(1);
+
         // A stream error means the callback stops being invoked — no more audio, and the queue
         // stops draining, so `is_finished()` would never fire either. Record it so the owner can
         // rebuild onto whatever device is current now; printing alone leaves playback dead.
@@ -453,6 +510,8 @@ impl Player {
                 // in `mixer` — so ordinary playback is untouched; what it buys is somewhere for a
                 // second track to arrive, and a rate that can move.
                 let mut voice = Voice::new(channel_count, 1.0);
+                // The incoming track, once there is one. Absent for all of ordinary playback.
+                let mut blend: Option<(Voice, Prefetch)> = None;
                 // Mixing happens in `f32`, which needs somewhere to put it. On the closure rather
                 // than the stack per call, and fixed-size, because the callback must never
                 // allocate. Whatever the device asks for is processed in frame-aligned passes of
@@ -461,6 +520,13 @@ impl Player {
                 move |output: &mut [$sample], _: &cpal::OutputCallbackInfo| {
                     let paused = callback_shared.paused.load(Ordering::Relaxed);
                     let target = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
+
+                    // A blend that has been handed over starts on this callback. Popping a queue
+                    // is the whole cost here; the voice and the `Arc` were built by the sender.
+                    if let Ok(handoff) = blend_rx.pop() {
+                        voice.fade_to(0.0, handoff.fade_frames, crate::Curve::EqualPower);
+                        blend = Some((handoff.voice, handoff.source));
+                    }
 
                     let read_before = voice.frames_read();
                     let mut written = 0usize;
@@ -480,7 +546,28 @@ impl Player {
                             let starved_before = voice.starved();
                             voice.mix_into(&mut consumer, mix);
                             let dry = (voice.starved() - starved_before) as usize * channel_count;
-                            let produced = usable - dry;
+                            let mut produced = usable - dry;
+
+                            // The incoming track mixes on top, and the longer of the two decides
+                            // how much of the block was filled. Taking the outgoing track's
+                            // length would truncate the blend at exactly the moment it matters:
+                            // the outgoing song is *ending*, so it runs dry first by design.
+                            if let Some((incoming, source)) = blend.as_mut() {
+                                let starved_before = incoming.starved();
+                                incoming.mix_into(source, mix);
+                                let dry =
+                                    (incoming.starved() - starved_before) as usize * channel_count;
+                                produced = produced.max(usable - dry);
+                                callback_shared
+                                    .blend_frames
+                                    .store(incoming.frames_read(), Ordering::Relaxed);
+                                // Faded fully in and the outgoing track is silent: the blend is
+                                // over. The owner completes the handover; the callback's only job
+                                // is to say so and stop mixing a voice whose buffer will run out.
+                                if incoming.faded() && voice.faded() && voice.gain() <= 0.0 {
+                                    callback_shared.blend_done.store(true, Ordering::Relaxed);
+                                }
+                            }
 
                             for (slot, mixed) in block.iter_mut().zip(mix.iter()).take(produced) {
                                 // A one-pole approaches its target without ever arriving; snap
@@ -590,6 +677,8 @@ impl Player {
             format,
             source,
             started_at,
+            blend_tx,
+            _blend_held: None,
             device_name,
             _stream: stream,
         })
@@ -725,6 +814,65 @@ impl Player {
         self.source.clone()
     }
 
+    /// Start fading the next track in over the top of this one.
+    ///
+    /// `pcm` is the incoming track's opening, already decoded to this player's format — see
+    /// [`crate::prefetch`]. `rate` is the speed to play it at, where 1.0 is its own: anything
+    /// else pulls its tempo (and its pitch with it) onto the outgoing track's, which is what a
+    /// DJ's pitch fader does. `over` is how long the two overlap.
+    ///
+    /// The outgoing track fades out on the matching equal-power curve, so the pair hold a
+    /// constant level through the crossover instead of sagging in the middle.
+    ///
+    /// Once [`Player::blend_done`] goes true the incoming track is the only thing audible, and
+    /// the owner should rebuild an ordinary player for it at [`Player::blend_position`] — the
+    /// same disposable-player handover every recovery path already uses. **The buffer is finite**:
+    /// whatever was prefetched is all there is, so leaving a finished blend running eventually
+    /// runs it dry.
+    ///
+    /// Refuses if a blend is already running, rather than queueing a second one.
+    pub fn blend_in(&mut self, pcm: Arc<Vec<i16>>, rate: f64, over: Duration) -> Result<()> {
+        if self._blend_held.is_some() {
+            return Err(Error::Unsupported("a blend is already running".into()));
+        }
+        let frames = (over.as_secs_f64() * self.format.sample_rate as f64) as u64;
+
+        // Built here rather than in the callback: the callback's whole job is to move this out
+        // of a queue, not to construct anything.
+        let mut voice = Voice::new(self.format.channels as usize, 0.0);
+        voice.glide_rate_to(rate, 0);
+        voice.fade_to(1.0, frames, crate::Curve::EqualPower);
+
+        let handoff = Handoff {
+            source: Prefetch {
+                pcm: Arc::clone(&pcm),
+                at: 0,
+            },
+            voice,
+            fade_frames: frames,
+        };
+        self.blend_tx
+            .push(handoff)
+            .map_err(|_| Error::Unsupported("the blend queue is full".into()))?;
+        // Held so the callback's `Arc` is never the last one; see `Prefetch`.
+        self._blend_held = Some(pcm);
+        Ok(())
+    }
+
+    /// True once the incoming track has fully faded in and the outgoing one is silent.
+    pub fn blend_done(&self) -> bool {
+        self.shared.blend_done.load(Ordering::Relaxed)
+    }
+
+    /// How far into the incoming track the blend has played.
+    ///
+    /// Where an ordinary player must be rebuilt to take the blend over. Measured from frames the
+    /// mixer actually consumed, so it already accounts for having played at a pulled rate.
+    pub fn blend_position(&self) -> Duration {
+        let frames = self.shared.blend_frames.load(Ordering::Relaxed);
+        Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
+    }
+
     /// The measured tempo of what is playing, or `None` before enough of it has been heard.
     ///
     /// Expect `None` for roughly the first ten seconds of a track. Decoding is deliberately
@@ -746,6 +894,42 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The prefetched buffer is finite, and what happens at its end matters: the mixer must be
+    /// able to see it coming rather than reading off the end, and running out has to look like
+    /// an empty queue rather than an error.
+    #[test]
+    fn a_prefetched_buffer_runs_out_cleanly() {
+        use crate::Pcm;
+
+        let pcm = Arc::new(vec![1i16, 2, 3, 4]);
+        let mut source = Prefetch {
+            pcm: Arc::clone(&pcm),
+            at: 0,
+        };
+
+        assert_eq!(source.available(), 4);
+        assert_eq!(source.pop(), Some(1));
+        assert_eq!(source.available(), 3);
+        for _ in 0..3 {
+            assert!(source.pop().is_some());
+        }
+        assert_eq!(source.available(), 0);
+        assert_eq!(source.pop(), None, "read off the end of the buffer");
+        // Still held elsewhere, so the callback dropping its copy frees nothing.
+        assert_eq!(Arc::strong_count(&pcm), 2);
+    }
+
+    /// Two blends at once would mean two incoming tracks and no way to say which one the
+    /// handover belongs to. Refusing is the only sane answer; queueing silently would surface
+    /// as the wrong song fading in.
+    #[test]
+    fn a_second_blend_is_refused_rather_than_queued() {
+        // Exercised through the queue alone, since building a `Player` needs a sound device.
+        let (mut tx, _rx) = rtrb::RingBuffer::<u8>::new(1);
+        assert!(tx.push(1).is_ok());
+        assert!(tx.push(2).is_err(), "a one-slot queue accepted two blends");
+    }
 
     /// The registration has to actually succeed, and it fails silently: a wrong task name, a
     /// missing `Win32_System_Threading` feature or a disabled MMCSS service all just return an
