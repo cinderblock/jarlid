@@ -173,6 +173,42 @@ The shape that fits:
    incoming track at `Player::blend_position()`, and tell the engine so it can pop the queue and
    emit `TrackStarted`.
 
+### The handover cannot be gapless without the decode thread outliving the track
+
+Traced before writing any of 5b, because it changes the shape of it. The blend itself is solved:
+the incoming track fades in from RAM over the outgoing one. The problem is what happens **after**
+the fade, when the RAM buffer has to give way to a live stream.
+
+Three approaches, and why the first two fail:
+
+1. **Drop the player and rebuild at `blend_position()`** — the existing disposable-player
+   handover. This leaves a ~200-400 ms hole while the new stream opens and seeks. That gap
+   exists today between every pair of songs and nobody minds, because it lands in silence. A
+   blend *moves* it to eight seconds into the incoming song, interrupting music instead. Worse
+   than not blending.
+2. **Build the replacement `Player` during the blend.** A `Player` owns a `cpal` stream, so this
+   means two output streams. On one endpoint in shared mode they do not drift — both are clocked
+   by the same audio engine — but they start at an arbitrary buffer phase, giving a fixed offset
+   of up to one device period (~10 ms at 480 frames). Fine for a plain crossfade; for beat
+   matching that is the whole error budget spent on nothing, since DJs aim under 5 ms.
+3. **Keep the one player and swap what feeds the primary voice.** The only one that is both
+   gapless and sample-exact.
+
+So 5b needs `Player::continue_with(url, at)`: open a decoder for the incoming track seeked to
+where the RAM buffer has reached, spawn a decode thread with a fresh ring buffer, and hand the
+new consumer to the callback through the same one-slot queue the blend already uses. The callback
+crosses from the blend voice to the refilled primary over ~50 ms, which is short enough to be
+inaudible and long enough to hide a seek that did not land exactly where it was asked.
+
+`master`'s `8d07d6f` (report where the seek landed, not where it was aimed) is what makes that
+alignment checkable rather than assumed — Media Foundation seeks to a nearby boundary, not to the
+sample requested.
+
+The counters in `Shared` — position, buffered, decoded, starved — have to be reset as part of the
+swap, since they describe a track and the track is changing. That is safe to do from the control
+thread precisely because the outgoing decode thread has already exited: a track that ended is the
+only condition under which this handover ever runs.
+
 Things that will bite:
 
 - **The watchdog must be quiet during a blend.** `audio_thread.rs` treats a drained queue and a
