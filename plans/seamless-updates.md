@@ -299,7 +299,7 @@ the wall-clock backstop and the countdown behind a shut gate.
 - It does not skip `getPlaylist` on a paused start, so a paused relaunch still claims the
   account's single stream exactly as before.
 
-## 2026-08-15 — the update that waited forever on the login card
+## 2026-08-15 — the update that waited forever on the login card (shipped in v1.5.1)
 
 **Reported symptom:** *"i'm sitting at the login screen, nothing playing, i click the
 v1.4.2 and it checks for updates and then shows 'updating to v1.4.3 while paused' and then
@@ -362,6 +362,13 @@ move it in lockstep. Signed out it reads `updating to vX shortly`.
   song", and `force: true` would waive exactly the guard that keeps that promise.
 - **Don't let `unknown` time leak into `paused`.** That reintroduces the v1.4.1 silent
   restart. There is a test named for it.
+
+### The fix ships *in* the broken version's successor
+
+Worth stating plainly, because it will look like the fix failed: the stalling loop lives in
+the **installed** build. A copy of Jarlid older than v1.5.1 still needs the second click to
+get to v1.5.1. Only from there on does one click suffice. Any report of "still had to click
+twice" must first establish which version was doing the clicking.
 
 ## The waiting policy (user's rule)
 
