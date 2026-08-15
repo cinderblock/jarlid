@@ -142,7 +142,20 @@ the listener already heard.
 - [x] **5a. A second voice in the player**, fed from a prefetched buffer, fading in on the
       equal-power curve. Commit `527845a`. `Player::blend_in` / `blend_done` / `blend_position`.
       Nothing calls it; verified only that it costs ordinary playback nothing.
-- [ ] **5b. Sequencing.** The last piece, and the only one that is not additive. See below.
+- [x] **5b-i. `Player::continue_with`** — the gapless handover. Commit `e16dab0`. Re-points the
+      primary voice at a live stream instead of rebuilding the player, crossing ~50 ms from the
+      prefetched buffer. Includes the retire queue and the counter bases described below. The
+      decode loop is now `spawn_decode`, extracted rather than copied. Verified that ordinary
+      playback is unchanged including across a real track change: drift 0.00 s, starved 0.00 s.
+- [ ] **5b-ii. Sequencing.** All that is left. Still the only non-additive part:
+      - `crates/engine`: a `BlendConfig` mirroring the four settings, plus `Engine::set_blend`,
+        applied from `native.rs::attach` beside the existing `set_volume` / `set_output`.
+      - `AudioThread`: prefetch the head of `queue` on a worker thread (never the audio thread —
+        `audio::prefetch` blocks); decide once with `rate_for`; `Command::StartBlend`; call
+        `Player::blend_in`, then `Player::continue_with` when `blend_done()`.
+      - Suppress the stall watchdog and `track_ended` for the duration.
+      - `Engine::run`: pop the queue and emit `TrackStarted` when the handover completes.
+      - Switch lyrics/SMTC/title at the crossover midpoint.
 - [ ] **6. Drive it in the real app.**
 
 ## Step 5b: why it has to touch the engine, and what it needs
