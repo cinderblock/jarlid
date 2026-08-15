@@ -57,10 +57,10 @@ t3code/layout-spacing-...  b3af271  (worktree t3code-c75218f2, DIRTY — active 
 4. [x] Rebase `master` onto `origin/master` (replays 3 commits).
 5. [x] Cherry-pick the 4 BPM commits `b058b09..b19564c` onto `master`.
 6. [x] Run the repo's checks: `cargo test`, `cargo clippy`, `bun run build`, `cargo check` on the Tauri crate.
-7. [ ] Version-bump commit to 1.5.0 across the four sites. **Version numbers only.**
-8. [ ] Push `master`.
-9. [ ] Tag `v1.5.0` and push the tag — this publishes the release.
-10. [ ] Delete `fix-login-unavailable`: worktree, local branch, remote branch.
+7. [x] Version-bump commit to 1.5.0 across the four sites. **Version numbers only.**
+8. [x] Push `master`.
+9. [x] Tag `v1.5.0` and push the tag — this publishes the release.
+10. [x] Delete `fix-login-unavailable`: worktree, local branch, remote branch.
 
 ## Findings / gotchas
 
@@ -126,9 +126,33 @@ near that worktree.**
 - [x] Checks — `cargo test` 34 passed / 0 failed; clippy clean bar the pre-existing warning;
       `bun run build` (tsc + vite) clean; `cargo check` on the Tauri crate clean.
       All run through the `compute-budget` broker, sequentially, on an idle machine.
-- [ ] Bump
-- [ ] Push + tag
-- [ ] Delete hotfix branch
+- [x] Bump — `ee9228b`, four files, one line each, version-only
+- [x] Push `master` — `018929b..ee9228b`, fast-forward, no force
+- [x] Tag `v1.5.0` (annotated, release notes in the house style) and push → Release workflow started
+- [x] Delete `fix-login-unavailable` — local, remote, and worktree deregistered
+
+## End state
+
+```
+master  ee9228b  == origin/master   v1.5.0
+tags    v1.5.0 -> ee9228b (on master's history, unlike v1.4.2/v1.4.3)
+
+t3code/add-bpm-display                574913b  kept on purpose — holds the DJ-blend probe
+t3code/layout-spacing-alignment-fixes b3af271  active session, uncommitted work — untouched
+t3code/fce79af4                       b3af271  stale pointer, no worktree, already in master
+```
+
+### Leftovers, deliberate
+
+- **`t3code/add-bpm-display` is now a partial duplicate of master.** Its four BPM commits are
+  on master under new hashes; only `574913b` (the DJ probe) is unique to it. Keep it until the
+  DJ-blend work starts, then rebase just that one commit onto master and delete the branch.
+- **`t3code/fce79af4` is a stale pointer** at `b3af271`, already an ancestor of master, with no
+  worktree. Safe to delete whenever; left alone because nobody asked.
+- **An empty directory husk remains** at `.t3/worktrees/Pandora/t3code-fce79af4`. Git removed
+  the contents and deregistered the worktree, but Windows refused the final `rmdir` because a
+  process still has it as its working directory. It is empty and unreferenced; it will delete
+  once that process exits.
 
 ## Things not to do
 
