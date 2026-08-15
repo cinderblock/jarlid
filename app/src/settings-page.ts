@@ -18,16 +18,34 @@ const timeInput = $<HTMLInputElement>("set-check-time");
 const volumeInput = $<HTMLInputElement>("set-volume");
 const volumeValue = $("set-volume-value");
 const outputNow = $("set-output-now");
+const blendRadios = () => document.querySelectorAll<HTMLInputElement>('input[name="blend"]');
+const blendSeconds = $<HTMLInputElement>("set-blend-seconds");
+const blendSecondsValue = $("set-blend-seconds-value");
+const blendPull = $<HTMLInputElement>("set-blend-pull");
+const blendPullValue = $("set-blend-pull-value");
+const blendRestore = $<HTMLInputElement>("set-blend-restore");
+const blendLengthItem = $("set-blend-length-item");
+const blendPullItem = $("set-blend-pull-item");
+const blendRestoreItem = $("set-blend-restore-item");
 
 type Policy = "instant" | "afterSong" | "manualInstall" | "notifyOnly";
 type CheckSchedule =
   | { kind: "never" }
   | { kind: "every"; minutes: number }
   | { kind: "dailyAt"; time: string };
+type BlendMode = "off" | "crossfade" | "beatMatched";
+interface Blend {
+  mode: BlendMode;
+  seconds: number;
+  /** A pitch-fader range. Percent, because ±6% is the same musical stretch at any tempo. */
+  maxPullPercent: number;
+  restoreTempo: boolean;
+}
 interface Settings {
   updatePolicy: Policy;
   checkSchedule: CheckSchedule;
   theme: ThemePref;
+  blend: Blend;
   /** 0-100. The taper from this to a gain lives in Rust; see `settings::Volume`. */
   volume: number;
   /** `null` means follow the Windows default, and keep following it. */
@@ -158,6 +176,54 @@ function setEnabled(on: boolean) {
   outputSel.setDisabled(!on);
   timeInput.disabled = !on;
   volumeInput.disabled = !on;
+  blendRadios().forEach((r) => (r.disabled = !on));
+  blendSeconds.disabled = !on;
+  blendPull.disabled = !on;
+  blendRestore.disabled = !on;
+}
+
+/** Defaults for a settings file written before blending existed. */
+const NO_BLEND: Blend = {
+  mode: "off",
+  seconds: 8,
+  maxPullPercent: 6,
+  restoreTempo: true,
+};
+
+function readBlend(): Blend {
+  const picked = [...blendRadios()].find((r) => r.checked);
+  return {
+    mode: (picked?.value as BlendMode) ?? "off",
+    seconds: Number(blendSeconds.value),
+    maxPullPercent: Number(blendPull.value),
+    restoreTempo: blendRestore.checked,
+  };
+}
+
+/**
+ * Show only the controls that currently do something.
+ *
+ * Overlap applies to both blending modes; the tempo pull and the return-to-native glide
+ * only mean anything when we are matching beats. Leaving them visible but inert invites
+ * the reasonable conclusion that they were set and ignored.
+ */
+function reflectBlend() {
+  const blend = readBlend();
+  blendLengthItem.hidden = blend.mode === "off";
+  blendPullItem.hidden = blend.mode !== "beatMatched";
+  blendRestoreItem.hidden = blend.mode !== "beatMatched";
+
+  blendSeconds.style.setProperty("--fill", `${((blend.seconds - 2) / 18) * 100}%`);
+  blendSecondsValue.textContent = `${blend.seconds}s`;
+
+  blendPull.style.setProperty("--fill", `${(blend.maxPullPercent / 16) * 100}%`);
+  // Say what the percentage means in the units the rest of the app shows tempo in.
+  // "±6%" is the honest setting; "±7.7 BPM at 128" is the one you can picture.
+  const atOneTwentyEight = (128 * blend.maxPullPercent) / 100;
+  blendPullValue.textContent =
+    blend.maxPullPercent === 0
+      ? "none"
+      : `±${blend.maxPullPercent}% · ±${atOneTwentyEight.toFixed(1)} BPM at 128`;
 }
 
 function render(s: Settings) {
@@ -166,6 +232,12 @@ function render(s: Settings) {
   volumeInput.value = String(s.volume ?? 100);
   outputSel.value = s.outputDevice ?? FOLLOW_DEFAULT;
   reflectVolume();
+  const blend = s.blend ?? NO_BLEND;
+  blendRadios().forEach((r) => (r.checked = r.value === blend.mode));
+  blendSeconds.value = String(blend.seconds);
+  blendPull.value = String(blend.maxPullPercent);
+  blendRestore.checked = blend.restoreTempo;
+  reflectBlend();
   const sched = s.checkSchedule;
   scheduleSel.setOptions(scheduleOptions(sched));
   scheduleSel.value =
@@ -243,6 +315,7 @@ async function persist() {
     checkSchedule: readSchedule(),
     theme: readTheme(),
     volume: readVolume(),
+    blend: readBlend(),
     outputDevice: readOutput(),
   };
   timeInput.hidden = next.checkSchedule.kind !== "dailyAt";
@@ -288,6 +361,27 @@ volumeInput.addEventListener("change", () => void persist());
 // the far end. `render()` would fix it — but not on the path where the settings can't be
 // read at all, which is exactly when a control lying about its value is worst.
 reflectVolume();
+
+// Changing the mode reveals or hides the controls under it, so the layout has to move on
+// the click rather than waiting for the write to come back.
+$("set-blend-mode").addEventListener("change", () => {
+  reflectBlend();
+  void persist();
+});
+blendRestore.addEventListener("change", () => void persist());
+
+// The two sliders follow the handle for the read-out and only save on release, like the
+// volume fader — but unlike volume there is nothing to apply optimistically, since a blend
+// setting is not heard until the next time a song ends.
+for (const slider of [blendSeconds, blendPull]) {
+  slider.addEventListener("input", reflectBlend);
+  slider.addEventListener("change", () => void persist());
+}
+
+// Same reason as `reflectVolume()` below: `--fill` is script-only, so without this the
+// tracks paint empty until the first render — and on the path where settings cannot be
+// read at all, that is exactly when a control lying about its value is worst.
+reflectBlend();
 
 // The theme is the one setting you judge by looking at it, so it changes as you
 // click rather than after the write comes back.

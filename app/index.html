@@ -142,6 +142,78 @@
         </section>
 
         <section class="set-section">
+          <h3>Between songs</h3>
+          <div class="set-item">
+            <div class="set-item-text">
+              <b>Blend</b>
+              <p>Overlap the end of one song with the start of the next. Beat-matched also
+                pulls the incoming song's tempo onto the outgoing one so the beats line up —
+                and when two songs are too far apart to match, it leaves them alone rather
+                than making a bad mix.</p>
+            </div>
+            <div class="set-item-ctl">
+              <div class="segmented" id="set-blend-mode" role="radiogroup" aria-label="Blend">
+                <label class="seg">
+                  <input type="radio" name="blend" value="off" />
+                  <svg viewBox="0 0 24 24"><path d="M3 12h7M14 12h7"/><path d="M10 7v10M14 7v10"/></svg>
+                  <span>Off</span>
+                </label>
+                <label class="seg">
+                  <input type="radio" name="blend" value="crossfade" />
+                  <svg viewBox="0 0 24 24"><path d="M3 17c6 0 6-10 12-10M9 17c6 0 6-10 12-10"/></svg>
+                  <span>Crossfade</span>
+                </label>
+                <label class="seg">
+                  <input type="radio" name="blend" value="beatMatched" />
+                  <svg viewBox="0 0 24 24"><path d="M3 20V9M8 20V5M13 20V9M18 20V5"/><path d="M2 15h20"/></svg>
+                  <span>Beat-matched</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="set-item set-item-wide" id="set-blend-length-item" hidden>
+            <div class="set-item-text">
+              <b>Overlap</b>
+              <p>How long the two songs play together.</p>
+            </div>
+            <div class="set-item-ctl set-vol">
+              <input id="set-blend-seconds" class="slider" type="range" min="2" max="20" step="1"
+                value="8" aria-label="Blend length in seconds" />
+              <output id="set-blend-seconds-value" class="set-vol-value"
+                for="set-blend-seconds">8s</output>
+            </div>
+          </div>
+
+          <div class="set-item set-item-wide" id="set-blend-pull-item" hidden>
+            <div class="set-item-text">
+              <b>Most a tempo may be pulled</b>
+              <p id="set-blend-pull-hint">Songs further apart than this are not blended at all.
+                Half and double time always count as matched, so a 64 BPM song already lines up
+                with a 128 BPM one and needs no pull.</p>
+            </div>
+            <div class="set-item-ctl set-vol">
+              <input id="set-blend-pull" class="slider" type="range" min="0" max="16" step="1"
+                value="6" aria-label="Maximum tempo pull, percent" />
+              <output id="set-blend-pull-value" class="set-vol-value" for="set-blend-pull">±6%</output>
+            </div>
+          </div>
+
+          <div class="set-item" id="set-blend-restore-item" hidden>
+            <div class="set-item-text">
+              <b>Return to the song's own tempo</b>
+              <p>After the blend, ease the new song back to its real speed over half a minute.
+                Under a cent per second, so it cannot be heard happening — without it, every
+                song plays at the speed of whatever preceded it.</p>
+            </div>
+            <div class="set-item-ctl">
+              <input id="set-blend-restore" type="checkbox" checked
+                aria-label="Return to the song's own tempo after the blend" />
+            </div>
+          </div>
+        </section>
+
+        <section class="set-section">
           <h3>Output</h3>
           <div class="set-item">
             <div class="set-item-text">

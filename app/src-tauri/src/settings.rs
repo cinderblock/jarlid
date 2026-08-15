@@ -183,11 +183,119 @@ pub struct Settings {
     pub check_schedule: CheckSchedule,
     pub theme: Theme,
     pub volume: Volume,
+    /// How one song gives way to the next.
+    pub blend: Blend,
     /// Which output endpoint to play on. `None` means "whatever Windows currently calls the
     /// default", and it is genuinely *followed* — change the default mid-song and the music
     /// moves with it. A name that is not present right now is kept rather than rewritten, so
     /// plugging the device back in restores the choice.
     pub output_device: Option<String>,
+}
+
+/// How one song gives way to the next.
+///
+/// Three genuinely different behaviours rather than degrees of one, so this is a choice and not
+/// a checkbox: whether the songs overlap at all, and whether we are willing to bend a tempo to
+/// make the overlap line up.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum BlendMode {
+    /// One song ends, the next begins. What a radio has always done.
+    #[default]
+    Off,
+    /// Overlap them and fade across. No tempo is touched, so two songs at different speeds
+    /// simply play over each other for a few seconds.
+    Crossfade,
+    /// Overlap them *and* pull the incoming track's tempo onto the outgoing one's so the beats
+    /// line up. When the two are further apart than [`Blend::max_pull_percent`] allows, there is
+    /// no blend at all — a normal transition is better than a bad mix.
+    BeatMatched,
+}
+
+/// Settings for [`BlendMode`].
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Blend {
+    pub mode: BlendMode,
+    /// How long the two songs overlap.
+    pub seconds: f32,
+    /// How far a tempo may be pulled, as a percentage of it.
+    ///
+    /// This is a DJ pitch-fader range, and a percentage rather than an absolute BPM because that
+    /// is what the ear cares about: ±6% is the same musical stretch at 90 BPM as at 160, where
+    /// "±8 BPM" would be a shrug at one end and a lurch at the other. ±6/±10/±16 are the ranges
+    /// a CDJ offers, for the same reason.
+    ///
+    /// It doubles as the decision to blend at all in [`BlendMode::BeatMatched`]: two tracks
+    /// further apart than this are left alone.
+    pub max_pull_percent: f32,
+    /// After the blend finishes, glide the incoming track back to its own tempo.
+    ///
+    /// Worth having on. A pull of a few percent spread over half a minute is well under a cent
+    /// per second — inaudible — and without it every track plays at the speed of whatever
+    /// happened to precede it, for its whole length.
+    pub restore_tempo: bool,
+}
+
+/// Off, because it changes how *every* song ends. Someone who wants it will go and ask.
+impl Default for Blend {
+    fn default() -> Self {
+        Self {
+            mode: BlendMode::Off,
+            seconds: 8.0,
+            max_pull_percent: 6.0,
+            restore_tempo: true,
+        }
+    }
+}
+
+impl Blend {
+    /// The overlap, clamped. Below a couple of seconds it is a cut rather than a blend; above
+    /// twenty it eats whole endings, and it cannot exceed what we pre-buffer anyway.
+    pub fn seconds(&self) -> f32 {
+        self.seconds.clamp(2.0, 20.0)
+    }
+
+    /// The permitted pull as a fraction. Clamped to a real pitch-fader range — beyond about 16%
+    /// the shift stops reading as tempo and starts reading as a different singer.
+    pub fn max_pull(&self) -> f32 {
+        (self.max_pull_percent / 100.0).clamp(0.0, 0.16)
+    }
+
+    pub fn overlaps(&self) -> bool {
+        !matches!(self.mode, BlendMode::Off)
+    }
+
+    /// The playback rate to apply to `incoming` so its beats line up with `outgoing`, or `None`
+    /// if that cannot be done within the permitted pull.
+    ///
+    /// **Half and double time count as matched.** A 64 BPM track already lines up with a 128 BPM
+    /// one — every beat of the slower lands on every other beat of the faster — so a DJ would
+    /// mix them without touching the speed of either. Naively demanding equal numbers would call
+    /// that a 100% pull and refuse a blend that needs no pull at all. So the candidates are
+    /// `outgoing · 2ᵏ / incoming` for `k` in −1, 0, 1, and the winner is whichever sits closest
+    /// to 1.0. Doubling the *rate* is never the answer: that would raise the pitch an octave.
+    ///
+    /// `None` for either tempo means we never measured one — a track with no steady pulse, or
+    /// one we have not heard enough of. That is a refusal: a beat-matched blend needs two beats.
+    pub fn rate_for(&self, outgoing: Option<f32>, incoming: Option<f32>) -> Option<f32> {
+        let (Some(out), Some(inc)) = (outgoing, incoming) else {
+            return None;
+        };
+        if out <= 0.0 || inc <= 0.0 {
+            return None;
+        }
+        [0.5, 1.0, 2.0]
+            .into_iter()
+            .map(|octave| out * octave / inc)
+            .filter(|rate| (rate - 1.0).abs() <= self.max_pull())
+            .min_by(|a, b| (a - 1.0).abs().total_cmp(&(b - 1.0).abs()))
+    }
+
+    /// Whether these two tracks can be beat-matched at all.
+    pub fn can_match(&self, outgoing: Option<f32>, incoming: Option<f32>) -> bool {
+        self.rate_for(outgoing, incoming).is_some()
+    }
 }
 
 /// Cached so the update loop can read settings without touching disk every tick.
@@ -247,6 +355,91 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Setting
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn blend(max_pull_percent: f32) -> Blend {
+        Blend {
+            mode: BlendMode::BeatMatched,
+            max_pull_percent,
+            ..Blend::default()
+        }
+    }
+
+    /// Close tempos get a small pull, in the right direction.
+    #[test]
+    fn a_near_miss_is_pulled_onto_the_outgoing_tempo() {
+        let b = blend(6.0);
+        // 124 has to speed up slightly to become 128.
+        let rate = b.rate_for(Some(128.0), Some(124.0)).expect("within range");
+        assert!((rate - 128.0 / 124.0).abs() < 1e-6, "rate was {rate}");
+        assert!(rate > 1.0, "the slower track should speed up, got {rate}");
+
+        // And the reverse.
+        let rate = b.rate_for(Some(124.0), Some(128.0)).expect("within range");
+        assert!(rate < 1.0, "the faster track should slow down, got {rate}");
+    }
+
+    /// Half time needs no pull at all. Demanding equal numbers would score this as 100% and
+    /// refuse a blend that a DJ would make without touching either deck.
+    #[test]
+    fn half_and_double_time_match_without_a_pull() {
+        let b = blend(6.0);
+        for (out, inc) in [(128.0, 64.0), (64.0, 128.0), (170.0, 85.0)] {
+            let rate = b
+                .rate_for(Some(out), Some(inc))
+                .unwrap_or_else(|| panic!("{out} against {inc} should match"));
+            assert!(
+                (rate - 1.0).abs() < 1e-6,
+                "{out} against {inc} wanted rate {rate}, expected no pull"
+            );
+        }
+    }
+
+    /// Genuinely different tempos are refused, so the blend is skipped rather than made badly.
+    #[test]
+    fn a_real_mismatch_is_refused() {
+        let b = blend(6.0);
+        assert!(b.rate_for(Some(128.0), Some(90.0)).is_none());
+        assert!(b.rate_for(Some(75.0), Some(174.0)).is_none());
+    }
+
+    /// A track we could not measure never gets beat-matched — there is nothing to match to.
+    #[test]
+    fn an_unmeasured_tempo_is_never_matched() {
+        let b = blend(16.0);
+        assert!(!b.can_match(None, Some(120.0)));
+        assert!(!b.can_match(Some(120.0), None));
+        assert!(!b.can_match(Some(120.0), Some(0.0)));
+    }
+
+    /// The range is the setting doing its job: what is refused at ±2% is accepted at ±10%.
+    #[test]
+    fn the_pull_range_decides() {
+        assert!(blend(2.0).rate_for(Some(128.0), Some(120.0)).is_none());
+        assert!(blend(10.0).rate_for(Some(128.0), Some(120.0)).is_some());
+    }
+
+    /// Hand-edited files don't get to blow past a sane pitch-fader range or overlap a whole song.
+    #[test]
+    fn absurd_values_are_clamped() {
+        let wild = Blend {
+            mode: BlendMode::BeatMatched,
+            seconds: 900.0,
+            max_pull_percent: 400.0,
+            restore_tempo: true,
+        };
+        assert_eq!(wild.seconds(), 20.0);
+        assert!((wild.max_pull() - 0.16).abs() < 1e-6);
+    }
+
+    /// A settings file written before blending existed must still parse, and must not silently
+    /// start blending someone's music.
+    #[test]
+    fn older_settings_files_default_to_no_blending() {
+        let old = r#"{"updatePolicy":"afterSong","theme":"system","volume":100}"#;
+        let parsed: Settings = serde_json::from_str(old).expect("old file still parses");
+        assert_eq!(parsed.blend.mode, BlendMode::Off);
+        assert!(!parsed.blend.overlaps());
+    }
 
     /// Updating in the gap after a song is the default: it keeps itself current without
     /// ever interrupting a track.
@@ -323,7 +516,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","volume":100,"outputDevice":null}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","volume":100,"blend":{"mode":"off","seconds":8.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null}"#
         );
 
         let daily = Settings {
@@ -333,6 +526,12 @@ mod tests {
             },
             theme: Theme::Light,
             volume: Volume::new(60),
+            blend: Blend {
+                mode: BlendMode::BeatMatched,
+                seconds: 10.0,
+                max_pull_percent: 10.0,
+                restore_tempo: false,
+            },
             output_device: Some("Speakers (USB DAC)".into()),
         };
         let text = serde_json::to_string(&daily).unwrap();
