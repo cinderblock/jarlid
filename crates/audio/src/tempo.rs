@@ -25,6 +25,16 @@ pub struct Tempo {
     /// electronic music lands around 0.4-0.7; rubato piano may never clear [`MIN_CONFIDENCE`],
     /// which is the honest answer for music that has no single tempo.
     pub confidence: f32,
+    /// Seconds from the start of the analysed audio to a beat, always in `0 .. 60/bpm`.
+    ///
+    /// The tempo alone cannot align two songs. Two tracks at exactly 128 BPM but a half-beat out
+    /// of phase sound worse together than either does alone — the whole point of matching them is
+    /// that the kicks land together, and a period says how often that happens without saying
+    /// when. Beats fall at `beat_phase + n · 60/bpm` from the start of whatever audio was fed.
+    ///
+    /// Measured to the nearest envelope sample, so it is good to a few milliseconds — well
+    /// inside what is audible as "together".
+    pub beat_phase: f32,
 }
 
 /// Envelope samples per second to aim for. The hop is derived from this and the real sample
@@ -126,6 +136,12 @@ pub struct TempoTracker {
 
     /// The onset envelope, trimmed to [`WINDOW_SECONDS`].
     envelope: Vec<f32>,
+    /// How many envelope samples have been dropped off the front of it.
+    ///
+    /// Needed because the phase has to be reported against the *start of the stream*, and the
+    /// window it is measured in slides away from that. Without this the answer would silently be
+    /// relative to whenever the window happened to begin.
+    envelope_origin: u64,
     /// Envelope samples added since the last analysis.
     since_analysis: usize,
 
@@ -161,6 +177,7 @@ impl TempoTracker {
             previous_level: [0.0; BANDS],
             primed: false,
             envelope: Vec::new(),
+            envelope_origin: 0,
             since_analysis: 0,
             result: None,
         }
@@ -194,6 +211,7 @@ impl TempoTracker {
         if self.envelope.len() > window {
             let excess = self.envelope.len() - window;
             self.envelope.drain(..excess);
+            self.envelope_origin += excess as u64;
         }
 
         let cadence = (ANALYSE_EVERY * self.envelope_rate) as usize;
@@ -375,9 +393,41 @@ impl TempoTracker {
         if confidence < MIN_CONFIDENCE {
             return None;
         }
+
+        // Where in the cycle the beats actually fall.
+        //
+        // The autocorrelation says how *often* a beat happens and is deliberately blind to when:
+        // shifting the whole envelope in time leaves it unchanged. So comb the envelope against
+        // itself at the period it found — sum every sample that shares a residue class modulo the
+        // period, and the class holding the beats is the one that sums highest, because that is
+        // where the onsets are. This is the same reasoning as the autocorrelation, one dimension
+        // over.
+        let mut phase_offset = 0usize;
+        let mut strongest = f64::NEG_INFINITY;
+        for offset in 0..best {
+            let mut sum = 0.0;
+            let mut at = offset;
+            while at < n {
+                sum += detail[at];
+                at += best;
+            }
+            if sum > strongest {
+                strongest = sum;
+                phase_offset = offset;
+            }
+        }
+
+        // Report it against the start of the stream, not the start of the window — the window
+        // slides, and a phase measured from a moving origin would be meaningless to a caller
+        // trying to line two tracks up.
+        let beat_index = self.envelope_origin + phase_offset as u64;
+        let period_seconds = 60.0 / (60.0 * self.envelope_rate / refined);
+        let beat_phase = (beat_index as f64 / self.envelope_rate).rem_euclid(period_seconds);
+
         Some(Tempo {
             bpm: (60.0 * self.envelope_rate / refined) as f32,
             confidence,
+            beat_phase: beat_phase as f32,
         })
     }
 }
@@ -565,6 +615,58 @@ mod tests {
                 "{bpm} BPM drum pattern read as {:.1} BPM (half would be {:.0})",
                 found.bpm,
                 bpm / 2.0
+            );
+        }
+    }
+
+    /// Feed a click track with `lead` seconds of near-silence in front of it, and see where the
+    /// tracker thinks the beats are.
+    fn phase_after_silence(bpm: f64, lead: f64, rate: u32) -> f32 {
+        let mut pcm = vec![0i16; (lead * rate as f64) as usize * 2];
+        pcm.extend(click_track(bpm, 25.0, rate, 2, 1.0));
+        let mut tracker = TempoTracker::new(rate, 2);
+        for chunk in pcm.chunks(4093) {
+            tracker.push(chunk);
+        }
+        tracker.tempo().expect("a tempo").beat_phase
+    }
+
+    /// Delaying the music by a known amount must move the reported beat by the same amount. This
+    /// is the whole contract: a phase that does not track the audio is worse than none, because
+    /// it would confidently align two songs to the wrong instant.
+    #[test]
+    fn the_phase_follows_the_audio() {
+        // 120 BPM is a half-second beat, so a 0.2 s delay puts the beat at 0.2.
+        let period = 0.5f32;
+        for lead in [0.0, 0.2, 0.35] {
+            let phase = phase_after_silence(120.0, lead, 48_000);
+            let expected = (lead as f32).rem_euclid(period);
+            // Compare on the circle: 0.499 and 0.001 are 2 ms apart, not half a beat.
+            let error = (phase - expected).rem_euclid(period);
+            let error = error.min(period - error);
+            assert!(
+                error < 0.03,
+                "a {lead}s delay put the beat at {phase}, expected about {expected}"
+            );
+        }
+    }
+
+    /// The phase must always be inside one beat, whatever the tempo — callers add whole beats to
+    /// it and would land somewhere else entirely if it could exceed a period.
+    #[test]
+    fn the_phase_stays_within_one_beat() {
+        for bpm in [70.0, 128.0, 174.0] {
+            let mut tracker = TempoTracker::new(48_000, 2);
+            let pcm = click_track(bpm, 25.0, 48_000, 2, 1.0);
+            for chunk in pcm.chunks(4093) {
+                tracker.push(chunk);
+            }
+            let tempo = tracker.tempo().expect("a tempo");
+            let period = 60.0 / tempo.bpm;
+            assert!(
+                tempo.beat_phase >= 0.0 && tempo.beat_phase < period,
+                "{bpm} BPM gave phase {} against a {period}s beat",
+                tempo.beat_phase
             );
         }
     }

@@ -192,6 +192,9 @@ struct Shared {
     /// decoding is throttled to roughly playback speed.
     bpm: AtomicU32,
     bpm_confidence: AtomicU32,
+    /// Seconds from this player's stream start to a beat. Needed to line a blend up: the
+    /// tempo says how often beats happen, this says when.
+    beat_phase: AtomicU32,
 }
 
 /// Plays one track. Create a [`Player`] per track; the caller sequences them.
@@ -300,6 +303,7 @@ impl Player {
             volume: AtomicU32::new(1.0f32.to_bits()),
             bpm: AtomicU32::new(0.0f32.to_bits()),
             bpm_confidence: AtomicU32::new(0.0f32.to_bits()),
+            beat_phase: AtomicU32::new(0.0f32.to_bits()),
         });
 
         // Decode thread: keep the queue topped up, backing off when full so a track is streamed
@@ -386,6 +390,9 @@ impl Player {
                             decode_shared
                                 .bpm_confidence
                                 .store(measured.confidence.to_bits(), Ordering::Relaxed);
+                            decode_shared
+                                .beat_phase
+                                .store(measured.beat_phase.to_bits(), Ordering::Relaxed);
                         }
                     }
                     // End of track: stop producing and let the queue drain so the ending isn't
@@ -731,6 +738,7 @@ impl Player {
         Some(Tempo {
             bpm,
             confidence: f32::from_bits(self.shared.bpm_confidence.load(Ordering::Relaxed)),
+            beat_phase: f32::from_bits(self.shared.beat_phase.load(Ordering::Relaxed)),
         })
     }
 }

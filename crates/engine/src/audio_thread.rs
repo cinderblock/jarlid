@@ -110,6 +110,9 @@ struct Published {
     /// blanking the readout mid-song.
     bpm: AtomicU32,
     bpm_confidence: AtomicU32,
+    /// Seconds from the current player's stream start to a beat. Latched with the tempo, and
+    /// only meaningful alongside it — the tempo says how often beats fall, this says when.
+    beat_phase: AtomicU32,
     /// What the container being decoded actually holds. `Mutex` for the same reason as `device`:
     /// it is a string, read at human pace. Fixed for a track, so a rebuild re-publishes the
     /// same thing.
@@ -365,6 +368,9 @@ impl AudioThread {
                         thread_state
                             .bpm_confidence
                             .store(tempo.confidence.to_bits(), Ordering::Relaxed);
+                        thread_state
+                            .beat_phase
+                            .store(tempo.beat_phase.to_bits(), Ordering::Relaxed);
                     }
 
                     // Accumulated as a delta rather than folded in when a player is dropped, so
@@ -592,6 +598,7 @@ impl AudioThread {
         Some(audio::Tempo {
             bpm,
             confidence: f32::from_bits(self.published.bpm_confidence.load(Ordering::Relaxed)),
+            beat_phase: f32::from_bits(self.published.beat_phase.load(Ordering::Relaxed)),
         })
     }
 
