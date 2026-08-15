@@ -87,7 +87,9 @@ anywhere in it.
 - **Updates that never interrupt anything**: the installer is downloaded and
   signature-verified in the background, then installed at a moment that costs you nothing.
   If the music is paused it goes in immediately and silently, and Jarlid comes back *still
-  paused* — you would only know from the version number. Otherwise it waits for the gap
+  paused* — you would only know from the version number. Signed out, sitting on the login
+  card, there is nothing to protect at all, so it just gets on with it and comes back ready
+  to sign in. Otherwise it waits for the gap
   *after* a track rather than cutting through the middle of one, restarts, and picks the
   station back up, so an update costs a slightly longer pause between songs. You choose the
   behaviour — install after the current song (default), install immediately, download but

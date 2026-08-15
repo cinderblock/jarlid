@@ -299,6 +299,70 @@ the wall-clock backstop and the countdown behind a shut gate.
 - It does not skip `getPlaylist` on a paused start, so a paused relaunch still claims the
   account's single stream exactly as before.
 
+## 2026-08-15 — the update that waited forever on the login card
+
+**Reported symptom:** *"i'm sitting at the login screen, nothing playing, i click the
+v1.4.2 and it checks for updates and then shows 'updating to v1.4.3 while paused' and then
+nothing happens until i click it again. is that intended? it's not playing music. get the
+update over with!"*
+
+Not intended. Two separate defects, both of which are the *same mistake in a new place* —
+treating "we cannot tell what playback is doing" as if it were "paused". That is precisely
+the conflation the 2026-08-11 → v1.4.1 work fixed in `decide()`; it survived in two spots
+that fix never reached.
+
+### 1. The background loop had no `Unknown` arm — so the install never fired
+
+`Playback::Unknown` means "no engine to ask". The v1.4.1 fix correctly stopped that from
+arming a *silent* restart, and `Waiting::tick` correctly stopped either clock advancing on a
+guess. But the loop's `match` then read:
+
+```rust
+// Unknown never triggers an install on its own. Waiting costs nothing: the
+// boundary path picks it up as soon as anything is playing, and the paused
+// path as soon as playback is genuinely stopped.
+_ => {}
+```
+
+**"Waiting costs nothing" assumed `Unknown` was transient.** On the login card it is the
+steady state: no engine exists until somebody types a password, so playback never becomes
+`Paused` or `Playing`, neither clock ever advances, and no arm ever matches. The update sat
+staged, armed, and announced, forever.
+
+**Fix:** a third clock, `Waiting::unknown`, and an arm that installs after `UNKNOWN_SETTLE`
+(60 s) with `may_interrupt: true` — so `decide` yields `Resume::Playing`, never the silent
+restart. A third clock rather than a change to the other two: `playing`/`paused` must keep
+*holding* across a blind spot, which is a different question from *measuring* it.
+
+### 2. The click that staged an update could not also install it
+
+`update_action` reads `staged`/`armed` **at entry**. On the first click both are false, so
+the `if staged && armed → "means now"` branch cannot run — yet by the time that same call
+returns, `stage()` has downloaded *and* armed it (under `afterSong`). Hence "nothing happens
+until i click it again": the second click enters with `staged && armed` already true.
+
+**Fix:** after staging, re-read playback; if it is `Unknown`, install. Deliberately only
+that case — `Playing` must still wait for the boundary the badge promises, and `Paused`
+belongs to `PAUSE_SETTLE` and its silent restart, not to a click.
+
+### 3. The badge said "while paused" while signed out, which was a lie
+
+`main.ts` initialises `lastPlayhead = { …, paused: true, … }` and **no playhead events
+arrive while signed out**, so the badge read a default as fact. It now models the same three
+states the updater does, with the login card's visibility standing in for "no engine" — read
+off the card rather than kept in a parallel flag, since `showLogin`/`onNowPlaying` already
+move it in lockstep. Signed out it reads `updating to vX shortly`.
+
+### Things not to do here
+
+- **Don't shorten `UNKNOWN_SETTLE` toward zero.** Every launch spends a few seconds blind
+  while sign-in finishes; restarting there would interrupt the one thing the listener is
+  waiting for. It must stay comfortably longer than `TICK`.
+- **Don't make the click path install on `Playing`.** The tooltip promises "after this
+  song", and `force: true` would waive exactly the guard that keeps that promise.
+- **Don't let `unknown` time leak into `paused`.** That reintroduces the v1.4.1 silent
+  restart. There is a test named for it.
+
 ## The waiting policy (user's rule)
 
 > *"If we have to, interrupting and resuming a running song is OK. But always prefer
@@ -319,6 +383,7 @@ not a design choice to agonise over. Concretely:
   see the 2026-08-11 section above.
 - **Paused is the preferred moment**, not a hold: after 30 s of continuous pause the update
   installs and the app comes back paused. Superseded the original "never while paused" rule.
+- **Signed out installs too**, after `UNKNOWN_SETTLE` (60 s). Added 2026-08-15 — see below.
 
 ## Guards (must not restart at a bad moment)
 
