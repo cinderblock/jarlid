@@ -126,16 +126,63 @@ the listener already heard.
 
 ## Plan / steps
 
-1. **Source/Output split + mixer.** The bulk. Also delivers gapless playback.
-2. **Plain crossfade + duration setting.** Ship here — this is most of the perceived value, and
-   it is worth having on its own before any beat matching exists.
-3. **Pre-buffer the next track into RAM** (~30-45 s), using the queue the engine already keeps
-   topped up (`MIN_QUEUED = 2`). Analyse it for BPM and phase.
-4. **Beat phase in `TempoTracker`.**
-5. **Rate match + the maximum-deviation control**, with the post-blend glide back to native tempo.
+- [x] **0. Rebase onto master.** The BPM work had already been merged and released as v1.5.0 by
+      another session, so the rebase dropped four duplicate commits and kept only the probe.
+- [x] **1a. The mixing core** — `crates/audio/src/mixer.rs`. `Voice` reads interleaved PCM at a
+      fractional, movable rate and mixes into a shared buffer at a movable gain. Pure arithmetic,
+      no `cpal`/`rtrb`/MF, 9 tests. Commit `83308c3`.
+- [x] **1b. Settings** — `BlendMode` (Off / Crossfade / BeatMatched), overlap seconds, max pull
+      percent, restore-tempo. Rust + UI, 6 tests. Commit `deba0eb`.
+- [ ] **2. Wire the mixer into `Player`** — the Source/Output split. **Next, and the risky one.**
+- [ ] **3. Pre-buffer the next track into RAM** (~30-45 s) from the queue the engine already keeps
+      topped up (`MIN_QUEUED = 2`). Analyse it for BPM and phase.
+- [ ] **4. Beat phase in `TempoTracker`.**
+- [ ] **5. Blend orchestration** in `AudioThread` — start the incoming voice, run the crossfade,
+      apply `rate_for`, glide back to native afterwards.
+- [ ] **6. Drive it in the real app.**
 
 Optional later: cache BPM per `pandoraId` on disk, following the lyrics-cache pattern
 (`lyrics.rs:67`, `app_cache_dir()/lyrics/{hash}.json`), so a repeat play needs no analysis at all.
+
+## Decisions taken while building
+
+- **Out-of-range tempos get no blend at all**, rather than a plain crossfade or a reordered
+  queue. Confirmed with Cameron. Pandora's sequencing is left alone; a station that occasionally
+  doesn't blend reads as intentional, where a reordered one quietly becomes a different station
+  and trends toward flat, tempo-homogeneous runs.
+- **Equal power is interpolated in the square, not as a shaping of `t`.** The classic sin/cos
+  pair only holds level if the fade-*out* gets the cosine, and `from + (to - from) * s(t)` gives
+  the curve no direction to choose by — written that way it sagged 1.25% by the third frame.
+  `√(from² + (to² - from²)·t)` is direction-agnostic and exact. See `Curve::gain`.
+- **A dry voice leaves the output buffer alone** rather than writing silence. It shares a buffer
+  with the other voice, so erasing is not neutral: a stall on the outgoing song would have muted
+  the incoming one too.
+- **Half and double time count as already matched** (`Blend::rate_for`). Candidates are
+  `outgoing · 2ᵏ / incoming` for k in −1, 0, 1. Doubling the *rate* is never the answer — that
+  raises the pitch an octave.
+- **Blending defaults to Off.** It changes how every song ends; that should be asked for.
+
+## The next step, in detail (step 2)
+
+`Player` currently owns: a decoder thread, one `rtrb` ring buffer, one `cpal` stream, and a
+callback that pops samples and applies the volume ramp. It needs to become:
+
+- **Source** — decoder thread + ring buffer + `Shared` atomics. Roughly today's `Player` minus
+  the cpal stream. One per track.
+- **Output** — one `cpal` stream and the mixer. Owns a small fixed array of `(Voice, Consumer)`
+  slots and renders them into an `f32` scratch buffer, then applies the master volume ramp once
+  and converts to the device's sample format.
+
+**Handing a new source to a running callback** is the part with a trap in it. The callback may
+not lock or allocate. Use a second `rtrb::RingBuffer` as a command channel — `rtrb` carries any
+`T`, so a `RingBuffer<SourceHandoff>` moves the consumer and the `Arc<Shared>` across, and the
+callback pops pending handoffs at the top of each invocation. Bounded, lock-free, no allocation,
+and it reuses a dependency already in the tree.
+
+Keep `native_rate_is_a_wire` honest throughout: single-track playback is very nearly all
+listening and must not acquire interpolation smear to buy a feature that runs for eight seconds
+between songs. When only one voice is playing at rate 1.0, the path through the mixer has to be
+arithmetically identical to today's.
 
 ## Things not to do
 
