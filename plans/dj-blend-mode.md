@@ -133,13 +133,48 @@ the listener already heard.
       no `cpal`/`rtrb`/MF, 9 tests. Commit `83308c3`.
 - [x] **1b. Settings** — `BlendMode` (Off / Crossfade / BeatMatched), overlap seconds, max pull
       percent, restore-tempo. Rust + UI, 6 tests. Commit `deba0eb`.
-- [ ] **2. Wire the mixer into `Player`** — the Source/Output split. **Next, and the risky one.**
-- [ ] **3. Pre-buffer the next track into RAM** (~30-45 s) from the queue the engine already keeps
-      topped up (`MIN_QUEUED = 2`). Analyse it for BPM and phase.
+- [x] **2. The output callback mixes instead of popping.** Commit `cb64317`. Verified in the
+      running app, not only by test: two minutes at drift 0.00 s, starved 0.00 s, buffer steady
+      at 5.0 s. Drift is exactly the invariant that fails if the frame accounting is wrong.
+- [x] **3. Pre-buffer the next track into RAM** and measure its tempo — `crates/audio/src/prefetch.rs`,
+      commit `e61c4b9`.
 - [ ] **4. Beat phase in `TempoTracker`.**
-- [ ] **5. Blend orchestration** in `AudioThread` — start the incoming voice, run the crossfade,
-      apply `rate_for`, glide back to native afterwards.
+- [ ] **5. Blend orchestration** in `AudioThread` — second voice, the handover, `rate_for`, and
+      the glide back to native. **Next, and the biggest remaining piece.**
 - [ ] **6. Drive it in the real app.**
+
+## How the handover should work (step 5), and why
+
+The tempting shape — teach `Player` to own two tracks properly — means two of everything in
+`Shared`: two positions, two buffer depths, two decode-error flags. Every accessor then has to
+answer "which track?", and the watchdog in `audio_thread.rs` currently assumes exactly one.
+
+There is a much better fit already in the codebase: **the player is disposable.** Every recovery
+path — stall, decode error, device change, long pause — throws the `Player` away and builds a new
+one at the position the listener reached. A blend can end the same way, and then the second track
+never needs full accounting at all:
+
+1. Well before the end, `prefetch` the next track into RAM (~30 s) and measure its tempo.
+2. Decide: `Blend::rate_for` against the outgoing tempo. No match, or mode is Off → normal
+   transition, nothing else happens.
+3. At `blend.seconds()` before the end, hand the callback a second voice fed from **the RAM
+   buffer**, at the matched rate, fading in on an equal-power curve while the primary fades out.
+4. Meanwhile — with seconds of slack, because the RAM buffer holds ~30 s and the blend uses ~8 —
+   build an ordinary `Player` for the incoming track, seeked to where the RAM buffer will run
+   out. This is the existing rebuild path, already well tested.
+5. When the fade completes, swap that in as the new primary. The old track's `Player` is dropped,
+   exactly as it is today at the end of a song.
+
+So the second voice only ever needs to be *faded in from memory*. It needs no position, no buffer
+health, no stall detection, and it cannot outlive the blend. All the accounting that already
+exists keeps meaning precisely what it means now.
+
+Two things to be careful of:
+- The handover seek must land at or before where the RAM buffer ends, never after — `master`'s
+  `8d07d6f` (report where the seek landed, not where it was aimed) is what makes that checkable,
+  and a seek that overshoots would skip audio while one that undershoots merely repeats a moment.
+- `Engine`/SMTC/lyrics should switch to the incoming track at the crossover midpoint, not at
+  either edge, or the title will disagree with what is loudest.
 
 Optional later: cache BPM per `pandoraId` on disk, following the lyrics-cache pattern
 (`lyrics.rs:67`, `app_cache_dir()/lyrics/{hash}.json`), so a repeat play needs no analysis at all.
