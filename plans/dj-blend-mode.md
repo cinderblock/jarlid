@@ -204,10 +204,27 @@ inaudible and long enough to hide a seek that did not land exactly where it was 
 alignment checkable rather than assumed — Media Foundation seeks to a nearby boundary, not to the
 sample requested.
 
-The counters in `Shared` — position, buffered, decoded, starved — have to be reset as part of the
-swap, since they describe a track and the track is changing. That is safe to do from the control
-thread precisely because the outgoing decode thread has already exited: a track that ended is the
-only condition under which this handover ever runs.
+Two things inside that swap are sharper than they look, and both were found by writing it out:
+
+**The old ring buffer must not be dropped in the callback.** Replacing the primary consumer means
+the previous one goes out of scope there, and `rtrb` frees the shared buffer when both halves are
+gone — the producer half is already gone, because the outgoing decode thread exited when the
+track ended. So the callback would deallocate megabytes on the audio thread. It needs a *retire*
+queue in the opposite direction: the callback pushes the spent consumer, the control thread pops
+and drops it. Same trick as the `Arc` on the prefetched buffer, in reverse.
+
+**Resetting the counters is a race, and offsetting is not.** The obvious move is to zero
+`frames_played` / `queued` / `total_decoded` at the swap, since they describe a track and the
+track is changing. But the new decode thread is already filling the new ring before the callback
+processes the handoff, so a reset from the control thread lands after some increments and
+`queued` — an `AtomicU64` decremented with `fetch_sub` — can be driven **below zero and wrap**.
+Doing the reset inside the callback has the same hole from the other side.
+
+The way out is not to reset anything. Let the counters run continuously and have the control side
+remember what they read at the moment of handover, then subtract that in the accessors. `drift`
+stays honest because `decoded`, `position` and `buffered` all shift by the same base; nothing
+races because nothing is written twice; and the awkward case — a handover *during* a rebuild —
+stops being special.
 
 Things that will bite:
 
