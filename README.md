@@ -173,6 +173,12 @@ Windows Credential Manager, encrypted for your user.
 plain `cargo build --release` produces a binary that tries to load the dev server and fails with
 `ERR_CONNECTION_REFUSED`.
 
+In a dev build the version bar bottom-right names the commit it is really running, because the
+version number alone only identifies a *release*: `v1.5.1 · master@f15dc14`, with a trailing `*`
+when the tree is dirty. Sitting clean on the matching `vX.Y.Z` tag it shows just the version, as
+a release does. Updates are disabled in a dev build — the background loop is compiled out and
+the bar will not install one — so it is a readout rather than a button there.
+
 `scripts/stress-window-move.ps1` is a regression test for the window-state saver deadlock fixed
 in v0.6.12 — it hammers the window with moves timed to collide with the debounced state save.
 Worth running against a release build after touching window-state or event-loop code:
