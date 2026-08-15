@@ -11,6 +11,8 @@
 mod media_foundation;
 #[cfg(windows)]
 mod player;
+#[cfg(windows)]
+mod prefetch;
 // Pure DSP with no platform surface, so it is not gated: its tests are what stand between a
 // plausible-looking BPM and a wrong one, and they should run wherever `cargo test` does.
 mod tempo;
@@ -23,6 +25,8 @@ pub use media_foundation::Decoder;
 pub use mixer::{Curve, Pcm, Voice, MAX_CHANNELS};
 #[cfg(windows)]
 pub use player::{default_output_name, output_devices, Output, Player};
+#[cfg(windows)]
+pub use prefetch::{prefetch, Prefetched};
 pub use tempo::{Tempo, TempoTracker};
 
 #[derive(Debug, thiserror::Error)]
