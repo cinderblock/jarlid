@@ -95,7 +95,9 @@ anywhere in it.
   behaviour — install after the current song (default), install immediately, download but
   ask first, or just be told a version exists — and how often to look, from every 30 minutes
   to once a day at a wall-clock hour you are not listening at. It will not restart during a
-  station export or while a network player owns playback.
+  station export. If a network player is doing the playing, that is the easiest moment of all
+  — Jarlid only watches a WiiM rather than streaming to it, so the speaker plays straight
+  through the restart; Jarlid comes back quiet so it never starts a second stream over the top.
 - Full station collection searchable in the picker; Cover-Flow-style recently-played gallery;
   WiiM volume slider in remote mode; window position/size persist across launches (kill-safe).
 

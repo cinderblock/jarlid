@@ -370,6 +370,66 @@ the **installed** build. A copy of Jarlid older than v1.5.1 still needs the seco
 get to v1.5.1. Only from there on does one click suffice. Any report of "still had to click
 twice" must first establish which version was doing the clicking.
 
+## 2026-08-15 — reversal: a renderer playing is the safest moment, not a hold
+
+**Asked:** *"does update playback detection correctly detect its safe to update when
+WiiM/DLNA is doing the playback"*
+
+**The detection was right; the conclusion was backwards.** `REMOTE_ACTIVE` is accurate and
+robust — `playing && !title.is_empty() && !local_recent`, recomputed on every `remote://state`
+change against a 1 Hz poll, and cleared after 5 consecutive poll failures
+(`upnp.rs:503-511`), so a powered-off speaker cannot leave it stuck true. But `decide()` then
+returned `Err(Hold::Remote)` **before even looking at `playback`**.
+
+### Jarlid does not stream to the renderer
+
+This is the fact the old rule missed. There is no `SetAVTransportURI` anywhere in `upnp.rs`;
+the module reads state *from* the device, and for LinkPlay reports the device's **own**
+sources (`upnp.rs:1-6`). The speaker's audio is therefore completely independent of this
+process — it plays straight through a restart. On the axis that matters, remote is *safer*
+than a local update, which by design can cut a song in half.
+
+### The stated reason was wrong; the real hazard was unstated
+
+The comment said *"restarting would only drop the display"* — a UI concern, and a small one.
+The actual risk is on the way back up: `native.rs:132` reads the resume-paused marker, and
+that marker is only written when `resume == Resume::Paused`. A remote-mode install would have
+taken the `Resume::Playing` path and come back **starting local audio over the top of the
+speaker** — two sources at once.
+
+So the fix is not "refuse", it is "install, and come back paused".
+
+### It was the only hold with no backstop
+
+Local playback has `MAX_WAIT` (6 min) forcing an update through. Remote had nothing:
+`Hold::Remote` had no `may_interrupt` escape, and because `ready` was false while remote was
+active, `waiting.tick(false, …)` reset **all three clocks every tick** — no countdown was even
+running. Only an explicit click got past it. An evening of listening on the speaker meant an
+update that never landed. Same shape as the login-card stall above: a state that reads as
+transient but persists for hours.
+
+### What changed
+
+- `decide()`: remote resolves to `Ok(Resume::Paused)` rather than `Err`. Local audio playing
+  *alongside* the renderer still needs a mandate (`Hold::MidSong`) — barely reachable, since a
+  moving local playhead is what keeps `remote_active` false, but the rule should not depend on
+  that.
+- **`Hold::Remote` is gone.** Deliberately removed rather than left unreachable.
+- **`force` no longer clears `remote`.** That was right while the flag was a thing to get
+  *past*; now it only means "come back silent", and clearing it would make a click start local
+  audio over a playing speaker. A click asks to install now, not to seize the music back.
+- **No fourth clock.** While a renderer plays, the local engine genuinely *is* paused, so
+  `PAUSE_SETTLE` already governs the settle — which only works because the remote case now
+  leaves `ready` true. There is a test pinning exactly that.
+
+### Things not to do here
+
+- **Don't let a remote install come back `Playing`.** That is the whole hazard. Every remote
+  path must resolve to `Resume::Paused`, whatever the local engine is doing and whoever asked.
+- **Don't re-add a blanket remote hold** on the strength of the display argument. The overlay
+  is blank for the few seconds SSDP takes to rediscover the device, and that is the entire
+  cost.
+
 ## The waiting policy (user's rule)
 
 > *"If we have to, interrupting and resuming a running song is OK. But always prefer
@@ -402,8 +462,9 @@ not a design choice to agonise over. Concretely:
   came back *playing* and started music at someone who deliberately stopped it — but the fix
   was to make the app come back *paused*, not to refuse to update. See the 2026-08-11
   section above.
-- **Never in remote mode** — the WiiM owns playback, there is no local track boundary to
-  ride, and restarting would just drop the display.
+- ~~**Never in remote mode.**~~ **REVERSED 2026-08-15.** A renderer owning playback is the
+  *safest* moment there is, not a hold — Jarlid never streams to it. It must only come back
+  paused. See the 2026-08-15 section below.
 - Only fire once; disarm after triggering so a failed install cannot loop.
 
 ## Deferred (not now, by user's choice)
