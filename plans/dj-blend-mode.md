@@ -138,10 +138,53 @@ the listener already heard.
       at 5.0 s. Drift is exactly the invariant that fails if the frame accounting is wrong.
 - [x] **3. Pre-buffer the next track into RAM** and measure its tempo — `crates/audio/src/prefetch.rs`,
       commit `e61c4b9`.
-- [ ] **4. Beat phase in `TempoTracker`.**
-- [ ] **5. Blend orchestration** in `AudioThread` — second voice, the handover, `rate_for`, and
-      the glide back to native. **Next, and the biggest remaining piece.**
+- [x] **4. Beat phase in `TempoTracker`.** Commit `2c8e1de`.
+- [x] **5a. A second voice in the player**, fed from a prefetched buffer, fading in on the
+      equal-power curve. Commit `527845a`. `Player::blend_in` / `blend_done` / `blend_position`.
+      Nothing calls it; verified only that it costs ordinary playback nothing.
+- [ ] **5b. Sequencing.** The last piece, and the only one that is not additive. See below.
 - [ ] **6. Drive it in the real app.**
+
+## Step 5b: why it has to touch the engine, and what it needs
+
+Everything so far is inert and additive — blending is off by default, nothing reads the settings,
+and normal playback has been measured unchanged (drift 0.00 s, starved 0.00 s) after each change
+to the callback. **5b is the first step that cannot be additive**, which is why it is worth
+starting fresh rather than at the end of a long session.
+
+The obstacle is that `Engine::run` owns track sequencing: it plays a track, waits for
+`track_ended`, then plays the next from `queue`. If `AudioThread` performed a handover by itself,
+the engine would still see the old track end and would call `play()` for the next one — replacing
+the incoming track that is already audible. So the engine has to be the one that knows.
+
+The shape that fits:
+
+1. **`engine` needs its own blend config.** `app/src-tauri/src/settings.rs` cannot be a dependency
+   of `crates/engine` (wrong direction), so mirror the four values into a small `BlendConfig`
+   there and add `Engine::set_blend`, applied from `native.rs::attach` next to the existing
+   `set_volume` / `set_output`.
+2. **Prefetch on a worker thread**, not the audio thread. `audio::prefetch` is a blocking decode;
+   the audio thread must not do it. Trigger it once the current track has enough left to be worth
+   preparing for, from the head of `queue`.
+3. **Decide, once.** `BlendConfig::rate_for(outgoing_tempo, prefetched.tempo)`. `None` — or mode
+   Off, or remote mode active — means do nothing at all and let the normal transition happen.
+4. **Start it** at `blend.seconds()` before the end, via a new `Command::StartBlend`.
+5. **Complete the handover** when `Player::blend_done()`: rebuild an ordinary player for the
+   incoming track at `Player::blend_position()`, and tell the engine so it can pop the queue and
+   emit `TrackStarted`.
+
+Things that will bite:
+
+- **The watchdog must be quiet during a blend.** `audio_thread.rs` treats a drained queue and a
+  motionless position as a stall, and both are *normal* while the outgoing track finishes. Every
+  `reason` branch needs to be suppressed for the duration.
+- **`track_ended` must not fire mid-blend**, or the engine advances underneath the handover.
+- **Skip during a blend** has to cancel it, not stack a second one.
+- **Lyrics, SMTC and the title should switch at the crossover midpoint**, not at either edge, or
+  the app will name a song that is barely audible yet.
+- **Beat phase is measured from each player's stream start**, not the track's. A rebuilt player
+  seeks, so its phase is relative to that seek — the alignment maths has to use the same origin
+  the position uses, or the beats will be confidently wrong.
 
 ## How the handover should work (step 5), and why
 
