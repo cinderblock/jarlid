@@ -207,6 +207,14 @@ impl Voice {
                 // Dry. Count it and stop; the frames left in `out` belong to whoever else is
                 // playing, and inventing silence over them would be worse than doing nothing.
                 self.starved += 1;
+                // The ramps still advance. A fade is a function of *time*, not of whether audio
+                // turned up to be faded — and the one voice guaranteed to run dry mid-fade is the
+                // outgoing track of a blend, because it is ending. Freezing its ramp there left
+                // `faded()` false forever, so the blend never reported itself finished, the
+                // handover never ran, and the incoming track played until its prefetched buffer
+                // simply stopped about thirty seconds later.
+                self.advance_gain();
+                self.advance_rate();
                 continue;
             }
 
@@ -270,6 +278,13 @@ impl Voice {
     fn advance_gain(&mut self) -> f32 {
         if self.gain_t < 1.0 {
             self.gain_t = (self.gain_t + self.gain_step).min(1.0);
+            // Adding `1/n` to an `f32` n times does not reliably reach 1.0, and a ramp that stops
+            // a hair short never reports itself finished. That is not cosmetic: `faded()` is what
+            // tells a blend it is over, so a ramp that cannot arrive is a handover that never
+            // happens. Snap once the remainder is under half a step.
+            if self.gain_t > 1.0 - self.gain_step * 0.5 {
+                self.gain_t = 1.0;
+            }
             self.gain = self
                 .gain_curve
                 .gain(self.gain_from, self.gain_to, self.gain_t);
@@ -280,6 +295,10 @@ impl Voice {
     fn advance_rate(&mut self) {
         if self.rate_t < 1.0 {
             self.rate_t = (self.rate_t + self.rate_step).min(1.0);
+            // Same reason as the gain ramp: land exactly rather than asymptotically.
+            if self.rate_t > 1.0 - self.rate_step * 0.5 {
+                self.rate_t = 1.0;
+            }
             self.rate = self.rate_from + (self.rate_to - self.rate_from) * self.rate_t;
         }
     }
@@ -456,6 +475,27 @@ mod tests {
             previous = voice.rate();
         }
         assert!((voice.rate() - 1.06).abs() < 1e-6, "glide never arrived");
+    }
+
+    /// A fade must finish even if the audio runs out underneath it.
+    ///
+    /// This is the exact shape of the bug that stopped the first working blend from handing over:
+    /// the outgoing track is *ending*, so its queue empties partway through the fade. With the
+    /// ramp frozen at that point `faded()` never became true, nothing reported the blend
+    /// finished, and the incoming track ran off the end of its buffer half a minute later.
+    #[test]
+    fn a_fade_completes_even_when_the_audio_stops() {
+        // Enough for ten frames, then nothing — but a hundred-frame fade.
+        let mut source = Slice::new(vec![100i16; 10]);
+        let mut voice = Voice::new(1, 1.0);
+        voice.fade_to(0.0, 100, Curve::EqualPower);
+
+        let mut out = vec![0.0f32; 100];
+        voice.mix_into(&mut source, &mut out);
+
+        assert!(voice.faded(), "the ramp stalled when the source ran dry");
+        assert_eq!(voice.gain(), 0.0, "faded, but not to silence");
+        assert!(voice.starved() > 0, "the test did not actually starve it");
     }
 
     /// Fading with zero frames is an immediate set, which is what muting wants.

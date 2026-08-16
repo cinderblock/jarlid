@@ -328,7 +328,41 @@ listening and must not acquire interpolation smear to buy a feature that runs fo
 between songs. When only one voice is playing at rate 1.0, the path through the mixer has to be
 arithmetically identical to today's.
 
-## Things not to do
+## It works, and two things are still wrong
+
+**A blend has now been heard.** Crossfade mode, 5 s overlap, `handed over at 5.02s into the new
+track`, drift 0.00 s and starved 0.00 s throughout. Cameron confirmed the transition itself
+sounded right.
+
+Two bugs found by listening, both fixed:
+
+- **The fade froze when the outgoing track ran dry.** `Voice::mix_into` skipped its ramps on a
+  starved frame, and the one voice guaranteed to starve mid-fade is the outgoing track of a
+  blend, because it is *ending*. `faded()` stayed false, the blend never reported itself
+  finished, the handover never ran — and the incoming track played until its prefetched buffer
+  simply stopped, about thirty seconds in. A fade is a function of time, not of whether audio
+  turned up to be faded.
+- **The ramp could not arrive.** Adding `1/n` to an `f32` n times does not reliably reach 1.0, so
+  even with the ramps advancing, `faded()` could stay false forever. Snapped within half a step.
+
+`blend_done` now also asks nothing of the outgoing voice at all — it is the one thing certain to
+run dry, so making the handover wait on it was wrong twice over.
+
+### Still open: the UI goes dark after a handover
+
+Reported immediately after the first successful blend: the whole UI dark except the footer. The
+footer is `#tech` and `#version`, both `position: fixed` outside `#player` — so `#player` itself
+is hidden, or the bundle threw.
+
+Not yet diagnosed. The strongest suspicion is that the handover leaves the audio thread's
+published state describing a track that is no longer playing: it never receives a `Play`, so
+`playing`, `track_ended` and the BPM latch are whatever the *outgoing* track left them as. If
+`track_ended` is still set from before the blend, `Engine::run` will call `advance()` immediately
+after the handover and start a third track over the top of the one that just faded in — which
+would also explain the UI losing track of what it is showing.
+
+Start there: log `track_ended` / `playing` either side of a handover, and consider having the
+handover publish the same state a `Play` would.
 
 - Don't try to change tempo by re-opening the decoder at a different rate — it cannot glide.
 - Don't run two cpal streams and hope they stay in phase. They won't.

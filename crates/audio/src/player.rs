@@ -642,10 +642,15 @@ impl Player {
                                 callback_shared
                                     .blend_frames
                                     .store(incoming.frames_read(), Ordering::Relaxed);
-                                // Faded fully in and the outgoing track is silent: the blend is
-                                // over. The owner completes the handover; the callback's only job
-                                // is to say so and stop mixing a voice whose buffer will run out.
-                                if incoming.faded() && voice.faded() && voice.gain() <= 0.0 {
+                                // Faded fully in: the blend is over. The owner completes the
+                                // handover; the callback's only job is to say so, before the
+                                // prefetched buffer this is playing from runs out.
+                                //
+                                // Deliberately does not ask anything of the *outgoing* voice. It
+                                // is ending, so it is the one thing here guaranteed to run dry
+                                // partway through, and making the handover wait on it is what
+                                // stopped the first working blend from ever completing.
+                                if incoming.faded() {
                                     callback_shared.blend_done.store(true, Ordering::Relaxed);
                                 }
                             }

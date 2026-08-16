@@ -242,7 +242,7 @@ impl Default for Blend {
     fn default() -> Self {
         Self {
             mode: BlendMode::Off,
-            seconds: 8.0,
+            seconds: 5.0,
             max_pull_percent: 6.0,
             restore_tempo: true,
         }
@@ -520,7 +520,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","volume":100,"blend":{"mode":"off","seconds":8.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null}"#
         );
 
         let daily = Settings {

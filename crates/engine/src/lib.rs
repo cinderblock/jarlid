@@ -30,7 +30,7 @@ const MIN_QUEUED: usize = 2;
 /// Only the overlap is played from here; the rest arrives live once the handover completes. More
 /// than enough for the longest overlap the settings allow, with room for the measurement the
 /// tempo tracker needs before it will say anything.
-const PREFETCH: Duration = Duration::from_secs(35);
+const PREFETCH: Duration = Duration::from_secs(45);
 
 /// How far ahead of the blend to start preparing it. The fetch itself is well under a second —
 /// measured at ~120x realtime — so this is slack, not a budget.
