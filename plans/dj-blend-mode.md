@@ -357,15 +357,29 @@ Reported immediately after the first successful blend: the whole UI dark except 
 footer is `#tech` and `#version`, both `position: fixed` outside `#player` — so `#player` itself
 is hidden, or the bundle threw.
 
-Not yet diagnosed. The strongest suspicion is that the handover leaves the audio thread's
-published state describing a track that is no longer playing: it never receives a `Play`, so
-`playing`, `track_ended` and the BPM latch are whatever the *outgoing* track left them as. If
-`track_ended` is still set from before the blend, `Engine::run` will call `advance()` immediately
-after the handover and start a third track over the top of the one that just faded in — which
-would also explain the UI losing track of what it is showing.
+**The obvious explanation is ruled out.** `#player` is hidden in exactly one place in `main.ts` —
+`showLogin()`, on `engine://needs-login`. All three emitters of that event are in `native.rs` and
+all three are unreachable mid-session: two are startup paths in `init`, the third is the explicit
+`native_sign_out` command. So the player was never hidden.
 
-Start there: log `track_ended` / `playing` either side of a handover, and consider having the
-handover publish the same state a `Play` would.
+That means it was **visible and blank**, which actually fits the report better. `#bg` is the
+blurred album art, so an empty art URL with empty title and artist gives precisely "dark
+everywhere except the footer" — and the footer survives because `#tech` and `#version` are
+`position: fixed` outside `#player`, still being fed by the technical ticker.
+
+So the question is not "what hid the UI" but "what rendered a now-playing with nothing in it".
+Two candidates, in order:
+
+1. **`Engine::run` advancing on top of the handover.** The handover pops the queue and sets
+   `current` itself, without going through `advance`. If the normal path also fires in the same
+   tick — a stale `track_ended`, or `failed` — a second track is popped and played over the one
+   that just faded in. Worth logging `track_ended` / `playing` / queue length either side.
+2. **`remoteMode`.** `onNowPlaying` returns early when it is set, so the pane would keep whatever
+   was last painted while the overlay owns the screen. Remote mode arms on "local playback idle
+   for >3 s", and a handover is the one moment local playback legitimately looks idle.
+
+Check (2) first — it is a one-line question (is `body.remote` set when it goes dark?) and it
+explains the *whole* screen going quiet rather than just the metadata.
 
 - Don't try to change tempo by re-opening the decoder at a different rate — it cannot glide.
 - Don't run two cpal streams and hope they stay in phase. They won't.
