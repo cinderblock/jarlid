@@ -6,6 +6,7 @@ import type { StationInfo } from "./stations-page";
 import * as settingsPage from "./settings-page";
 import * as lyricEditor from "./lyric-editor";
 import type { Lyrics } from "./lyric-editor";
+import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
 
 // ---- types -------------------------------------------------------------
 interface NowPlaying {
@@ -204,7 +205,7 @@ async function onNowPlaying(np: NowPlaying) {
   if (remoteMode) return; // remote overlay owns the screen; re-rendered on exit
   const wasSignedOut = isSignedOut();
   loginHint.hidden = true;
-  player.hidden = false;
+  showPlayer();
   // Signing in changes what the update badge should say, and does it without any playhead
   // event to notice it by. Only on the transition — this runs on every track.
   if (wasSignedOut) renderVersion();
@@ -306,9 +307,22 @@ function attachTip(el: HTMLElement, text: () => string) {
   el.addEventListener("mouseleave", () => (tooltip.hidden = true));
 }
 
+/**
+ * Draw the strip, newest end first.
+ *
+ * `history` is always newest-first; only the direction it is laid out in changes,
+ * so the setting can be flipped any number of times without touching the list.
+ *
+ * The scroll position is part of the answer, not an afterthought. The strip is
+ * wider than its column, so whichever end the newest track is at has to be the end
+ * that is actually on screen — with the newest on the left that was `scrollLeft: 0`
+ * and happened for free, which is exactly why it was never written down.
+ */
 function renderHistory() {
   histEl.innerHTML = "";
-  for (const h of history) {
+  const newestLeft = recentsOrder() === "newestLeft";
+  const order = newestLeft ? history : [...history].reverse();
+  for (const h of order) {
     const wrap = document.createElement("div");
     wrap.className = "hist-wrap";
     const img = new Image();
@@ -320,7 +334,40 @@ function renderHistory() {
     wrap.appendChild(img);
     histEl.appendChild(wrap);
   }
+  showNewestEnd();
   requestAnimationFrame(coverflow);
+}
+
+/**
+ * Park the strip at the end the newest track is on.
+ *
+ * The covers are a fixed 54px in CSS, so `scrollWidth` is right as soon as the strip
+ * has been laid out at all — but at first render it has not been, because the whole
+ * player is still `hidden` until a track arrives, and scrolling a zero-width element
+ * does nothing and reports no error. That left the strip showing the *oldest* end on
+ * startup: the first render's park was silently lost, and the next render only comes
+ * with a *new* song, which never arrives when playback resumes on the track already
+ * at the top of the list.
+ *
+ * Hence `showPlayer()` rather than a `ResizeObserver` on the strip: observing an
+ * element that only gains a box because an ancestor stopped being `display: none`
+ * never delivered a callback at all here, not even the initial one.
+ */
+function showNewestEnd() {
+  if (histEl.clientWidth === 0) return;
+  histEl.scrollLeft = recentsOrder() === "newestLeft" ? 0 : histEl.scrollWidth;
+}
+
+/**
+ * Reveal the player, and put the recently-played strip the right way round.
+ *
+ * The strip can only be positioned once it has a width, and this is the moment it
+ * gets one — so the two belong together rather than being two things a future
+ * caller has to remember to do in order.
+ */
+function showPlayer() {
+  player.hidden = false;
+  showNewestEnd();
 }
 
 // Cover-Flow-style perspective: items tilt away from the strip's center as
@@ -342,6 +389,9 @@ function coverflow() {
 }
 histEl.addEventListener("scroll", () => requestAnimationFrame(coverflow));
 window.addEventListener("resize", () => requestAnimationFrame(coverflow));
+// Turning the strip round is a redraw, not a reload — the setting is judged by
+// looking at the strip while the page is open.
+window.addEventListener(RECENTS_ORDER_CHANGED, () => renderHistory());
 function pushHistory(np: NowPlaying) {
   const art = np.artFallback || np.art;
   if (!art || !np.title) return;
@@ -981,7 +1031,7 @@ $("settings-btn").addEventListener("click", (e) => {
 });
 // index.html paints from a cached preference before the first frame; this is the
 // authoritative answer arriving a moment later.
-void settingsPage.applyStoredTheme();
+void settingsPage.applyStoredAppearance();
 attachTip($("stations-btn"), () => "All stations — browse, export");
 attachTip($("settings-btn"), () => "Settings");
 
@@ -1170,7 +1220,7 @@ function updateMode() {
   currentKey = ""; // force full re-render for the new source
   if (remoteMode && remote) {
     loginHint.hidden = true;
-    player.hidden = false;
+    showPlayer();
     renderRemote(remote);
     setPlayingIcon(remote.playing);
   } else if (lastLocalNp) {

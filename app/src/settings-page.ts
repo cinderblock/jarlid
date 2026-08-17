@@ -4,6 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createSelect, type Option } from "./select";
 import { setTheme, themePref, type ThemePref } from "./theme";
+import { recentsOrder, setRecentsOrder, type RecentsOrder } from "./recents";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -14,6 +15,8 @@ const signOutBtn = $<HTMLButtonElement>("set-signout");
 const policyRadios = () =>
   document.querySelectorAll<HTMLInputElement>('input[name="update-policy"]');
 const themeRadios = () => document.querySelectorAll<HTMLInputElement>('input[name="theme"]');
+const recentsRadios = () =>
+  document.querySelectorAll<HTMLInputElement>('input[name="recents-order"]');
 const timeInput = $<HTMLInputElement>("set-check-time");
 const volumeInput = $<HTMLInputElement>("set-volume");
 const volumeValue = $("set-volume-value");
@@ -45,6 +48,8 @@ interface Settings {
   updatePolicy: Policy;
   checkSchedule: CheckSchedule;
   theme: ThemePref;
+  /** Which end of the recently-played strip the newest song sits at. */
+  recentsOrder: RecentsOrder;
   blend: Blend;
   /** 0-100. The taper from this to a gain lives in Rust; see `settings::Volume`. */
   volume: number;
@@ -140,16 +145,20 @@ async function refreshOutputNow() {
   }
 }
 
-/** Apply the stored theme at startup, without showing the page. */
-export async function applyStoredTheme() {
+/**
+ * Apply the stored look at startup, without showing the page.
+ *
+ * Both of these are painted from a `localStorage` cache before Rust can answer, so
+ * this is the moment the file gets to correct the guess — which it has to do when
+ * the settings were changed by another install or hand-edited between runs.
+ */
+export async function applyStoredAppearance() {
   try {
     const s = await invoke<Settings>("get_settings");
-    // The webview's cache already painted something; only correct it if the file
-    // disagrees, which happens when the settings were changed by another install
-    // or hand-edited between runs.
     if (s.theme && s.theme !== themePref()) setTheme(s.theme);
+    if (s.recentsOrder && s.recentsOrder !== recentsOrder()) setRecentsOrder(s.recentsOrder);
   } catch {
-    // Unreadable settings means the cached preference stands.
+    // Unreadable settings means the cached preferences stand.
   }
 }
 
@@ -172,6 +181,7 @@ async function refreshSettings() {
 function setEnabled(on: boolean) {
   policyRadios().forEach((r) => (r.disabled = !on));
   themeRadios().forEach((r) => (r.disabled = !on));
+  recentsRadios().forEach((r) => (r.disabled = !on));
   scheduleSel.setDisabled(!on);
   outputSel.setDisabled(!on);
   timeInput.disabled = !on;
@@ -229,6 +239,7 @@ function reflectBlend() {
 function render(s: Settings) {
   policyRadios().forEach((r) => (r.checked = r.value === s.updatePolicy));
   themeRadios().forEach((r) => (r.checked = r.value === (s.theme ?? "system")));
+  recentsRadios().forEach((r) => (r.checked = r.value === (s.recentsOrder ?? "newestRight")));
   volumeInput.value = String(s.volume ?? 100);
   outputSel.value = s.outputDevice ?? FOLLOW_DEFAULT;
   reflectVolume();
@@ -281,6 +292,11 @@ function readTheme(): ThemePref {
   return (picked?.value as ThemePref) ?? "system";
 }
 
+function readRecentsOrder(): RecentsOrder {
+  const picked = [...recentsRadios()].find((r) => r.checked);
+  return (picked?.value as RecentsOrder) ?? "newestRight";
+}
+
 function readPolicy(): Policy {
   const picked = [...policyRadios()].find((r) => r.checked);
   return (picked?.value as Policy) ?? "afterSong";
@@ -314,6 +330,7 @@ async function persist() {
     updatePolicy: readPolicy(),
     checkSchedule: readSchedule(),
     theme: readTheme(),
+    recentsOrder: readRecentsOrder(),
     volume: readVolume(),
     blend: readBlend(),
     outputDevice: readOutput(),
@@ -333,6 +350,7 @@ async function persist() {
     if (current) {
       render(current);
       setTheme(current.theme ?? "system");
+      setRecentsOrder(current.recentsOrder ?? "newestRight");
       applyVolume(current.volume ?? 100);
       // The device was moved optimistically too, so put playback back where the
       // stored settings say it belongs.
@@ -387,6 +405,13 @@ reflectBlend();
 // click rather than after the write comes back.
 $("set-theme").addEventListener("change", () => {
   setTheme(readTheme());
+  void persist();
+});
+
+// Same again: the strip is behind this page, and the only way to judge which way
+// round you want it is to see it turn.
+$("set-recents-order").addEventListener("change", () => {
+  setRecentsOrder(readRecentsOrder());
   void persist();
 });
 

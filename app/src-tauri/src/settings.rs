@@ -113,6 +113,26 @@ pub enum Theme {
     Dark,
 }
 
+/// Which end of the recently-played strip the newest song sits at.
+///
+/// Like [`Theme`], nothing in Rust reads this — the webview draws the strip — but the
+/// preference belongs with the rest of them rather than in a webview storage bucket that has
+/// to be kept in agreement.
+///
+/// An enum rather than a `reversed: bool`, because "reversed" does not say reversed *from
+/// what*: the answer is only obvious to whoever wrote the default, and it stops being obvious
+/// the moment the default moves.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum RecentsOrder {
+    /// Newest at the right-hand end, the way the Pandora app does it, so the strip reads as
+    /// time running left to right and the song that just finished is nearest the transport.
+    #[default]
+    NewestRight,
+    /// Newest at the left-hand end.
+    NewestLeft,
+}
+
 /// Jarlid's own output level, 0-100, where 100 is the decoded signal untouched.
 ///
 /// This exists so the music can sit *below* the rest of the machine: turn Windows up for
@@ -182,6 +202,8 @@ pub struct Settings {
     pub update_policy: Policy,
     pub check_schedule: CheckSchedule,
     pub theme: Theme,
+    /// Which way round the recently-played strip runs.
+    pub recents_order: RecentsOrder,
     pub volume: Volume,
     /// How one song gives way to the next.
     pub blend: Blend,
@@ -445,6 +467,29 @@ mod tests {
         assert!(!parsed.blend.overlaps());
     }
 
+    /// A settings file written before the strip could be turned round still parses, and lands
+    /// on the same default as a fresh install rather than on whichever variant happens to be
+    /// listed first.
+    #[test]
+    fn older_settings_files_get_the_newest_on_the_right() {
+        let old = r#"{"updatePolicy":"afterSong","theme":"system","volume":100}"#;
+        let parsed: Settings = serde_json::from_str(old).expect("old file still parses");
+        assert_eq!(parsed.recents_order, RecentsOrder::NewestRight);
+        assert_eq!(parsed.recents_order, Settings::default().recents_order);
+    }
+
+    /// The stored name is what the webview switches on, so it is part of the file format and
+    /// not free to be renamed.
+    #[test]
+    fn recents_order_round_trips_by_name() {
+        let json = serde_json::to_string(&RecentsOrder::NewestLeft).unwrap();
+        assert_eq!(json, r#""newestLeft""#);
+        assert_eq!(
+            serde_json::from_str::<RecentsOrder>(&json).unwrap(),
+            RecentsOrder::NewestLeft
+        );
+    }
+
     /// Updating in the gap after a song is the default: it keeps itself current without
     /// ever interrupting a track.
     #[test]
@@ -520,7 +565,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null}"#
         );
 
         let daily = Settings {
@@ -529,6 +574,7 @@ mod tests {
                 time: "03:30".into(),
             },
             theme: Theme::Light,
+            recents_order: RecentsOrder::NewestLeft,
             volume: Volume::new(60),
             blend: Blend {
                 mode: BlendMode::BeatMatched,
