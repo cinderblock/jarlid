@@ -1514,10 +1514,17 @@ body.remote #remote-vol-wrap {
   color: var(--faint);
 }
 /* Fixed width and tabular figures: the number is read while dragging, and a
-   proportional one shifts the whole row sideways as it passes 9%, 99%. */
+   proportional one shifts the whole row sideways as it passes 9%, 99%.
+
+   `nowrap` because a fixed-width box invites the browser to break inside the
+   value, and a `±` is a break opportunity where a digit is not: the tempo-pull
+   read-out ("±6%") wrapped to five lines in a 3.4ch box and made its row 105px
+   tall instead of 20px. The width also has to hold the widest value any of these
+   read-outs can show — "±16%" at full pull, not just "100%". */
 .set-vol-value {
   flex: none;
-  width: 3.4ch;
+  width: 4.5ch;
+  white-space: nowrap;
   text-align: right;
   font-size: 0.82rem;
   font-variant-numeric: tabular-nums;
