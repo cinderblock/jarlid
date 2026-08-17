@@ -78,6 +78,23 @@ anywhere in it.
   that gap is the resampling that keeps pitch honest. Buffer depth sits at the end, and the two
   fault counters — audio lost, and audio that arrived too late to play — appear only when they
   are non-zero, so a line that stays quiet means what it says.
+- **Blending between songs** *(experimental, off by default)*: overlap the end of one track with
+  the start of the next, and — in Beat-matched mode — pull the incoming song's tempo onto the
+  outgoing one so the beats land together. The pull is a **pitch fader**, exactly as a DJ's is:
+  speed and pitch move together, and the limit is set as a percentage because ±6% is the same
+  musical stretch at 90 BPM as at 160. That limit doubles as the decision to blend at all — two
+  songs further apart than it allows get an ordinary transition, because no blend beats a bad
+  one. Half and double time count as already matched, so a 64 BPM track lines up with a 128 BPM
+  one without either being touched.
+
+  It works by pulling the next track's opening into memory ahead of time — decoding is about 120×
+  realtime when nothing throttles it, so that costs well under a second — measuring its tempo
+  there, and then, when the fade finishes, re-pointing the live stream underneath the audio that
+  is already playing rather than opening a new one. That last part is what keeps it gapless: a
+  fresh stream would take a couple of hundred milliseconds to open and seek, which is unnoticeable
+  between songs and very noticeable in the middle of one.
+
+  **Known issue:** the window can go blank after a blend hands over. That is why it ships off.
 - **Settings**: light, dark, or follow Windows (the window frame follows too, and "system"
   keeps following when Windows switches at sunset); Jarlid's own volume; which account is
   signed in and a way to sign out (which clears the saved password from the Windows
