@@ -7,7 +7,10 @@ while the incoming one comes in, **beat-matched** so the two pulses line up. Whe
 close enough, nudge the time base to make them agree. A **maximum BPM deviation** control decides
 how far we're willing to stretch; beyond it, no blend — just the normal end-of-song transition.
 
-Status: **researched, not started.** The gating experiment has been run and passed (see Findings).
+Status: **shipped in v1.6.0, off by default, with one known bug.** A blend has been heard working
+end to end — crossfade, 5 s overlap, handover at 5.02 s, drift and starvation both zero. The
+window can go blank afterwards, which is why the default is Off and why the README says so
+plainly. See "Still open" below; that is the next thing.
 
 ## Environment / context
 
