@@ -1483,8 +1483,16 @@ body.remote #remote-vol-wrap {
 .set-radio:has(:focus-visible) {
   border-color: var(--accent);
 }
-.set-radio input {
-  margin-top: 2px;
+/* Sits on the optical middle of the title, not the middle of its line box. Two
+   things were wrong: this rule used to be `.set-radio input`, which ties with the
+   later `input[type="radio"] { margin: 0 }` on specificity and loses to it on
+   order — so the offset was never applied at all and the dot rode 2px high. And
+   the intended 2px was line-box centring anyway; the line box carries the font's
+   descender space below the words, so centring in it still leaves the dot high.
+   3px is the cap-height centre (measured: baseline 16.44px from the line-box top,
+   cap height 10px, so the cap centre is 11.44px down, less half of the 17px box). */
+.set-radio > input[type="radio"] {
+  margin-top: 3px;
 }
 /* Each option explains itself inline: the difference between "after this song" and
    "immediately" is the whole decision, and a bare label doesn't carry it. */
@@ -1541,11 +1549,32 @@ body.remote #remote-vol-wrap {
    file. The control column is capped: a dropdown stretched to half a maximised
    window looks like a mistake, and the point of the width is the *description*
    getting room, not the input. */
+/* The title is a grid sibling of the control rather than the first line of the
+   description, which is what lets the control sit on the title's row. Centred on
+   the whole text block — what this used to do — put the control wherever the
+   description happened to end: 9px below the title on Theme, 30px on Audio
+   device, 21px on Sign out. Nothing lined up down the page. */
 .set-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
+  grid-template-areas:
+    "title"
+    "text"
+    "ctl";
+  column-gap: 28px;
+  /* No row gap: the description's own top margin is the title-to-text spacing,
+     so promoting the title out of the text block changed nothing about it. */
+  row-gap: 0;
   align-items: start;
+}
+.set-item-title {
+  grid-area: title;
+}
+.set-item-text {
+  grid-area: text;
+}
+.set-item-ctl {
+  grid-area: ctl;
 }
 /* A rule between settings inside one card — without it two stacked items read as
    one paragraph with a stray control in it. */
@@ -1554,7 +1583,7 @@ body.remote #remote-vol-wrap {
   padding-top: 14px;
   border-top: 1px solid rgba(var(--wash), 0.07);
 }
-.set-item-text b {
+.set-item-title {
   display: block;
   font-size: 0.9rem;
   font-weight: 600;
@@ -1571,6 +1600,9 @@ body.remote #remote-vol-wrap {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  /* Stacked (narrow, and the full-width fader rows) the control needs air above
+     it; side-by-side it is on the title's own row and must not be pushed off it. */
+  margin-top: 8px;
 }
 /* Dropdowns and fields fill the control column so their right edges line up;
    buttons keep their natural width, because a full-width "Sign out" reads as a
@@ -1599,20 +1631,35 @@ body.remote #remote-vol-wrap {
 }
 
 @media (min-width: 760px) {
+  /* The control sits in the title's row, so its centre lands on the title's
+     centre in every card no matter how long the description runs. The second row
+     leaves column 2 empty rather than letting the control span both rows — that
+     would centre it on the card again, which is the thing being fixed. */
   .set-item {
     grid-template-columns: minmax(0, 1fr) minmax(200px, 280px);
-    gap: 28px;
+    grid-template-areas:
+      "title ctl"
+      "text  .";
     align-items: center;
   }
   .set-item-ctl {
     justify-content: flex-end;
+    margin-top: 0;
   }
   /* The fader is the exception the user asked for: resolution beats alignment,
      because a level is judged by movements of a percent or two and a 280px track
-     puts 3% and 6% on the same pixel. It keeps the full card width. */
+     puts 3% and 6% on the same pixel. It keeps the full card width, so it stays
+     stacked and keeps the air above the control. */
   .set-item-wide {
     grid-template-columns: minmax(0, 1fr);
-    gap: 12px;
+    grid-template-areas:
+      "title"
+      "text"
+      "ctl";
+    align-items: start;
+  }
+  .set-item-wide .set-item-ctl {
+    margin-top: 8px;
   }
   /* Four options, each explaining itself — two columns rather than a tall single
      file that pushes everything below it off the screen. */
