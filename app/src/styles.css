@@ -135,20 +135,61 @@ body {
 
 /* ---- main layout ----
    The player never scrolls; only the lyrics column does. The stage (art + meta +
-   controls) is a fixed panel that always stays on screen. */
+   controls) is a fixed panel that always stays on screen.
+
+   `--stage-w` is the width of everything in the left column, and because the art
+   is square it is also the art's height. It used to be `min(42vh, 100%)` against
+   a column fixed at 44%, which meant the art only reached the edge of its own
+   column on a window tall enough for 42vh to exceed 44% of the width — roughly a
+   fifth taller than the content needs. So it is derived the other way round now:
+   take the height actually left over once everything *under* the art has its
+   room, and let the column be that wide. Three terms, whichever is smallest:
+
+     46vw  — the art is the hero but not the page; past about this the lyrics
+             stop being a column and start being a margin.
+     89vw - 420px — never squeeze the lyrics below a readable measure, whatever
+             the aspect ratio (89vw is both columns: 100 - 2*4 padding - 3 gap).
+     92vh - reserve — the height that is genuinely free.
+
+   All three are in viewport units on purpose: a percentage inside a custom
+   property is resolved where the property is *used*, and this one is used both
+   here (percent of the player) and inside `.stage` (percent of the column). */
 #player {
   position: relative;
   z-index: 2;
   height: 100vh;
   display: grid;
-  grid-template-columns: minmax(340px, 44%) 1fr;
+  grid-template-columns: minmax(340px, var(--stage-w)) minmax(0, 1fr);
   gap: 3vw;
   padding: 4vh 4vw;
   align-items: center;
   overflow: hidden;
+
+  /* Everything below the art, measured rather than guessed: .meta's top margin
+     and its four lines, then the progress row, the transport and the history
+     strip with their own margins. The two clamps are #title's and #artist's
+     font sizes, which are the only parts that move with the viewport.
+
+     An over-estimate costs a few pixels of art; an under-estimate is caught by
+     the `min()` on `.art-wrap`, so this never clips the transport. Keep it in
+     step when anything is added to or removed from the stage. */
+  --stage-reserve: calc(
+    327px + 1.15 * clamp(1.5rem, 3.2vw, 2.6rem) + 1.3 * clamp(1rem, 1.8vw, 1.3rem)
+  );
+  --stage-w: min(46vw, calc(89vw - 420px), calc(92vh - var(--stage-reserve)));
 }
 
+/* The stage carries the width so the art, the progress bar and the history strip
+   can all just say `100%` and stay locked to each other — they used to repeat
+   `min(42vh, 100%)` four times, and any one of them drifting made the progress
+   bar wider than the record it belongs to.
+
+   `min(100%, …)` rather than the bare custom property because the grid track has
+   a 340px floor: on a window too short for that, the column stops shrinking but
+   the art must not stop, or it pushes the transport off the bottom. */
 .stage {
+  width: min(100%, var(--stage-w));
+  margin-inline: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -158,7 +199,7 @@ body {
 }
 
 .art-wrap {
-  width: min(42vh, 100%);
+  width: 100%;
   aspect-ratio: 1;
   border-radius: 18px;
   overflow: hidden;
@@ -583,7 +624,7 @@ body.remote #tech {
   display: flex;
   align-items: center;
   gap: 12px;
-  width: min(42vh, 100%);
+  width: 100%;
   margin-top: 26px;
   font-variant-numeric: tabular-nums;
   font-size: 0.78rem;
@@ -681,7 +722,7 @@ button.icon.big:hover {
   display: none;
   align-items: center;
   gap: 10px;
-  width: min(42vh, 100%);
+  width: 100%;
   margin-top: 18px;
   color: var(--faint);
 }
@@ -720,7 +761,7 @@ body.remote #remote-vol-wrap {
 #history {
   display: flex;
   gap: 10px;
-  width: min(42vh, 100%);
+  width: 100%;
   margin-top: 22px;
   overflow-x: auto;
   overflow-y: visible;
