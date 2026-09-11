@@ -38,7 +38,10 @@ anywhere in it.
   that stalls mid-song or an output device that disappears (headphones unplugged, monitor asleep):
   it rebuilds where you were instead of going silent until you hit skip. Because it watches the
   *decoder* rather than the playhead, a stalled read is caught with the whole ring buffer still in
-  hand — the re-open usually finishes before there is anything to hear.
+  hand — the re-open usually finishes before there is anything to hear. Pause for long enough that
+  Pandora's signed stream URLs have expired and play moves straight on to a fresh song — it does
+  not try the stale ones queued behind it one by one, and an advance it makes on its own never
+  overrides a pause you just pressed.
 - **Stations page**: the whole collection on one screen — search it, click to play, or switch to
   Select mode to pick stations for export. QuickMix, Thumbprint and genre stations are tagged,
   which matters because a QuickMix is a shuffle *over* other stations and so has no seeds or

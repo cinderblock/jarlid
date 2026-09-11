@@ -9,11 +9,10 @@
 mod audio_thread;
 pub mod credentials;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use audio_thread::AudioThread;
+use audio_thread::{AudioThread, Start};
 use pandora::Track;
 use tokio::sync::{mpsc, Mutex};
 
@@ -135,6 +134,18 @@ pub enum Event {
     Error(String),
 }
 
+/// A track and when Pandora issued it.
+///
+/// The audio URL is signed and expires, and a playlist request signs every track in it at once.
+/// So when one of them will not open, the others fetched with it are dead too — and the ones
+/// fetched later may not be. The instant is what tells those apart; see
+/// [`Engine::retire_batch_of_current`].
+#[derive(Clone)]
+struct Fetched {
+    track: Track,
+    at: Instant,
+}
+
 struct State {
     client: pandora::Client,
     station_token: Option<String>,
@@ -142,8 +153,8 @@ struct State {
     /// cached; see [`Engine::rest_station_id`] for why it isn't simply the tuner token.
     station_rest_id: Option<String>,
     station_name: String,
-    queue: Vec<Track>,
-    current: Option<Track>,
+    queue: Vec<Fetched>,
+    current: Option<Fetched>,
     /// stationId → station name, so a QuickMix track can name its source without a round trip.
     station_names: std::collections::HashMap<String, String>,
 }
@@ -152,9 +163,6 @@ pub struct Engine {
     state: Arc<Mutex<State>>,
     audio: Arc<AudioThread>,
     events: mpsc::UnboundedSender<Event>,
-    /// Set for the duration of [`Engine::play_station_paused`] and consumed by the advance
-    /// inside it, so the first track of a session can be loaded without starting it.
-    start_paused: AtomicBool,
     /// How to end a song. Read every tick of `run`, so a plain lock rather than the async one.
     blend: std::sync::Mutex<BlendConfig>,
 }
@@ -180,7 +188,6 @@ impl Engine {
             })),
             audio: Arc::new(AudioThread::spawn()),
             events,
-            start_paused: AtomicBool::new(false),
             blend: std::sync::Mutex::new(BlendConfig::default()),
         };
 
@@ -247,7 +254,7 @@ impl Engine {
     /// unconditionally without special-casing.
     pub async fn source_station(&self) -> Option<String> {
         let mut state = self.state.lock().await;
-        let track = state.current.clone()?;
+        let track = state.current.as_ref()?.track.clone();
         if track.station_id.is_empty() {
             return None;
         }
@@ -351,6 +358,10 @@ impl Engine {
 
     /// Switch station and begin playing it.
     pub async fn play_station(&self, name: &str, token: &str) -> Result<()> {
+        self.play_station_as(name, token, Start::Playing).await
+    }
+
+    async fn play_station_as(&self, name: &str, token: &str, start: Start) -> Result<()> {
         {
             let mut state = self.state.lock().await;
             state.station_token = Some(token.to_string());
@@ -362,19 +373,35 @@ impl Engine {
         }
         self.audio.stop();
         let _ = self.events.send(Event::StationChanged(name.to_string()));
-        self.advance().await
+        self.advance_as(start).await
     }
 
     /// Play the next track, refilling the queue if needed.
+    ///
+    /// This is the button-press form: the next track starts sounding whatever the pause state
+    /// was, which is what skip, take-over and picking a station all mean. The advances the run
+    /// loop makes on its own go through [`Engine::advance_as`] with [`Start::Unchanged`].
     pub async fn advance(&self) -> Result<()> {
+        self.advance_as(Start::Playing).await
+    }
+
+    async fn advance_as(&self, start: Start) -> Result<()> {
         let track = {
             let mut state = self.state.lock().await;
 
             if state.queue.len() < MIN_QUEUED {
                 let token = state.station_token.clone().ok_or(Error::NoStation)?;
-                let is_start = state.current.is_none() && state.queue.is_empty();
                 match state.client.playlist(&token).await {
-                    Ok(tracks) => state.queue.extend(tracks),
+                    Ok(tracks) => {
+                        // One stamp for the batch, taken once. The request signed every URL
+                        // in it at the same instant, and the retirement rule compares stamps
+                        // for equality-or-older: stamping each track as it is pushed would
+                        // spread a batch across nanoseconds and let its later members survive.
+                        let at = Instant::now();
+                        state
+                            .queue
+                            .extend(tracks.into_iter().map(|track| Fetched { track, at }));
+                    }
                     Err(e) if e.is_stream_violation() => {
                         let _ = self.events.send(Event::StreamTaken);
                         return Err(e.into());
@@ -386,33 +413,54 @@ impl Engine {
                     }
                     Err(_) => {}
                 }
-                let _ = is_start;
             }
 
             if state.queue.is_empty() {
                 return Err(Error::NoStation);
             }
-            let track = state.queue.remove(0);
-            state.current = Some(track.clone());
-            track
+            let next = state.queue.remove(0);
+            state.current = Some(next.clone());
+            next.track
         };
 
-        // One-shot: only the advance inside `play_station_paused` is held, and every later
-        // one behaves normally — including the one the play button triggers.
-        if self.start_paused.swap(false, Ordering::SeqCst) {
-            self.audio.play_paused(&track.audio_url);
-            let _ = self.events.send(Event::TrackStarted(Box::new(track)));
-            // A `TrackStarted` that did not start anything would otherwise leave the event
-            // stream implying playback. Jarlid's UI happens not to need it — it starts up
-            // showing paused and takes the truth from the playhead tick — but the event
-            // stream is this crate's API and should not lie to the next consumer.
-            let _ = self.events.send(Event::Paused(true));
-            return Ok(());
-        }
-
-        self.audio.play(&track.audio_url);
+        self.audio.play(&track.audio_url, start);
         let _ = self.events.send(Event::TrackStarted(Box::new(track)));
+
+        // A `TrackStarted` that did not start anything would otherwise leave the event stream
+        // implying playback. Jarlid's UI happens not to need it — it takes the truth from the
+        // playhead tick — but the event stream is this crate's API and should not lie to the
+        // next consumer. For `Unchanged` the published flag is read after the fact: exact
+        // unless a pause is still in flight to the audio thread, and the tick corrects that
+        // within a frame.
+        let paused = match start {
+            Start::Playing => false,
+            Start::Paused => true,
+            Start::Unchanged => self.audio.is_paused(),
+        };
+        if paused {
+            let _ = self.events.send(Event::Paused(true));
+        }
         Ok(())
+    }
+
+    /// The current track would not play. Retire everything queued that is no fresher than it.
+    ///
+    /// Pandora's audio URLs are signed and expire, and a playlist request signs every track in
+    /// it at once. So a URL that will not open is not one bad track: everything fetched with it
+    /// or before it was signed no later, and is dead too. Left in the queue, each would be tried
+    /// in turn and fail in turn — which is exactly what "press play after a long pause and it
+    /// skips through three songs" was. Anything fetched later may still be good and is kept;
+    /// the refill in [`Engine::advance_as`] covers whatever is missing.
+    ///
+    /// Also reached when a track stalled mid-play and recovery gave up on it, where the rest of
+    /// its batch is probably fine. The cost of being wrong there is one playlist request; the
+    /// cost of being wrong the other way is the skipping this exists to stop.
+    async fn retire_batch_of_current(&self) {
+        let mut state = self.state.lock().await;
+        let Some(failed_at) = state.current.as_ref().map(|c| c.at) else {
+            return;
+        };
+        retire_no_fresher_than(&mut state.queue, failed_at);
     }
 
     /// Restore a station without starting it: the track is loaded, the device is never
@@ -422,17 +470,14 @@ impl Engine {
     /// the music paused must not come back playing, or the restart starts music at someone
     /// who deliberately stopped it.
     ///
-    /// The intent lives and dies with this one call, which is the whole reason it is a
-    /// method rather than a flag callers set. Left standing it would be a trap: if this
+    /// The intent travels with the one advance it is for, which is the whole reason it is an
+    /// argument rather than a flag callers set. A standing flag would be a trap: if this
     /// restore fails — a stream violation moments after the installer ran is the obvious
     /// way — the flag would sit there waiting for the *next* advance, and that one is the
     /// advance the listener asks for by clicking Take Over or picking a station. They would
     /// get a loaded track and silence, with nothing on screen to explain it.
     pub async fn play_station_paused(&self, name: &str, token: &str) -> Result<()> {
-        self.start_paused.store(true, Ordering::SeqCst);
-        let started = self.play_station(name, token).await;
-        self.start_paused.store(false, Ordering::SeqCst);
-        started
+        self.play_station_as(name, token, Start::Paused).await
     }
 
     /// Drive the radio: advance when a track ends. Runs until the engine is dropped.
@@ -461,7 +506,7 @@ impl Engine {
         let outgoing = self.audio.tempo().map(|t| t.bpm);
         let url = {
             let state = self.state.lock().await;
-            state.queue.first()?.audio_url.clone()
+            state.queue.first()?.track.audio_url.clone()
         };
 
         let fetch_url = url.clone();
@@ -526,9 +571,9 @@ impl Engine {
                     if state.queue.is_empty() {
                         None
                     } else {
-                        let track = state.queue.remove(0);
-                        state.current = Some(track.clone());
-                        Some(track)
+                        let next = state.queue.remove(0);
+                        state.current = Some(next.clone());
+                        Some(next.track)
                     }
                 };
                 prepared = None;
@@ -547,7 +592,7 @@ impl Engine {
                     .await
                     .current
                     .as_ref()
-                    .map(|t| Duration::from_secs(t.track_length))
+                    .map(|c| Duration::from_secs(c.track.track_length))
                     .unwrap_or_default();
                 let remaining = duration.saturating_sub(position);
                 let overlap = Duration::from_secs_f32(blend.seconds.clamp(2.0, 20.0));
@@ -557,7 +602,7 @@ impl Engine {
                     .await
                     .current
                     .as_ref()
-                    .map(|t| t.audio_url.clone());
+                    .map(|c| c.track.audio_url.clone());
 
                 // Anything prepared for a track we are no longer playing is stale — a skip, or a
                 // station change. Throwing it away is cheaper than blending into the wrong song.
@@ -588,14 +633,25 @@ impl Engine {
             }
 
             let due = retry_at.is_some_and(|at| tokio::time::Instant::now() >= at);
-
+            // Both consumed here, so a failed advance is retried when `RETRY` says, not on
+            // every tick that still sees the flag up.
+            let ended = self.audio.take_track_ended();
             // A track that failed to open must be skipped, or the radio stalls forever on it.
-            if due || self.audio.track_ended() || self.audio.failed() {
-                if !due {
+            let failed = self.audio.take_failed();
+
+            if due || ended || failed {
+                if ended || failed {
                     let _ = self.events.send(Event::TrackEnded);
                 }
+                if failed {
+                    self.retire_batch_of_current().await;
+                }
 
-                match self.advance().await {
+                // Nobody pressed anything, so the pause state is not ours to change. This is
+                // what keeps "play, then pause a moment later" paused: if the track play tried
+                // to open was dead, its replacement loads the way the listener left things
+                // rather than starting because an advance happened to run.
+                match self.advance_as(Start::Unchanged).await {
                     Ok(()) => retry_at = None,
                     Err(e) => {
                         // Do NOT give up. This used to `return`, so a single STREAM_VIOLATION
@@ -634,11 +690,11 @@ impl Engine {
     /// No seek required and no extra request to Pandora: the signed audio URL is still valid, so
     /// re-opening it starts a fresh decode from byte zero.
     pub async fn replay(&self) -> Result<()> {
-        let Some(track) = self.state.lock().await.current.clone() else {
+        let Some(track) = self.now_playing().await else {
             return Err(Error::NoStation);
         };
         self.audio.stop();
-        self.audio.play(&track.audio_url);
+        self.audio.play(&track.audio_url, Start::Playing);
         // Re-announce so the UI resets its progress bar and re-syncs lyrics to zero.
         let _ = self.events.send(Event::TrackStarted(Box::new(track)));
         Ok(())
@@ -726,7 +782,12 @@ impl Engine {
     }
 
     pub async fn now_playing(&self) -> Option<Track> {
-        self.state.lock().await.current.clone()
+        self.state
+            .lock()
+            .await
+            .current
+            .as_ref()
+            .map(|c| c.track.clone())
     }
 
     pub async fn thumb_up(&self) -> Result<()> {
@@ -739,8 +800,10 @@ impl Engine {
 
     async fn feedback(&self, positive: bool) -> Result<()> {
         let mut state = self.state.lock().await;
-        let (Some(station), Some(track)) = (state.station_token.clone(), state.current.clone())
-        else {
+        let (Some(station), Some(track)) = (
+            state.station_token.clone(),
+            state.current.as_ref().map(|c| c.track.clone()),
+        ) else {
             return Err(Error::NoStation);
         };
 
@@ -753,5 +816,73 @@ impl Engine {
                 .await?;
         }
         Ok(())
+    }
+}
+
+/// Drop every queued track fetched at or before `at`, keeping anything fetched later.
+///
+/// Separate from [`Engine`] so the rule can be tested without a Pandora session: tracks from
+/// one playlist request share one stamp exactly, and the comparison has to treat equal stamps
+/// as the same batch or the retirement would keep the very tracks it exists to drop.
+fn retire_no_fresher_than(queue: &mut Vec<Fetched>, at: Instant) {
+    queue.retain(|queued| queued.at > at);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fetched(title: &str, at: Instant) -> Fetched {
+        Fetched {
+            track: Track {
+                song_title: title.into(),
+                ..Track::default()
+            },
+            at,
+        }
+    }
+
+    fn titles(queue: &[Fetched]) -> Vec<&str> {
+        queue.iter().map(|q| q.track.song_title.as_str()).collect()
+    }
+
+    /// The failed track's batch goes; a batch fetched later survives, in order.
+    #[test]
+    fn retires_the_failed_batch_and_keeps_the_later_one() {
+        let stale = Instant::now();
+        let fresh = stale + Duration::from_secs(1);
+        let mut queue = vec![
+            fetched("stale 1", stale),
+            fetched("stale 2", stale),
+            fetched("fresh 1", fresh),
+            fetched("fresh 2", fresh),
+        ];
+
+        retire_no_fresher_than(&mut queue, stale);
+
+        assert_eq!(titles(&queue), ["fresh 1", "fresh 2"]);
+    }
+
+    /// Equal stamps are the same batch — the failed track was stamped with these.
+    #[test]
+    fn treats_an_equal_stamp_as_the_same_batch() {
+        let at = Instant::now();
+        let mut queue = vec![fetched("a", at), fetched("b", at)];
+
+        retire_no_fresher_than(&mut queue, at);
+
+        assert!(queue.is_empty());
+    }
+
+    /// A batch older than the failed one is at least as dead.
+    #[test]
+    fn retires_batches_older_than_the_failed_one() {
+        let older = Instant::now();
+        let failed = older + Duration::from_secs(1);
+        let mut queue = vec![fetched("older", older), fetched("same", failed)];
+
+        retire_no_fresher_than(&mut queue, failed);
+
+        assert!(queue.is_empty());
     }
 }

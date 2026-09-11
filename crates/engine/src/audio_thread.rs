@@ -67,12 +67,29 @@ const DEFAULT_DEVICE_POLL: Duration = Duration::from_secs(1);
 /// land exactly where it was asked. Long enough for that, short enough not to be heard.
 const HANDOVER_CROSS: Duration = Duration::from_millis(50);
 
+/// Whether a newly loaded track starts sounding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Start {
+    /// Open the device and play. What a button press asks for.
+    Playing,
+    /// Load without opening the device, so not one frame is emitted; the play button starts
+    /// it. What a restore after an update asks for.
+    Paused,
+    /// Whatever the listener last asked for: play if they were playing, hold if they had
+    /// paused. For advances nobody pressed a button for — a track that ended, or one that
+    /// would not open — which have no business overriding a pause.
+    ///
+    /// Decided on the audio thread rather than by the caller reading the published flag: a
+    /// pause that is still in the command queue has not reached the flag yet, and acting on
+    /// the stale reading would start the very track the listener just stopped.
+    Unchanged,
+}
+
 enum Command {
-    /// `paused: true` records the track without ever opening the device — see
-    /// [`AudioThread::play_paused`].
+    /// Load a track. Whether it sounds is `start`'s call — see [`Start`].
     Play {
         url: String,
-        paused: bool,
+        start: Start,
     },
     SetPaused(bool),
     SetVolume(f32),
@@ -101,8 +118,9 @@ struct Published {
     /// Silence played because the decoder could not keep up. Accumulates across tracks, so it
     /// answers "is this machine dropping audio?" rather than "did this song".
     starved_ms: AtomicU64,
-    /// Set when a track reaches its natural end, so the engine can advance. Cleared on the next
-    /// `Play`; deliberately *not* set by `Stop`, which is a deliberate act rather than an ending.
+    /// Set when a track reaches its natural end, so the engine can advance. Cleared when the
+    /// engine reads it and on the next `Play`; deliberately *not* set by `Stop`, which is a
+    /// deliberate act rather than an ending.
     track_ended: AtomicBool,
     playing: AtomicBool,
     paused: AtomicBool,
@@ -200,10 +218,7 @@ impl AudioThread {
                 // Drain commands first so pause and skip feel immediate.
                 loop {
                     match rx.try_recv() {
-                        Ok(Command::Play {
-                            url,
-                            paused: start_paused,
-                        }) => {
+                        Ok(Command::Play { url, start }) => {
                             thread_state.track_ended.store(false, Ordering::Relaxed);
                             thread_state.failed.store(false, Ordering::Relaxed);
                             thread_state.position_ms.store(0, Ordering::Relaxed);
@@ -211,18 +226,32 @@ impl AudioThread {
                             // dropped — carrying the last track's BPM into this one would be a
                             // confidently wrong number rather than an absent one.
                             thread_state.bpm.store(0.0f32.to_bits(), Ordering::Relaxed);
-                            paused = start_paused;
-                            // Dated now for consistency rather than for effect: a track loaded
-                            // paused never builds a player, and RELEASE_AFTER_PAUSE only ever
-                            // releases one that exists. There is no device to let go of yet.
-                            paused_since = start_paused.then(Instant::now);
+                            match start {
+                                Start::Playing => {
+                                    paused = false;
+                                    paused_since = None;
+                                }
+                                Start::Paused => {
+                                    paused = true;
+                                    // Dated now for consistency rather than for effect: a track
+                                    // loaded paused never builds a player, and
+                                    // RELEASE_AFTER_PAUSE only ever releases one that exists.
+                                    // There is no device to let go of yet.
+                                    paused_since = Some(Instant::now());
+                                }
+                                // `paused` and `paused_since` stay exactly as the last
+                                // `SetPaused` left them — every one queued before this
+                                // command has already been applied, which is the whole point
+                                // of deciding here.
+                                Start::Unchanged => {}
+                            }
                             recoveries = 0;
                             recovered_at = Duration::ZERO;
                             last_position = Duration::ZERO;
                             last_moved = Instant::now();
                             last_decoded = Duration::ZERO;
                             last_decode = Instant::now();
-                            thread_state.paused.store(start_paused, Ordering::Relaxed);
+                            thread_state.paused.store(paused, Ordering::Relaxed);
                             blending = None;
                             thread_state.blending.store(false, Ordering::Relaxed);
                             player = None; // stop the old device before opening a new one
@@ -586,24 +615,21 @@ impl AudioThread {
         }
     }
 
-    pub fn play(&self, url: &str) {
-        let _ = self.commands.send(Command::Play {
-            url: url.to_string(),
-            paused: false,
-        });
-    }
-
-    /// Load a track but do not start it — the device is never opened, so not one frame is
-    /// emitted. Pressing play afterwards runs the same rebuild path a long pause does.
+    /// Load `url`, replacing whatever is playing. Whether it sounds is `start`'s call.
     ///
-    /// This has to be part of the `Play` message rather than `play()` followed by
-    /// `set_paused(true)`: those are two messages, and the thread's build step runs between
-    /// drains, so a split would open the device and play a burst of audio before the pause
-    /// landed. The listener would hear exactly the interruption this exists to avoid.
-    pub fn play_paused(&self, url: &str) {
+    /// `Start::Paused` loads without opening the device, so not one frame is emitted; pressing
+    /// play afterwards runs the same rebuild path a long pause does. It has to travel in the
+    /// `Play` message rather than as `play()` followed by `set_paused(true)`: those are two
+    /// messages, and the thread's build step runs between drains, so a split would open the
+    /// device and play a burst of audio before the pause landed. The listener would hear
+    /// exactly the interruption a paused load exists to avoid.
+    ///
+    /// `Start::Unchanged` is the same argument from the other side: the thread, not the caller,
+    /// knows what the pause state is once every queued command has been applied.
+    pub fn play(&self, url: &str, start: Start) {
         let _ = self.commands.send(Command::Play {
             url: url.to_string(),
-            paused: true,
+            start,
         });
     }
 
@@ -743,15 +769,22 @@ impl AudioThread {
         self.published.paused.load(Ordering::Relaxed)
     }
 
-    /// True once the current track has played to its end.
-    pub fn track_ended(&self) -> bool {
-        self.published.track_ended.load(Ordering::Relaxed)
+    /// Whether the current track has played to its end since this was last asked.
+    ///
+    /// Clears on read. As a level flag it was cleared only by the next `Play`, so when the
+    /// advance it triggered failed — no playlist, because another device held the stream —
+    /// nothing cleared it, and the engine advanced again on every tick. Five playlist requests
+    /// a second, against an account Pandora permits one stream on, instead of the one every
+    /// ten seconds its retry timer intended.
+    pub fn take_track_ended(&self) -> bool {
+        self.published.track_ended.swap(false, Ordering::Relaxed)
     }
 
-    /// True if the last track could not be played and recovery was exhausted — the engine should
-    /// skip rather than wait.
-    pub fn failed(&self) -> bool {
-        self.published.failed.load(Ordering::Relaxed)
+    /// Whether the track could not be played and recovery was exhausted, since this was last
+    /// asked — the engine should skip rather than wait. Clears on read, for the same reason as
+    /// [`AudioThread::take_track_ended`].
+    pub fn take_failed(&self) -> bool {
+        self.published.failed.swap(false, Ordering::Relaxed)
     }
 }
 
