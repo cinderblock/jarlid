@@ -71,6 +71,7 @@ second.
       of passing the intent through `advance_as` / `play_station_as`.
 - [x] Unit test for the retirement rule (same batch goes, later batch stays).
 - [x] `cargo check`, `cargo test`, `cargo clippy` in `crates/`; `rustfmt --check` on touched files.
+- [x] Committed as 0f65887; bumped to v1.6.3 in c687270; tag `v1.6.3` pushed 2026-09-12; Release run 34715828811 succeeded.
 - [ ] Verify in the real app: pause for long enough that play used to skip, press play, expect
       one new song within a second or two and no skipping; then play → pause quickly, expect
       the app to stay paused. Needs Cameron and a long pause; not reproducible on a timer
