@@ -56,10 +56,6 @@ const artistEl = $("artist");
 const albumEl = $("album");
 const bylineEl = document.querySelector(".byline") as HTMLElement;
 const stationBtn = $("station");
-const stationPanel = $("station-panel");
-const stationSearch = $<HTMLInputElement>("station-search");
-const stationList = $("station-list");
-const stationAllLink = $<HTMLButtonElement>("station-all-link");
 const sourceEl = $("source-station");
 const histEl = $("history");
 const barEl = $("bar");
@@ -978,54 +974,126 @@ $("login-form").addEventListener("submit", async (e) => {
     submit.textContent = "Sign in";
   }
 });
-// ---- station switching (searchable picker) -------------------------------
-// The picker is a quick jump-to-station list only. Selecting stations for export
-// lives on the Stations page, which has room for a long run's progress.
-// A station is identified by its tuner token: the name is not unique.
-let stations: StationInfo[] = [];
+// ---- station switching ---------------------------------------------------
+// The spine *is* the picker's active row, so clicking it opens the Stations page and flies
+// the name into place rather than dropping a second, poorer list next to the first. A
+// station is identified by its tuner token: the name is not unique.
+//
+// The list itself lives on the Stations page now — this module keeps only the name it paints
+// on the spine.
 let activeStation = "";
 
-function renderStationList(filter = "") {
-  const f = filter.trim().toLowerCase();
-  stationList.innerHTML = "";
-  for (const st of stations) {
-    if (f && !st.name.toLowerCase().includes(f)) continue;
-    const item = document.createElement("div");
-    item.className = "station-item" + (st.name === activeStation ? " active" : "");
-    item.textContent = st.name;
-    item.addEventListener("click", () => {
-      invoke("native_play_station", { name: st.name, token: st.token }).catch(() => {});
-      activeStation = st.name;
-      stationBtn.textContent = st.name;
-      stationPanel.hidden = true;
-    });
-    stationList.appendChild(item);
+/// The centre of an element's *text*, not of its box.
+///
+/// The spine's box is the full height of the album art while its text is a short run
+/// somewhere in the middle of it, and flying between box centres would start the name
+/// somewhere it visibly is not. A Range over the text node measures the glyphs — and for the
+/// spine those glyphs are rotated, so this rect is tall and narrow where the flying copy is
+/// wide and short. That is the whole trick: same centre, quarter turn apart.
+function textCentre(el: Element) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const r = range.getBoundingClientRect();
+  return r.width || r.height
+    ? { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    : (() => {
+        const b = el.getBoundingClientRect();
+        return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+      })();
+}
+
+const FLIGHT_MS = 460;
+
+/**
+ * Open the Stations page, turning the station spine into its row on the way.
+ *
+ * The spine reads bottom-to-top up the side of the album art and the row reads left to
+ * right, so the quarter turn is the transition rather than an ornament laid over one: the
+ * same words, in both places, and the animation is the sentence explaining that they are the
+ * same thing. A copy does the flying — the spine hides, the row's own name waits invisible,
+ * and the copy cross-fades into it at the end, which is also what hides the fact that the
+ * spine is uppercase with wide tracking and the row is neither.
+ */
+function openStationsFromSpine() {
+  const name = stationBtn.textContent || "";
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!name || reduced) {
+    stationsPage.open();
+    return;
   }
+
+  const from = textCentre(stationBtn);
+  const startSize = parseFloat(getComputedStyle(stationBtn).fontSize);
+
+  stationsPage.open();
+
+  // The page is laid out now, so the destination can be measured. Its row may be anywhere in
+  // a long collection; put it on screen first, without a scroll animation racing this one.
+  const row = stationsPage.activeRow();
+  const target = row?.querySelector<HTMLElement>(".sp-name");
+  if (!row || !target) return;
+  row.scrollIntoView({ block: "center", behavior: "auto" });
+
+  const to = textCentre(target);
+  const endSize = parseFloat(getComputedStyle(target).fontSize);
+
+  const fly = document.createElement("div");
+  fly.className = "station-fly";
+  fly.textContent = name;
+  fly.style.left = `${from.x}px`;
+  fly.style.top = `${from.y}px`;
+  fly.style.fontSize = `${startSize}px`;
+  document.body.appendChild(fly);
+
+  stationBtn.style.visibility = "hidden";
+  target.style.opacity = "0";
+
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const scale = endSize / startSize;
+  const landed = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) rotate(0deg) scale(${scale})`;
+
+  // The easing is per-keyframe rather than on the effect. An effect-level easing warps the
+  // offsets too, which put the copy 90% of the way there in the first quarter of the time
+  // and then started the cross-fade halfway through the flight: it read as a snap followed
+  // by a wait. Keyframe easings leave the offsets meaning wall-clock, so the move takes the
+  // first 80% and the cross-fade is the last 20%, which is what those numbers look like.
+  const anim = fly.animate(
+    [
+      {
+        transform: "translate(-50%, -50%) rotate(-90deg) scale(1)",
+        opacity: 1,
+        easing: "cubic-bezier(0.32, 0.72, 0.28, 1)",
+      },
+      { transform: landed, opacity: 1, offset: 0.8, easing: "linear" },
+      { transform: landed, opacity: 0 },
+    ],
+    // `forwards`, or the copy snaps back to an untransformed position for the frame between
+    // the animation ending and `land` removing it.
+    { duration: FLIGHT_MS, fill: "forwards" }
+  );
+  const reveal = target.animate(
+    [{ opacity: 0 }, { opacity: 0, offset: 0.8 }, { opacity: 1 }],
+    { duration: FLIGHT_MS, fill: "forwards" }
+  );
+
+  const land = () => {
+    fly.remove();
+    reveal.cancel();
+    stationBtn.style.visibility = "";
+    target.style.opacity = "";
+  };
+  anim.addEventListener("finish", land);
+  anim.addEventListener("cancel", land);
+  // A `finish` event is dispatched on a frame, and a window that is not on screen barely gets
+  // any: clicking the spine and immediately switching away would otherwise leave the spine
+  // hidden and the name missing from its row until you came back. `land` is safe to run twice.
+  setTimeout(land, FLIGHT_MS + 250);
 }
 
 stationBtn.addEventListener("click", (e) => {
   e.stopPropagation();
-  stationPanel.hidden = !stationPanel.hidden;
-  if (!stationPanel.hidden) {
-    stationSearch.value = "";
-    renderStationList();
-    stationSearch.focus();
-  }
-});
-stationSearch.addEventListener("input", () => renderStationList(stationSearch.value));
-stationAllLink.addEventListener("click", (e) => {
-  e.stopPropagation();
-  stationPanel.hidden = true;
-  stationsPage.open();
-});
-window.addEventListener("click", (e) => {
-  if (!stationPanel.hidden && !(e.target as HTMLElement).closest("#station-wrap")) {
-    stationPanel.hidden = true;
-  }
-});
-window.addEventListener("keydown", (e) => {
-  // The pages own Escape while they are up.
-  if (e.key === "Escape" && !stationsPage.isOpen()) stationPanel.hidden = true;
+  openStationsFromSpine();
 });
 
 // Which station is playing, with its token. The nowplaying event carries only the name,
@@ -1040,12 +1108,10 @@ listen<{ name: string; token: string }>("engine://station-active", (e) => {
 listen<{ stations: StationInfo[] }>("engine://stations", (e) => {
   const next = e.payload.stations;
   if (!next?.length) return;
-  stations = next;
   stationStats.prune(next.map((s) => s.token));
   stationsPage.setStations(next, activeStation);
   // The station list arriving means we know what's playing, so its modes are fetchable.
   void refreshModes();
-  if (!stationPanel.hidden) renderStationList(stationSearch.value);
 });
 
 // ---- top-right pages -----------------------------------------------------

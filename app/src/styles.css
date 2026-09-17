@@ -295,80 +295,22 @@ body.remote #history {
 #station:hover {
   color: var(--dim);
 }
-/* Drops from the foot of the spine and opens rightwards across the stage, rather
-   than centring on a 20px-wide strip and hanging off the side of the window. */
-#station-panel {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  width: 280px;
-  max-height: 320px;
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
-  backdrop-filter: blur(18px);
-  border: 1px solid rgba(var(--wash), 0.1);
-  border-radius: 12px;
-  padding: 8px;
-  z-index: 7;
-  box-shadow: 0 16px 50px var(--sh);
-}
-/* Selection mode needs room for a checkbox column and a footer button. */
-#station-panel.selecting {
-  width: 340px;
-  max-height: 420px;
-}
-#station-search {
-  background: rgba(var(--wash), 0.08);
-  border: none;
-  outline: none;
-  border-radius: 8px;
+/* The station name in flight between the spine and its row in the Stations page. A copy,
+   living on top of everything, with the spine's type so the quarter turn is the only thing
+   that reads as changing until it cross-fades into the row. */
+.station-fly {
+  position: fixed;
+  z-index: 9;
+  pointer-events: none;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 400;
   color: var(--fg);
-  font-family: inherit;
-  font-size: 0.85rem;
-  padding: 8px 10px;
-  margin-bottom: 6px;
+  transform-origin: center;
+  will-change: transform, opacity;
 }
-#station-all-link {
-  margin-top: 6px;
-  border-top: 1px solid rgba(var(--wash), 0.08);
-  padding: 8px 10px 2px;
-  background: none;
-  border-left: none;
-  border-right: none;
-  border-bottom: none;
-  color: var(--faint);
-  font-family: inherit;
-  font-size: 0.8rem;
-  text-align: left;
-  cursor: pointer;
-}
-#station-all-link:hover {
-  color: var(--fg);
-}
-#station-search::placeholder {
-  color: var(--faint);
-}
-#station-list {
-  overflow-y: auto;
-  scrollbar-width: thin;
-}
-.station-item {
-  padding: 8px 10px;
-  border-radius: 8px;
-  font-size: 0.88rem;
-  color: var(--dim);
-  cursor: pointer;
-  text-align: left;
-}
-.station-item:hover {
-  background: rgba(var(--wash), 0.1);
-  color: var(--fg);
-}
-.station-item.active {
-  color: var(--fg);
-  font-weight: 600;
-}
+
 /* which station a QuickMix track actually came from */
 #source-station {
   font-size: 0.74rem;

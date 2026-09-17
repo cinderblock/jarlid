@@ -108,6 +108,12 @@ export function isOpen() {
   return !page.hidden;
 }
 
+/// The row of the station currently playing, if it is on screen. main.ts needs it as the
+/// landing site for the station spine's flight into the list.
+export function activeRow(): HTMLElement | null {
+  return listEl.querySelector<HTMLElement>(".sp-row.active");
+}
+
 const matches = (s: StationInfo, f: string) => !f || s.name.toLowerCase().includes(f);
 
 // ---- sorting -------------------------------------------------------------
