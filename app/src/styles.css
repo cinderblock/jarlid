@@ -976,7 +976,13 @@ body.remote #remote-vol-wrap {
   scrollbar-width: none;
   flex: 1;
   min-height: 0;
-  padding: 32vh 0;
+  /* The playing line grows by --line-grow from its left edge, and this box clips
+     it — a non-`visible` overflow on one axis forces the other to `auto`, so the
+     scaled line is cut at the pane's edge rather than spilling past it. The right
+     padding is exactly that growth, so a full-width line still ends inside the
+     pane once it is the one playing. */
+  --line-grow: 1.02;
+  padding: 32vh calc((var(--line-grow) - 1) * 100%) 32vh 0;
   scroll-behavior: smooth;
   /* fade the top/bottom edges so lines ease in and out */
   -webkit-mask-image: linear-gradient(transparent, #000 14%, #000 86%, transparent);
@@ -991,6 +997,10 @@ body.remote #remote-vol-wrap {
   line-height: 1.35;
   color: var(--faint);
   padding: 7px 0;
+  /* A lyric is normal prose and wraps on spaces; this only catches the token that
+     has no space in it at all — a run-on transliteration, a URL in a credit line —
+     which would otherwise run out of the pane with nowhere to break. */
+  overflow-wrap: break-word;
   transition: color 0.3s, opacity 0.3s, transform 0.3s;
 }
 #lyrics.synced .line {
@@ -1001,7 +1011,7 @@ body.remote #remote-vol-wrap {
 }
 .line.active {
   color: var(--fg);
-  transform: scale(1.02);
+  transform: scale(var(--line-grow, 1.02));
   transform-origin: left center;
   text-shadow: 0 2px 30px var(--accent-glow);
 }
