@@ -7,6 +7,7 @@ import * as settingsPage from "./settings-page";
 import * as lyricEditor from "./lyric-editor";
 import type { Lyrics } from "./lyric-editor";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
+import * as stationStats from "./station-stats";
 
 // ---- types -------------------------------------------------------------
 interface NowPlaying {
@@ -410,6 +411,9 @@ function pushHistory(np: NowPlaying) {
   const art = np.artFallback || np.art;
   if (!art || !np.title) return;
   if (history[0] && history[0].title === np.title && history[0].artist === np.artist) return;
+  // The same moment, counted against the station rather than the track: this is where the
+  // Stations page's "recently played" and "most played" orders come from.
+  stationStats.noteTrack(art);
   history.unshift({ art, title: np.title, artist: np.artist, album: np.album, at: Date.now() });
   history = history.slice(0, 40);
   localStorage.setItem("history", JSON.stringify(history));
@@ -1024,10 +1028,20 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !stationsPage.isOpen()) stationPanel.hidden = true;
 });
 
+// Which station is playing, with its token. The nowplaying event carries only the name,
+// and two stations can share one — see save_last_station in native.rs.
+listen<{ name: string; token: string }>("engine://station-active", (e) => {
+  if (!e.payload.token) return;
+  stationStats.noteActive(e.payload.token);
+  activeStation = e.payload.name || activeStation;
+  stationsPage.setActiveStation(activeStation, e.payload.token);
+});
+
 listen<{ stations: StationInfo[] }>("engine://stations", (e) => {
   const next = e.payload.stations;
   if (!next?.length) return;
   stations = next;
+  stationStats.prune(next.map((s) => s.token));
   stationsPage.setStations(next, activeStation);
   // The station list arriving means we know what's playing, so its modes are fetchable.
   void refreshModes();

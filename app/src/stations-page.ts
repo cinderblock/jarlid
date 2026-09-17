@@ -69,6 +69,9 @@ const cancelBtn = $<HTMLButtonElement>("sp-cancel");
 
 let stations: StationInfo[] = [];
 let activeName = "";
+/// The playing station's token. Preferred over the name for deciding which row is the
+/// active one, because a name is not unique.
+let activeToken = "";
 let selectMode = false;
 let busy = false;
 const selected = new Set<string>();
@@ -87,10 +90,16 @@ export function setStations(next: StationInfo[], active: string) {
   if (!page.hidden) render();
 }
 
-export function setActiveStation(name: string) {
+export function setActiveStation(name: string, token = "") {
   activeName = name;
+  if (token) activeToken = token;
   if (!page.hidden) render();
 }
+
+/// Is this the station currently playing? By token once we have been told one, and by name
+/// only until then — on a cold start the list can arrive before the active-station event.
+const isActive = (st: StationInfo) =>
+  activeToken ? st.token === activeToken : st.name === activeName;
 
 export function isOpen() {
   return !page.hidden;
@@ -143,8 +152,7 @@ function groups(rows: StationInfo[]): Group[] {
 
 function stationRow(st: StationInfo, special: boolean) {
   const row = document.createElement("button");
-  row.className =
-    "sp-row" + (st.name === activeName ? " active" : "") + (special ? " special" : "");
+  row.className = "sp-row" + (isActive(st) ? " active" : "") + (special ? " special" : "");
   row.type = "button";
 
   if (selectMode) {
@@ -170,6 +178,7 @@ function stationRow(st: StationInfo, special: boolean) {
         setStatus(String(e), "err")
       );
       activeName = st.name;
+      activeToken = st.token;
       close();
     }
   });

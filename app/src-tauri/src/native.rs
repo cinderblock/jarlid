@@ -58,7 +58,18 @@ fn last_station_path(app: &AppHandle) -> Option<std::path::PathBuf> {
     Some(dir.join("last-station.json"))
 }
 
+/// Remember the station we are on, and tell the UI which one it is.
+///
+/// Both callers — switching stations, and resuming one at launch — pass through here, which
+/// makes it the one place that knows the *token* of what is playing. The `nowplaying` event
+/// carries only the station's name, and a name is not unique: two stations can share one, so
+/// anything the UI keys per-station (its play tally, when it was last on) has to key on the
+/// token or quietly merge them.
 fn save_last_station(app: &AppHandle, name: &str, token: &str) {
+    let _ = app.emit(
+        "engine://station-active",
+        json!({ "name": name, "token": token }),
+    );
     let Some(path) = last_station_path(app) else {
         return;
     };
