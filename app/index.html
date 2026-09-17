@@ -373,11 +373,11 @@
 
     <main id="player" hidden>
       <section class="stage">
+        <!-- The station name runs up the art's left edge rather than sitting on a row
+             of its own above the title. It is absolutely positioned against the art,
+             so it costs the stage no height and the art no width — see styles.css. -->
         <div class="art-wrap">
           <img id="art" alt="Album art" />
-        </div>
-        <div class="meta">
-          <div id="remote-badge" hidden></div>
           <div id="station-wrap">
             <button id="station"></button>
             <div id="station-panel" hidden>
@@ -386,6 +386,9 @@
               <button id="station-all-link">All stations…</button>
             </div>
           </div>
+        </div>
+        <div class="meta">
+          <div id="remote-badge" hidden></div>
           <div id="source-station" hidden></div>
           <div id="mode-wrap" hidden>
             <button id="mode-btn"></button>

@@ -166,15 +166,19 @@ body {
   overflow: hidden;
 
   /* Everything below the art, measured rather than guessed: .meta's top margin
-     and its four lines, then the progress row, the transport and the history
-     strip with their own margins. The two clamps are #title's and #artist's
-     font sizes, which are the only parts that move with the viewport.
+     and its lines, then the progress row, the transport and the history strip
+     with their own margins. The two clamps are #title's and #artist's font sizes,
+     which are the only parts that move with the viewport.
+
+     296px = meta's 26 top margin + album 24 + progress 42 + transport 100 +
+     history 96, plus 8 of slop. The station name is not in it — it is a spine up
+     the art's left edge and occupies no row.
 
      An over-estimate costs a few pixels of art; an under-estimate is caught by
      the `min()` on `.art-wrap`, so this never clips the transport. Keep it in
      step when anything is added to or removed from the stage. */
   --stage-reserve: calc(
-    327px + 1.15 * clamp(1.5rem, 3.2vw, 2.6rem) + 1.3 * clamp(1rem, 1.8vw, 1.3rem)
+    296px + 1.15 * clamp(1.5rem, 3.2vw, 2.6rem) + 1.3 * clamp(1rem, 1.8vw, 1.3rem)
   );
   --stage-w: min(46vw, calc(89vw - 420px), calc(92vh - var(--stage-reserve)));
 }
@@ -207,18 +211,21 @@ body {
   width: min(100%, var(--stage-w));
 }
 
+/* The wrapper does not clip any more — the station spine lives inside it, hanging
+   off the art's left edge, and `overflow: hidden` here would cut it off. The image
+   rounds its own corners instead, which is all the clipping there ever was. */
 .art-wrap {
+  position: relative;
   aspect-ratio: 1;
-  border-radius: 18px;
-  overflow: hidden;
-  box-shadow: 0 30px 80px var(--sh-deep), 0 0 0 1px rgba(var(--wash), 0.06);
-  background: rgba(var(--wash), 0.04);
 }
 #art {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+  border-radius: 18px;
+  box-shadow: 0 30px 80px var(--sh-deep), 0 0 0 1px rgba(var(--wash), 0.06);
+  background: rgba(var(--wash), 0.04);
   transition: opacity 0.25s ease;
 }
 
@@ -243,13 +250,23 @@ body.remote #history {
   display: none;
 }
 
+/* The station name runs up the art's left edge. It is absolutely positioned on
+   purpose: a lane of its own in the stage would either push the art off the centre
+   line that the progress bar and the history strip sit on, or need a matching empty
+   lane on the right, which costs the art more width than the 31px row it saves.
+   Out of flow it costs nothing — it hangs into the column's slack, and on a window
+   tall enough for that slack to close, into the page's own 4vw padding. */
 #station-wrap {
-  position: relative;
-  display: inline-block;
-  margin-bottom: 10px;
-  max-width: 100%;
+  position: absolute;
+  top: 0;
+  right: calc(100% + 10px);
+  height: 100%;
 }
 #station {
+  /* Rising from the art's bottom-left corner, the way a spine reads. */
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  height: 100%;
   text-transform: uppercase;
   letter-spacing: 0.14em;
   font-size: 0.72rem;
@@ -257,9 +274,9 @@ body.remote #history {
   background: transparent;
   border: none;
   outline: none;
+  padding: 0;
   font-family: inherit;
   cursor: pointer;
-  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -267,11 +284,12 @@ body.remote #history {
 #station:hover {
   color: var(--dim);
 }
+/* Drops from the foot of the spine and opens rightwards across the stage, rather
+   than centring on a 20px-wide strip and hanging off the side of the window. */
 #station-panel {
   position: absolute;
   top: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
   width: 280px;
   max-height: 320px;
   display: flex;
