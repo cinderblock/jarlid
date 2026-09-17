@@ -17,6 +17,11 @@ export interface StationInfo {
   isQuickMix: boolean;
   isGenreStation: boolean;
   isThumbprint: boolean;
+  /// Pandora's cover for the station. Empty when it has none — rows fall back to the last
+  /// track played from the station, then to a tile drawn from the name.
+  artUrl?: string;
+  /// Epoch milliseconds, or null when Pandora's `dateCreated` was absent or unreadable.
+  dateCreated?: number | null;
 }
 
 interface ExportProgress {

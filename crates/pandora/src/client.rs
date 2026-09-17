@@ -251,7 +251,11 @@ impl Client {
     /// station, seeds and every thumb). Merging them would turn listing a collection into N+1
     /// requests.
     pub async fn station_list(&mut self) -> Result<Vec<TunerStation>> {
-        let list = self.tuner_call("user.getStationList", json!({})).await?;
+        // `includeStationArtUrl` is what puts a cover on each station; without it the list
+        // carries names and tokens only. Costs nothing on a call already being made.
+        let list = self
+            .tuner_call("user.getStationList", json!({ "includeStationArtUrl": true }))
+            .await?;
         Ok(list
             .get("stations")
             .and_then(Value::as_array)

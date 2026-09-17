@@ -89,6 +89,11 @@ fn station_payload(stations: &[pandora::TunerStation]) -> serde_json::Value {
                     "isQuickMix": s.is_quick_mix,
                     "isGenreStation": s.is_genre_station,
                     "isThumbprint": s.is_thumbprint,
+                    // Both can be absent: the art is empty for stations Pandora has no cover
+                    // for, and the date is null on anything whose `dateCreated` we could not
+                    // read. The list sorts around that rather than showing a gap.
+                    "artUrl": s.art_url,
+                    "dateCreated": s.date_created,
                 })
             })
             .collect::<Vec<_>>(),

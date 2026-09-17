@@ -113,6 +113,29 @@ pub struct TunerStation {
     pub is_genre_station: bool,
     /// "Thumbprint Radio" — built from everything you've thumbed up.
     pub is_thumbprint: bool,
+    /// The station's cover. Only present because [`Client::station_list`] asks for it
+    /// (`includeStationArtUrl`); empty otherwise, and empty for some stations regardless.
+    ///
+    /// [`Client::station_list`]: crate::Client::station_list
+    pub art_url: String,
+    /// When the station was created, epoch milliseconds. See [`epoch_ms_opt`] for the shape.
+    #[serde(deserialize_with = "epoch_ms_opt")]
+    pub date_created: Option<i64>,
+}
+
+/// Pandora serialises a timestamp as a whole Java `Date` — `{"time": 1378411431095, "year": 113,
+/// …}` — where `time` is the epoch milliseconds and the rest is that same instant spelled out
+/// again. Take `time` and drop the redundancy.
+///
+/// Accepts a bare number too, and answers `None` to anything else. This field is only present
+/// when the caller asked for it, and it is a sort key rather than something playback needs: one
+/// unfamiliar shape must cost the sort order, never the station.
+fn epoch_ms_opt<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::Number(n)) => n.as_i64(),
+        Some(serde_json::Value::Object(map)) => map.get("time").and_then(serde_json::Value::as_i64),
+        _ => None,
+    })
 }
 
 
@@ -240,6 +263,37 @@ mod tests {
         assert_eq!(track.song_title, "x");
         assert_eq!(track.artist_name, "");
         assert_eq!(track.kind(), TrackKind::Other); // absent trackType isn't music
+    }
+
+    /// Pandora's `dateCreated` is a Java `Date` serialised whole. Read the milliseconds out
+    /// of it, take a bare number if that is what arrives, and never fail the station over it.
+    #[test]
+    fn reads_date_created_in_every_shape() {
+        let of = |json: &str| {
+            serde_json::from_str::<TunerStation>(json)
+                .unwrap()
+                .date_created
+        };
+        assert_eq!(
+            of(r#"{"dateCreated":{"time":1378411431095,"year":113,"month":8}}"#),
+            Some(1378411431095)
+        );
+        assert_eq!(of(r#"{"dateCreated":1378411431095}"#), Some(1378411431095));
+        assert_eq!(of(r#"{"dateCreated":null}"#), None);
+        assert_eq!(of(r#"{"dateCreated":"2013-09-05"}"#), None); // unfamiliar, not fatal
+        assert_eq!(of(r#"{"dateCreated":{"year":113}}"#), None); // an object without `time`
+        assert_eq!(of(r#"{"stationName":"n"}"#), None); // absent, the usual case
+    }
+
+    /// The art URL rides along with the rest and is simply empty when Pandora has none.
+    #[test]
+    fn station_art_is_optional() {
+        let with: TunerStation =
+            serde_json::from_str(r#"{"stationName":"n","artUrl":"https://a/500W_500H.jpg"}"#)
+                .unwrap();
+        assert_eq!(with.art_url, "https://a/500W_500H.jpg");
+        let without: TunerStation = serde_json::from_str(r#"{"stationName":"n"}"#).unwrap();
+        assert_eq!(without.art_url, "");
     }
 
     /// Unknown/new fields must be ignored rather than rejected.
