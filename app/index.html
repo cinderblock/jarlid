@@ -57,34 +57,38 @@
       <div id="speakers-list"></div>
     </div>
 
-    <!-- Stations: browse and play, or select for export/import. Full-page because an
-         export walks the whole collection and needs room to show progress. -->
+    <!-- Stations: browse and play, or select for export/import. A panel over the player
+         rather than a full page — an export walks the whole collection and needs room to
+         show progress, but the music is still going, and being able to see it is worth the
+         margin. #stations-page is the scrim; .page-panel is the sheet on top of it. -->
     <div id="stations-page" hidden>
-      <header class="page-head">
-        <h2>Stations</h2>
-        <input id="sp-search" type="text" placeholder="Search…" spellcheck="false" />
-        <!-- Drawn by select.ts, like every other control in this app: a native <select>
-             is the one thing CSS cannot reach. -->
-        <div id="sp-sort" class="select"></div>
-        <button id="sp-select" aria-pressed="false">Select</button>
-        <button id="sp-close" class="page-close" aria-label="Close">×</button>
-      </header>
+      <div class="page-panel">
+        <header class="page-head">
+          <h2>Stations</h2>
+          <input id="sp-search" type="text" placeholder="Search…" spellcheck="false" />
+          <!-- Drawn by select.ts, like every other control in this app: a native <select>
+               is the one thing CSS cannot reach. -->
+          <div id="sp-sort" class="select"></div>
+          <button id="sp-select" aria-pressed="false">Select</button>
+          <button id="sp-close" class="page-close" aria-label="Close">×</button>
+        </header>
 
-      <div id="sp-bulk" hidden>
-        <label class="sp-check"><input id="sp-all" type="checkbox" /><span>Select all</span></label>
-        <span id="sp-count"></span>
-      </div>
-
-      <div id="sp-list"></div>
-
-      <footer class="page-foot">
-        <div id="sp-status"></div>
-        <div class="page-foot-actions">
-          <button id="sp-import" class="btn">Import…</button>
-          <button id="sp-export" class="btn" disabled>Export…</button>
-          <button id="sp-cancel" class="btn" hidden>Cancel</button>
+        <div id="sp-bulk" hidden>
+          <label class="sp-check"><input id="sp-all" type="checkbox" /><span>Select all</span></label>
+          <span id="sp-count"></span>
         </div>
-      </footer>
+
+        <div id="sp-list"></div>
+
+        <footer class="page-foot">
+          <div id="sp-status"></div>
+          <div class="page-foot-actions">
+            <button id="sp-import" class="btn">Import…</button>
+            <button id="sp-export" class="btn" disabled>Export…</button>
+            <button id="sp-cancel" class="btn" hidden>Cancel</button>
+          </div>
+        </footer>
+      </div>
     </div>
 
     <div id="settings-page" hidden>

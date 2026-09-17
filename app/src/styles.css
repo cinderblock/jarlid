@@ -1367,7 +1367,6 @@ body.remote #remote-vol-wrap {
    Deliberately a page, not a dropdown: an export walks the whole collection a
    station at a time, so it needs room for a list, progress and results, and it
    must not vanish because a click landed outside a popover. */
-#stations-page,
 #settings-page {
   position: fixed;
   inset: 0;
@@ -1377,10 +1376,43 @@ body.remote #remote-vol-wrap {
   background: var(--page);
   backdrop-filter: blur(24px);
 }
+
+/* ---- the Stations panel ----
+   A sheet over the player rather than a page replacing it. The music does not stop when
+   you go looking for a station, and the margin is there so you can still see it going:
+   the progress bar moving, the art changing between songs. That is the whole reason this
+   is 90% and not 100%.
+
+   The scrim is deliberately unblurred. A blur would turn the thing it is meant to let you
+   watch into a smear — dimming keeps the motion legible where blurring destroys it. */
+#stations-page {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  background: var(--overlay);
+}
+.page-panel {
+  width: 90%;
+  height: 90%;
+  display: flex;
+  flex-direction: column;
+  /* The panel keeps the blur: it is the surface being read, and what is behind *it*
+     should not compete. */
+  background: var(--page);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgba(var(--wash), 0.1);
+  border-radius: 18px;
+  box-shadow: 0 40px 120px var(--sh-deep);
+  overflow: hidden;
+}
+
 #stations-page[hidden],
 #settings-page[hidden] {
   display: none;
 }
+
 .page-head {
   display: flex;
   align-items: center;
@@ -1608,6 +1640,8 @@ body.remote #remote-vol-wrap {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+
 /* Marks QuickMix / genre / Thumbprint stations, which behave differently on export:
    QuickMix has no seeds or thumbs of its own. */
 .sp-tag {
