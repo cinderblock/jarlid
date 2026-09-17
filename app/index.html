@@ -63,6 +63,9 @@
       <header class="page-head">
         <h2>Stations</h2>
         <input id="sp-search" type="text" placeholder="Search…" spellcheck="false" />
+        <!-- Drawn by select.ts, like every other control in this app: a native <select>
+             is the one thing CSS cannot reach. -->
+        <div id="sp-sort" class="select"></div>
         <button id="sp-select" aria-pressed="false">Select</button>
         <button id="sp-close" class="page-close" aria-label="Close">×</button>
       </header>

@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import * as stationStats from "./station-stats";
+import { createSelect } from "./select";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -64,6 +65,7 @@ const allBox = $<HTMLInputElement>("sp-all");
 const countEl = $("sp-count");
 const listEl = $("sp-list");
 const statusEl = $("sp-status");
+const sortRoot = $("sp-sort");
 const exportBtn = $<HTMLButtonElement>("sp-export");
 const importBtn = $<HTMLButtonElement>("sp-import");
 const cancelBtn = $<HTMLButtonElement>("sp-cancel");
@@ -107,6 +109,57 @@ export function isOpen() {
 }
 
 const matches = (s: StationInfo, f: string) => !f || s.name.toLowerCase().includes(f);
+
+// ---- sorting -------------------------------------------------------------
+// Sorting happens *inside* the groups, never across them. The groups answer "where did this
+// station come from", which is a different question from "which of these do I want first",
+// and flattening them to sort would throw away the more useful of the two.
+
+type SortKey = "pandora" | "name" | "recent" | "plays" | "created";
+
+const SORTS: { value: SortKey; label: string }[] = [
+  { value: "pandora", label: "Pandora's order" },
+  { value: "name", label: "A–Z" },
+  { value: "recent", label: "Recently played" },
+  { value: "plays", label: "Most played" },
+  { value: "created", label: "Newest first" },
+];
+
+const SORT_PREF = "stations-sort";
+let sortKey: SortKey =
+  (SORTS.find((s) => s.value === localStorage.getItem(SORT_PREF))?.value as SortKey) ?? "pandora";
+
+/// Stations with nothing to sort by go last, in Pandora's order, rather than being scattered
+/// through the middle as if they scored zero. "Never played" is not "played least recently",
+/// and a station whose creation date we could not read is not the oldest one you have.
+function sorted(rows: StationInfo[]): StationInfo[] {
+  if (sortKey === "pandora") return rows;
+  const rank = (st: StationInfo): number | null => {
+    switch (sortKey) {
+      case "recent":
+        return stationStats.statFor(st.token)?.last ?? null;
+      case "plays":
+        return stationStats.statFor(st.token)?.plays || null;
+      case "created":
+        return st.dateCreated ?? null;
+      default:
+        return null;
+    }
+  };
+  if (sortKey === "name") {
+    const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+    return [...rows].sort((a, b) => collator.compare(a.name, b.name));
+  }
+  return [...rows]
+    .map((st, i) => ({ st, i, r: rank(st) }))
+    .sort((a, b) => {
+      if (a.r === null && b.r === null) return a.i - b.i; // both unknown: leave them be
+      if (a.r === null) return 1;
+      if (b.r === null) return -1;
+      return b.r - a.r; // most recent, most played, newest — all "bigger first"
+    })
+    .map((x) => x.st);
+}
 
 function visible(): StationInfo[] {
   const f = search.value.trim().toLowerCase();
@@ -319,7 +372,7 @@ function render() {
       col.appendChild(note);
     }
 
-    for (const st of g.items) col.appendChild(stationRow(st, g.special));
+    for (const st of sorted(g.items)) col.appendChild(stationRow(st, g.special));
   }
   refreshSelectionUi();
 }
@@ -384,6 +437,16 @@ function close() {
 
 closeBtn.addEventListener("click", close);
 selectBtn.addEventListener("click", () => !busy && setSelectMode(!selectMode));
+const sortSel = createSelect(sortRoot, SORTS, {
+  label: "Sort stations",
+  onChange: (v) => {
+    sortKey = v as SortKey;
+    localStorage.setItem(SORT_PREF, sortKey);
+    render();
+  },
+});
+sortSel.value = sortKey;
+
 search.addEventListener("input", render);
 
 allBox.addEventListener("click", (e) => {
