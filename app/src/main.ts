@@ -53,6 +53,7 @@ const titleEl = $("title");
 const titleInner = $("title-inner");
 const artistEl = $("artist");
 const albumEl = $("album");
+const bylineEl = document.querySelector(".byline") as HTMLElement;
 const stationBtn = $("station");
 const stationPanel = $("station-panel");
 const stationSearch = $<HTMLInputElement>("station-search");
@@ -295,7 +296,11 @@ window.addEventListener("keydown", (e) => {
 const tooltip = $("tooltip");
 function attachTip(el: HTMLElement, text: () => string) {
   el.addEventListener("mouseenter", () => {
-    tooltip.textContent = text();
+    // An empty string means this element has nothing worth saying right now — the
+    // byline only has something to add when it is too long to show whole.
+    const t = text();
+    if (!t) return;
+    tooltip.textContent = t;
     tooltip.hidden = false;
     const r = el.getBoundingClientRect();
     const x = Math.max(8, Math.min(r.left + r.width / 2 - tooltip.offsetWidth / 2, innerWidth - tooltip.offsetWidth - 8));
@@ -304,6 +309,17 @@ function attachTip(el: HTMLElement, text: () => string) {
   });
   el.addEventListener("mouseleave", () => (tooltip.hidden = true));
 }
+
+// The artist and the album share one line so the album art can have the row they
+// used to take between them, and the album is clipped rather than wrapped when
+// they do not both fit. Hovering gives back whatever the clip took — and says
+// nothing at all when nothing was taken.
+const clipped = (el: HTMLElement) => el.scrollWidth > el.clientWidth + 1;
+attachTip(bylineEl, () =>
+  clipped(artistEl) || clipped(albumEl)
+    ? [artistEl.textContent, albumEl.textContent].filter(Boolean).join(" · ")
+    : ""
+);
 
 /**
  * Draw the strip, newest end first.

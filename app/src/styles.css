@@ -170,15 +170,16 @@ body {
      with their own margins. The two clamps are #title's and #artist's font sizes,
      which are the only parts that move with the viewport.
 
-     296px = meta's 26 top margin + album 24 + progress 42 + transport 100 +
-     history 96, plus 8 of slop. The station name is not in it — it is a spine up
-     the art's left edge and occupies no row.
+     272px = meta's 26 top margin + progress 42 + transport 100 + history 96,
+     plus 8 of slop. Two things that used to be in it are not any more: the
+     station name is a spine up the art's left edge and occupies no row, and the
+     album shares the artist's line rather than taking one below it.
 
      An over-estimate costs a few pixels of art; an under-estimate is caught by
      the `min()` on `.art-wrap`, so this never clips the transport. Keep it in
      step when anything is added to or removed from the stage. */
   --stage-reserve: calc(
-    296px + 1.15 * clamp(1.5rem, 3.2vw, 2.6rem) + 1.3 * clamp(1rem, 1.8vw, 1.3rem)
+    272px + 1.15 * clamp(1.5rem, 3.2vw, 2.6rem) + 1.3 * clamp(1rem, 1.8vw, 1.3rem)
   );
   --stage-w: min(46vw, calc(89vw - 420px), calc(92vh - var(--stage-reserve)));
 }
@@ -736,15 +737,50 @@ body.remote #tech {
     animation: none;
   }
 }
+/* One line, not two, and it stays one line: letting it wrap on a long pair would
+   put 20px back into the stage and shrink the album art by that much on those
+   tracks alone, so the art would resize every time the song changed. The album
+   gives way instead: it is the only one of the two that shrinks at all, so the
+   artist stays whole until the album has nothing left to give and a max-width is
+   the only thing still holding the line. main.ts puts whatever is lost in a
+   tooltip. */
+.byline {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: center;
+  align-items: baseline;
+  gap: 0.5em;
+  margin-top: 8px;
+  overflow: hidden;
+}
+#artist,
+#album {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 #artist {
+  flex: 0 0 auto;
+  max-width: 100%;
   font-size: clamp(1rem, 1.8vw, 1.3rem);
   color: var(--fg);
-  margin-top: 8px;
 }
 #album {
+  flex: 0 1 auto;
   font-size: 0.9rem;
   color: var(--dim);
-  margin-top: 4px;
+}
+.byline-dot {
+  flex: 0 0 auto;
+  font-size: 0.9rem;
+  color: var(--faint);
+}
+/* Pandora collapses the album away during a long pause, and a single track can
+   simply have none. Neither should leave a dot hanging after the artist. */
+#album:empty,
+.byline:has(#album:empty) .byline-dot {
+  display: none;
 }
 
 /* ---- progress ---- */

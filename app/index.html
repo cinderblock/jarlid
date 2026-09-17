@@ -397,8 +397,14 @@
             </div>
           </div>
           <h1 id="title"><span id="title-inner">—</span></h1>
-          <div id="artist"></div>
-          <div id="album"></div>
+          <!-- Artist and album share a line rather than taking one each; the row they
+               save goes to the album art. The dot is its own element so it can be
+               dropped when there is no album to separate from. -->
+          <div class="byline">
+            <span id="artist"></span>
+            <span class="byline-dot" aria-hidden="true">·</span>
+            <span id="album"></span>
+          </div>
         </div>
 
         <div class="progress">
