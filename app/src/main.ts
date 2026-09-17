@@ -985,11 +985,10 @@ let activeStation = "";
 
 /// The centre of an element's *text*, not of its box.
 ///
-/// The spine's box is the full height of the album art while its text is a short run
-/// somewhere in the middle of it, and flying between box centres would start the name
-/// somewhere it visibly is not. A Range over the text node measures the glyphs — and for the
-/// spine those glyphs are rotated, so this rect is tall and narrow where the flying copy is
-/// wide and short. That is the whole trick: same centre, quarter turn apart.
+/// Both ends of the flight have a box much wider than the words inside it: the station
+/// button stretches across the meta block, and a row's name spans the whole text column
+/// while its words sit at the left of it. Flying between box centres would start and end the
+/// name where it visibly is not, so a Range measures the glyphs instead.
 function textCentre(el: Element) {
   const range = document.createRange();
   range.selectNodeContents(el);
@@ -1005,14 +1004,13 @@ function textCentre(el: Element) {
 const FLIGHT_MS = 460;
 
 /**
- * Open the Stations page, turning the station spine into its row on the way.
+ * Open the Stations page, carrying the station name into its row on the way.
  *
- * The spine reads bottom-to-top up the side of the album art and the row reads left to
- * right, so the quarter turn is the transition rather than an ornament laid over one: the
- * same words, in both places, and the animation is the sentence explaining that they are the
- * same thing. A copy does the flying — the spine hides, the row's own name waits invisible,
- * and the copy cross-fades into it at the end, which is also what hides the fact that the
- * spine is uppercase with wide tracking and the row is neither.
+ * The same words are on screen in both places, so the transition is that they are the same
+ * words rather than a wipe laid over the change. A copy does the flying — the name on the
+ * player hides, the row's own name waits invisible, and the copy cross-fades into it at the
+ * end, which is also what hides the player's name being uppercase with wide tracking while
+ * the row's is neither.
  */
 function openStationsFromSpine() {
   const name = stationBtn.textContent || "";
@@ -1024,6 +1022,7 @@ function openStationsFromSpine() {
 
   const from = textCentre(stationBtn);
   const startSize = parseFloat(getComputedStyle(stationBtn).fontSize);
+  const wasVertical = getComputedStyle(stationBtn).writingMode.startsWith("vertical");
 
   stationsPage.open();
 
@@ -1051,6 +1050,9 @@ function openStationsFromSpine() {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const scale = endSize / startSize;
+  // A quarter turn only when the name on the player is actually running vertically. It did
+  // for one release; rotating a horizontal name to horizontal is a no-op with a cost.
+  const turn = wasVertical ? "rotate(-90deg)" : "rotate(0deg)";
   const landed = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) rotate(0deg) scale(${scale})`;
 
   // The easing is per-keyframe rather than on the effect. An effect-level easing warps the
@@ -1061,7 +1063,7 @@ function openStationsFromSpine() {
   const anim = fly.animate(
     [
       {
-        transform: "translate(-50%, -50%) rotate(-90deg) scale(1)",
+        transform: `translate(-50%, -50%) ${turn} scale(1)`,
         opacity: 1,
         easing: "cubic-bezier(0.32, 0.72, 0.28, 1)",
       },
