@@ -595,6 +595,27 @@ body.remote #tech {
   font-size: 0.85rem;
   padding: 10px 6px;
 }
+
+/* ---- the title marquee ----
+   A title too long for the column is clipped rather than ellipsised, and the whole
+   of it is reachable three ways: it drifts to the end and back on its own, the
+   pointer's x-position scrubs it, and either way the fade is only ever on the side
+   that is actually still clipped. A fixed right-edge fade (which is what this was)
+   dimmed the end of the title exactly when you had finally scrolled to it.
+
+   Registered so they can be transitioned and animated — an unregistered custom
+   property is a string and would jump between keyframes. */
+@property --fade-l {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --fade-r {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
 #title {
   font-size: clamp(1.5rem, 3.2vw, 2.6rem);
   font-weight: 700;
@@ -603,18 +624,99 @@ body.remote #tech {
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
-  /* fade the clipped edge as a hint there's more; hover to scrub (see main.ts) */
-  -webkit-mask-image: linear-gradient(90deg, #000 90%, transparent);
-  mask-image: linear-gradient(90deg, #000 90%, transparent);
+
+  /* --title-a and --title-b are the two ends of the travel, and --title-cycle its
+     period; main.ts writes all three whenever the title or the column changes.
+     The ends are inset by a few pixels of slack so the first and last words come
+     to rest clear of the edge instead of flush against it — without that, landing
+     on the very start or the very end takes a pixel-perfect pointer. */
+  --title-fade: 28px;
+  --title-a: 0px;
+  --title-b: 0px;
+  --title-cycle: 20s;
+
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent,
+    #000 var(--fade-l),
+    #000 calc(100% - var(--fade-r)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    90deg,
+    transparent,
+    #000 var(--fade-l),
+    #000 calc(100% - var(--fade-r)),
+    transparent
+  );
+  transition: --fade-l 0.12s linear, --fade-r 0.12s linear;
 }
 #title.fits {
   -webkit-mask-image: none;
   mask-image: none;
 }
+/* A title that overflows is read from its start, so pin it left: centring an
+   overflowing inline-block shows its middle and hides both ends. A short title
+   stays centred over the artist and album. */
+#title:not(.fits) {
+  text-align: left;
+  --fade-r: var(--title-fade);
+}
+#title:not(.fits) #title-inner {
+  transform: translateX(var(--title-a));
+}
 #title-inner {
   display: inline-block;
   transition: transform 0.12s ease-out;
   will-change: transform;
+}
+
+/* The idle drift. Split in two because the travel is on the inner span and the
+   fades are on the box that clips it, but they share one clock: the paired stops
+   are a pause at each end, and the 12%→50% / 62%→100% halves are the walk out and
+   the walk back. main.ts sizes --title-cycle so that walk is a constant speed
+   whatever the title's length. */
+@keyframes title-drift {
+  0%,
+  12% {
+    transform: translateX(var(--title-a));
+  }
+  50%,
+  62% {
+    transform: translateX(var(--title-b));
+  }
+  100% {
+    transform: translateX(var(--title-a));
+  }
+}
+@keyframes title-drift-fade {
+  0%,
+  12% {
+    --fade-l: 0px;
+    --fade-r: var(--title-fade);
+  }
+  50%,
+  62% {
+    --fade-l: var(--title-fade);
+    --fade-r: 0px;
+  }
+  100% {
+    --fade-l: 0px;
+    --fade-r: var(--title-fade);
+  }
+}
+#title.drift {
+  animation: title-drift-fade var(--title-cycle) ease-in-out infinite;
+}
+#title.drift #title-inner {
+  animation: title-drift var(--title-cycle) ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The title still scrubs on hover; it just doesn't move on its own. */
+  #title.drift,
+  #title.drift #title-inner {
+    animation: none;
+  }
 }
 #artist {
   font-size: clamp(1rem, 1.8vw, 1.3rem);

@@ -211,11 +211,9 @@ async function onNowPlaying(np: NowPlaying) {
   if (wasSignedOut) renderVersion();
 
   titleInner.textContent = np.title || "—";
-  titleInner.style.transform = "translateX(0)";
-  // mark whether the title fits (hide the edge-fade hint if it does)
-  requestAnimationFrame(() =>
-    titleEl.classList.toggle("fits", titleInner.scrollWidth <= titleEl.clientWidth + 1)
-  );
+  // Measure once it has been laid out: sets the edge fades and restarts the drift
+  // from the first word (see the title marquee below).
+  requestAnimationFrame(measureTitle);
   artistEl.textContent = np.artist || "";
   albumEl.textContent = np.album || "";
   if (np.station) stationBtn.textContent = np.station;
@@ -1127,19 +1125,104 @@ listen<{ mode: string }>("engine://mode", (e) => {
   }
 });
 
-// ---- title marquee: hover to scrub a long title with the mouse x-position ----
-titleEl.addEventListener("mousemove", (e) => {
+// ---- title marquee ------------------------------------------------------
+// A title wider than the column drifts slowly to its end and back on its own, and
+// hovering it hands control to the pointer: x scrubs the title under the cursor.
+// Neither reaches a hard edge — both ends of the travel keep TITLE_SLACK of air,
+// and the pointer gets a dead zone at each end of the box, because otherwise the
+// last word is only readable if you can land on the box's final pixel.
+
+const TITLE_SLACK = 14; // px of air kept at each end of the travel
+const TITLE_FADE = 28; // must match --title-fade in styles.css
+const TITLE_SPEED = 36; // px/s the idle drift walks at
+// The share of the drift cycle spent walking one way; the rest is the pause at
+// each end. Matches the 12%→50% and 62%→100% halves of @keyframes title-drift.
+const TITLE_WALK = 0.38;
+
+let titleTravel = 0; // px the title can move; 0 when it fits
+let titleHover = false;
+let titleResume: ReturnType<typeof setTimeout> | undefined;
+
+/** Put the title at `x` px of translation and fade whichever sides are clipped. */
+function titleAt(x: number) {
+  titleInner.style.transform = `translateX(${x}px)`;
+  const hidL = -x;
+  const hidR = x + titleInner.scrollWidth - titleEl.clientWidth;
+  titleEl.style.setProperty("--fade-l", `${Math.min(TITLE_FADE, Math.max(0, hidL))}px`);
+  titleEl.style.setProperty("--fade-r", `${Math.min(TITLE_FADE, Math.max(0, hidR))}px`);
+}
+
+/** Hand the title back to CSS: the rest position, and the drift if it overflows. */
+function titleRelease() {
+  titleInner.style.transform = "";
+  titleEl.style.removeProperty("--fade-l");
+  titleEl.style.removeProperty("--fade-r");
+  if (titleTravel <= 0 || titleHover) return;
+  // Re-add on the next frame so a drift already running restarts from the top —
+  // a new track should be read from its first word, not from wherever the last
+  // one had drifted to.
+  titleEl.classList.remove("drift");
+  requestAnimationFrame(() => {
+    if (!titleHover && titleTravel > 0) titleEl.classList.add("drift");
+  });
+}
+
+/** Re-measure after anything that can change the title or the space it has. */
+function measureTitle() {
+  clearTimeout(titleResume);
   const overflow = titleInner.scrollWidth - titleEl.clientWidth;
-  if (overflow <= 0) {
-    titleInner.style.transform = "translateX(0)";
-    return;
-  }
-  const rect = titleEl.getBoundingClientRect();
-  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-  titleInner.style.transform = `translateX(${-ratio * overflow}px)`;
+  const fits = overflow <= 1;
+  titleEl.classList.toggle("fits", fits);
+  titleTravel = fits ? 0 : overflow + 2 * TITLE_SLACK;
+  titleEl.style.setProperty("--title-a", `${TITLE_SLACK}px`);
+  titleEl.style.setProperty("--title-b", `${TITLE_SLACK - titleTravel}px`);
+  titleEl.style.setProperty(
+    "--title-cycle",
+    `${Math.max(8, titleTravel / TITLE_SPEED / TITLE_WALK).toFixed(1)}s`
+  );
+  titleRelease();
+}
+
+titleEl.addEventListener("pointerenter", () => {
+  titleHover = true;
+  clearTimeout(titleResume);
+  if (titleTravel <= 0) return;
+  // Take over from the drift where it actually is, rather than letting the title
+  // snap to the start before the first mousemove lands.
+  const at = new DOMMatrixReadOnly(getComputedStyle(titleInner).transform).m41;
+  titleEl.classList.remove("drift");
+  titleInner.style.transition = "none";
+  titleAt(at);
+  void titleInner.offsetWidth;
+  titleInner.style.transition = "";
 });
-titleEl.addEventListener("mouseleave", () => {
-  titleInner.style.transform = "translateX(0)";
+titleEl.addEventListener("mousemove", (e) => {
+  if (titleTravel <= 0) return;
+  const rect = titleEl.getBoundingClientRect();
+  const grab = Math.min(60, rect.width * 0.18);
+  const span = Math.max(1, rect.width - 2 * grab);
+  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left - grab) / span));
+  titleAt(TITLE_SLACK - ratio * titleTravel);
+});
+titleEl.addEventListener("pointerleave", () => {
+  titleHover = false;
+  titleInner.style.transform = "";
+  titleEl.style.removeProperty("--fade-l");
+  titleEl.style.removeProperty("--fade-r");
+  // Let it glide home before the drift takes the wheel back, or the handover
+  // reads as a jump.
+  titleResume = setTimeout(titleRelease, 450);
+});
+
+// The column's width moves with the window, and with it whether the title fits.
+let titleMeasurePending = false;
+window.addEventListener("resize", () => {
+  if (titleMeasurePending) return;
+  titleMeasurePending = true;
+  requestAnimationFrame(() => {
+    titleMeasurePending = false;
+    measureTitle();
+  });
 });
 
 // ---- lyric sync nudge: [ = earlier, ] = later (0.25s steps, per-track) ----
@@ -1192,10 +1275,7 @@ function renderRemote(r: RemoteState) {
   const key = remoteKey(r);
   if (key === currentKey) return;
   titleInner.textContent = r.title || "—";
-  titleInner.style.transform = "translateX(0)";
-  requestAnimationFrame(() =>
-    titleEl.classList.toggle("fits", titleInner.scrollWidth <= titleEl.clientWidth + 1)
-  );
+  requestAnimationFrame(measureTitle);
   artistEl.textContent = r.artist || "";
   albumEl.textContent = r.album || "";
   remoteBadge.textContent = `Now playing on ${r.device}`;
