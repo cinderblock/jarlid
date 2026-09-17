@@ -8,6 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import * as stationStats from "./station-stats";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -150,10 +151,90 @@ function groups(rows: StationInfo[]): Group[] {
   ].filter((g) => g.items.length > 0);
 }
 
+/// Up to two letters to stand in for a cover. Two words give their initials, one word gives
+/// its first two letters — "Alt Nation" reads better as AN than as AL.
+function initials(name: string) {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return "?";
+  const letters = words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2);
+  return letters.toUpperCase();
+}
+
+/// A stable hue per station name, so the same station is the same colour every launch and
+/// two stations next to each other are rarely the same one. Plain FNV-ish string hash.
+function hueOf(name: string) {
+  let h = 2166136261;
+  for (let i = 0; i < name.length; i++) {
+    h ^= name.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h) % 360;
+}
+
+const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ["year", 31557600],
+  ["month", 2629800],
+  ["week", 604800],
+  ["day", 86400],
+  ["hour", 3600],
+  ["minute", 60],
+];
+
+/// "yesterday", "3 weeks ago" — the largest unit that fits, because nobody wants a station
+/// last played in March described in hours.
+function ago(ms: number) {
+  const sec = Math.round((ms - Date.now()) / 1000);
+  for (const [unit, size] of UNITS) {
+    if (Math.abs(sec) >= size) return rtf.format(Math.round(sec / size), unit);
+  }
+  return "just now";
+}
+
+const monthYear = (ms: number) =>
+  new Date(ms).toLocaleDateString(undefined, { month: "short", year: "numeric" });
+
+/// The row's second line. What Jarlid has actually watched you do comes first, because it is
+/// the more useful answer to "have I been here?"; the creation date is the fallback for a
+/// station this client has never played, and there is simply no second line for one with
+/// neither. An empty line is better than a row of "—".
+function subtitle(st: StationInfo) {
+  const stat = stationStats.statFor(st.token);
+  const bits: string[] = [];
+  if (stat?.last) bits.push(ago(stat.last));
+  if (stat?.plays) bits.push(`${stat.plays} play${stat.plays === 1 ? "" : "s"}`);
+  if (!bits.length && st.dateCreated) bits.push(`Added ${monthYear(st.dateCreated)}`);
+  return bits.join(" · ");
+}
+
+/// Pandora's cover, else the art of the last track played from the station, else a tile drawn
+/// from the name. The tile is always underneath rather than a separate case, so a cover URL
+/// that 404s falls back to it instead of leaving a hole.
+function stationArt(st: StationInfo) {
+  const wrap = document.createElement("span");
+  wrap.className = "sp-art";
+  wrap.style.setProperty("--tile-hue", String(hueOf(st.name)));
+  wrap.textContent = initials(st.name);
+
+  const url = st.artUrl || stationStats.statFor(st.token)?.art;
+  if (url) {
+    const img = document.createElement("img");
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.addEventListener("load", () => img.classList.add("ready"));
+    img.addEventListener("error", () => img.remove());
+    img.src = url;
+    wrap.appendChild(img);
+  }
+  return wrap;
+}
+
 function stationRow(st: StationInfo, special: boolean) {
   const row = document.createElement("button");
   row.className = "sp-row" + (isActive(st) ? " active" : "") + (special ? " special" : "");
   row.type = "button";
+  row.dataset.token = st.token;
 
   if (selectMode) {
     const box = document.createElement("input");
@@ -162,10 +243,22 @@ function stationRow(st: StationInfo, special: boolean) {
     row.appendChild(box);
   }
 
+  row.appendChild(stationArt(st));
+
+  const text = document.createElement("span");
+  text.className = "sp-text";
   const name = document.createElement("span");
   name.className = "sp-name";
   name.textContent = st.name;
-  row.appendChild(name);
+  text.appendChild(name);
+  const meta = subtitle(st);
+  if (meta) {
+    const sub = document.createElement("span");
+    sub.className = "sp-meta";
+    sub.textContent = meta;
+    text.appendChild(sub);
+  }
+  row.appendChild(text);
 
   row.addEventListener("click", () => {
     if (busy) return;
