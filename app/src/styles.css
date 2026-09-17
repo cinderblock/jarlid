@@ -179,17 +179,20 @@ body {
   --stage-w: min(46vw, calc(89vw - 420px), calc(92vh - var(--stage-reserve)));
 }
 
-/* The stage carries the width so the art, the progress bar and the history strip
-   can all just say `100%` and stay locked to each other — they used to repeat
-   `min(42vh, 100%)` four times, and any one of them drifting made the progress
-   bar wider than the record it belongs to.
+/* The stage is the whole column, so the text under the art gets every pixel the
+   column has. The art's width is a *height* budget, and on a short window it
+   shrinks well below the column's 340px floor — the stage used to shrink with it,
+   which squeezed the title and artist into the width of a small record while
+   150px of column sat empty on either side.
 
-   `min(100%, …)` rather than the bare custom property because the grid track has
-   a 340px floor: on a window too short for that, the column stops shrinking but
-   the art must not stop, or it pushes the transport off the bottom. */
+   The three things that must stay the art's width say so, together, off the one
+   custom property: they used to repeat `min(42vh, 100%)` four times, and any one
+   of them drifting made the progress bar wider than the record it belongs to.
+   `min(100%, …)` rather than the bare property because of that same 340px floor:
+   on a window too short for it the column stops shrinking but the art must not,
+   or it pushes the transport off the bottom. */
 .stage {
-  width: min(100%, var(--stage-w));
-  margin-inline: auto;
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -198,8 +201,13 @@ body {
   min-height: 0;
 }
 
+.art-wrap,
+.progress,
+#history {
+  width: min(100%, var(--stage-w));
+}
+
 .art-wrap {
-  width: 100%;
   aspect-ratio: 1;
   border-radius: 18px;
   overflow: hidden;
@@ -624,7 +632,7 @@ body.remote #tech {
   display: flex;
   align-items: center;
   gap: 12px;
-  width: 100%;
+  /* width is the art's, set alongside .art-wrap and #history */
   margin-top: 26px;
   font-variant-numeric: tabular-nums;
   font-size: 0.78rem;
@@ -761,7 +769,7 @@ body.remote #remote-vol-wrap {
 #history {
   display: flex;
   gap: 10px;
-  width: 100%;
+  /* width is the art's, set alongside .art-wrap and .progress */
   margin-top: 22px;
   overflow-x: auto;
   overflow-y: visible;
@@ -1096,8 +1104,10 @@ body.remote #remote-vol-wrap {
   .stage {
     justify-content: flex-start;
   }
+  /* 70% of the art's own width budget rather than of the column — here the column
+     is the whole window and the art is a compact header above the lyrics. */
   .art-wrap {
-    width: min(34vh, 70%);
+    width: min(34vh, calc(0.7 * var(--stage-w)));
   }
   .meta {
     margin-top: 16px;
