@@ -1302,6 +1302,77 @@ body.remote #remote-vol-wrap {
   }
 }
 
+/* ---- responsive: short and wide, the meta moves beside the art ----
+   The art is height-bound, so the four lines under it are the four things
+   standing between it and being twice the size. Put them to its right and the
+   whole block leaves its height budget: the reserve drops to just the progress
+   row, the transport and the history strip.
+
+   The width has to come from somewhere, and it comes from the lyrics — which is
+   why this is not simply "when the window is short". The lyrics keep the 420px
+   measure the default layout guarantees, so the stage's extra 324px comes off
+   the art's own width budget, and the trade only pays while
+
+       0.89w - 744 > 0.92h - 347,  i.e.  w > 1.034h + 446
+
+   — 1087px at 620 tall, 1563px at 1080. Below that line this layout makes the art
+   *smaller*, which is the whole reason it is gated rather than applied whenever
+   the window is short. The two conditions below bracket that line from the safe
+   side: past 623px tall the 7/4 ratio already implies it, and below 623 the
+   1200px floor does (1.034 x 623 + 446 = 1090).
+
+   At 1600x620 this takes the art from 248px to 324; at 1920x1080, 672 to 748. */
+@media (min-width: 1200px) and (min-aspect-ratio: 7/4) {
+  #player {
+    --meta-w: 300px;
+    --stage-gap: 24px;
+    /* No .meta in the stack any more: the progress row, the transport and the
+       history strip with their margins, plus the same 8 of slop. The two clamps
+       are gone with the title and artist they measured. */
+    --stage-reserve: 246px;
+    --stage-w: min(
+      46vw,
+      calc(89vw - 420px - var(--meta-w) - var(--stage-gap)),
+      calc(92vh - var(--stage-reserve))
+    );
+    grid-template-columns:
+      minmax(340px, calc(var(--stage-w) + var(--stage-gap) + var(--meta-w)))
+      minmax(0, 1fr);
+  }
+  /* Art and meta share the first line; everything under them takes a full line of
+     its own and spans the pair rather than hiding under the art. */
+  .stage {
+    flex-direction: row;
+    flex-wrap: wrap;
+    column-gap: var(--stage-gap);
+  }
+  .art-wrap {
+    flex: 0 0 auto;
+  }
+  .meta {
+    flex: 1 1 var(--meta-w);
+    /* Without this the automatic minimum size is the title's min-content width,
+       and #title never wraps — so the meta demanded the whole title's length,
+       could not have its 300px, and wrapped onto a line of its own. */
+    min-width: 0;
+    margin-top: 0;
+    text-align: left;
+  }
+  .byline {
+    justify-content: flex-start;
+  }
+  .progress,
+  .controls,
+  #remote-vol-wrap,
+  #history {
+    flex: 0 0 100%;
+    width: 100%;
+  }
+  .controls {
+    justify-content: center;
+  }
+}
+
 /* Transient notices. Bottom-centre so it never sits under the station or mode panels, and
    never blocks the transport. */
 #toast {
