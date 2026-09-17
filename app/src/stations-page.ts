@@ -427,17 +427,37 @@ function setBusy(on: boolean) {
   refreshSelectionUi();
 }
 
+/// How long `.closing` is left on before the page is actually hidden. Must not be shorter
+/// than the closing animation in styles.css, or the panel vanishes mid-retreat.
+const CLOSE_MS = 200;
+let closeTimer: ReturnType<typeof setTimeout> | undefined;
+
 export function open() {
+  clearTimeout(closeTimer);
+  page.classList.remove("closing");
   page.hidden = false;
   search.value = "";
   setStatus("");
   render();
+  // Added after the render, so the panel animates in around contents that are already
+  // laid out — the station name flying in from the player measures its landing row now.
+  page.classList.add("opening");
+  page.addEventListener("animationend", () => page.classList.remove("opening"), { once: true });
   search.focus();
 }
 
 function close() {
   if (busy) return; // never pull the page out from under a running export
-  page.hidden = true;
+  page.classList.remove("opening");
+  page.classList.add("closing");
+  // A timer rather than `animationend`: that event is dispatched on a frame, and a window
+  // that is not on screen barely gets any — the page would sit there, closing, until you
+  // came back to watch it.
+  clearTimeout(closeTimer);
+  closeTimer = setTimeout(() => {
+    page.classList.remove("closing");
+    page.hidden = true;
+  }, CLOSE_MS);
   if (selectMode) setSelectMode(false);
 }
 
