@@ -1456,7 +1456,11 @@ body.remote #remote-vol-wrap {
 #settings-page[hidden] {
   display: none;
 }
-
+#sp-list {
+  /* The tabular layout below keys off the panel's width, not the window's — the panel is
+     90% of the window and the difference is a whole column at the boundary. */
+  container-type: inline-size;
+}
 .page-head {
   display: flex;
   align-items: center;
@@ -1685,7 +1689,72 @@ body.remote #remote-vol-wrap {
   white-space: nowrap;
 }
 
+/* ---- the wide layout ----
+   Past a certain panel width the second line stops being the right shape for what it says.
+   "last week · 37 plays" is a sentence about one station; three columns of the same facts
+   are a thing you can run your eye down and compare. Still one station per row — the rule
+   that the list is not a grid is about scanning for a name in two dimensions at once, and
+   a table is one dimension with the facts lined up.
 
+   Keyed to the panel rather than the window, because the panel is 90% of it and the
+   difference at the boundary is an entire column. */
+.sp-cell,
+.sp-head-row {
+  display: none;
+}
+@container (min-width: 900px) {
+  .sp-col {
+    max-width: min(100%, 1120px);
+    /* One track list, written once. In `em` the columns came out different widths in the
+       heading row and the data rows, because `em` is that element's own font size and the
+       heading is smaller — the table looked right until you noticed nothing lined up. */
+    --sp-cols: 44px minmax(0, 1fr) 4.5rem 8.5rem 6.5rem;
+  }
+  .sp-col .sp-row,
+  .sp-head-row {
+    display: grid;
+    grid-template-columns: var(--sp-cols);
+    align-items: center;
+    gap: 14px;
+  }
+  /* Select mode inserts the checkbox, which pushes every column along by one. */
+  .sp-col .sp-row:has(input[type="checkbox"]) {
+    grid-template-columns: auto var(--sp-cols);
+  }
+  .sp-cell {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* A count is compared digit by digit, so it wants a right edge and fixed-width figures. */
+  .sp-plays {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  /* The same facts are in the columns now; saying them twice makes the row taller for
+     nothing. */
+  .sp-meta {
+    display: none;
+  }
+  .sp-head-row {
+    /* The rows carry a 2px transparent left border for the active marker; without the
+       same one here the headings sit two pixels left of the data under them. */
+    border-left: 2px solid transparent;
+    padding: 4px 12px 8px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--faint);
+    border-bottom: 1px solid rgba(var(--wash), 0.08);
+    margin-bottom: 4px;
+  }
+  .sp-col.selecting .sp-head-row {
+    display: none;
+  }
+}
 /* Marks QuickMix / genre / Thumbprint stations, which behave differently on export:
    QuickMix has no seeds or thumbs of its own. */
 .sp-tag {

@@ -289,6 +289,31 @@ function stationArt(st: StationInfo) {
   return wrap;
 }
 
+/// The columns the wide layout adds. Each is one fact the narrow layout squeezes into the
+/// row's second line, given a column of its own so a run of them can be compared down the
+/// page instead of read one row at a time. Always built; the container query decides which
+/// of the two shapes is on screen, and building both costs three spans.
+const CELLS: { cls: string; label: string; of: (st: StationInfo) => string }[] = [
+  {
+    cls: "sp-plays",
+    label: "Plays",
+    of: (st) => String(stationStats.statFor(st.token)?.plays || ""),
+  },
+  {
+    cls: "sp-last",
+    label: "Last played",
+    of: (st) => {
+      const last = stationStats.statFor(st.token)?.last;
+      return last ? ago(last) : "";
+    },
+  },
+  {
+    cls: "sp-added",
+    label: "Added",
+    of: (st) => (st.dateCreated ? monthYear(st.dateCreated) : ""),
+  },
+];
+
 function stationRow(st: StationInfo, special: boolean) {
   const row = document.createElement("button");
   row.className = "sp-row" + (isActive(st) ? " active" : "") + (special ? " special" : "");
@@ -319,6 +344,13 @@ function stationRow(st: StationInfo, special: boolean) {
   }
   row.appendChild(text);
 
+  for (const c of CELLS) {
+    const cell = document.createElement("span");
+    cell.className = `sp-cell ${c.cls}`;
+    cell.textContent = c.of(st);
+    row.appendChild(cell);
+  }
+
   row.addEventListener("click", () => {
     if (busy) return;
     if (selectMode) {
@@ -344,7 +376,7 @@ function render() {
   // One centred column. A responsive grid meant scanning across *and* down at once to
   // find a name, which is the wrong shape for a list you read rather than browse.
   const col = document.createElement("div");
-  col.className = "sp-col";
+  col.className = "sp-col" + (selectMode ? " selecting" : "");
   listEl.appendChild(col);
 
   if (!rows.length) {
@@ -357,6 +389,23 @@ function render() {
     refreshSelectionUi();
     return;
   }
+
+  // Column headings for the wide layout. Hidden by CSS in the narrow one, where there are
+  // no columns to head, and in select mode, where the page is about picking rather than
+  // comparing and the checkbox has shifted every column along by one.
+  const headRow = document.createElement("div");
+  headRow.className = "sp-head-row";
+  headRow.appendChild(document.createElement("span"));
+  const nameHead = document.createElement("span");
+  nameHead.textContent = "Station";
+  headRow.appendChild(nameHead);
+  for (const c of CELLS) {
+    const h = document.createElement("span");
+    h.className = `sp-cell ${c.cls}`;
+    h.textContent = c.label;
+    headRow.appendChild(h);
+  }
+  col.appendChild(headRow);
 
   for (const g of groups(rows)) {
     const head = document.createElement("div");
