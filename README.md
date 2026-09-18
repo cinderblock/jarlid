@@ -11,6 +11,8 @@ anywhere in it.
 
 - **Synced (karaoke-style) lyrics** from [LRCLIB](https://lrclib.net), with duration-aware
   version matching, a permanent on-disk cache, and per-track sync nudging (`[` / `]`, ±0.25 s).
+  Lyrics with no timestamps still follow the song: the pane drifts through them in proportion to
+  the elapsed time, and holds still while you scroll it yourself.
 - **Native Windows media integration**: hardware media keys and the volume-flyout / lock-screen
   media panel (title, artist, album art, live state) via a real SMTC session, fed from the player
   itself rather than inferred from a page. Plus a **taskbar thumbnail toolbar** (thumbs down ·

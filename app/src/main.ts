@@ -128,6 +128,7 @@ let introBar: HTMLElement | null = null;
 
 function renderSyncedLyrics(lines: LyricLine[]) {
   lyricsEl.innerHTML = "";
+  stopPlainFollow();
   lyricsEl.classList.add("synced");
   introEl = introBar = null;
 
@@ -158,6 +159,98 @@ function renderPlainLyrics(text: string) {
     div.textContent = raw || " ";
     lyricsEl.appendChild(div);
   }
+  // A new song starts at its first verse, wherever the last one's pane was left.
+  stopPlainFollow();
+  lyricsEl.scrollTo({ top: 0, behavior: "instant" });
+}
+
+// ---- unsynced lyrics: follow the song by elapsed fraction -----------------
+// Plain lyrics carry no timestamps, so no line can be lit — but the song still moves,
+// and a pane parked at the top is wrong for every verse but the first. The estimate:
+// the words are spread evenly over the singing, and the singing spans the track less
+// a lead-in and a tail, because vocals rarely start at 0:00 or run to the last second.
+// The point of the text at that fraction is held at the pane's centre, so the line
+// actually being sung is somewhere on screen even when the guess is a verse out.
+const PLAIN_LEAD_S = 12;
+const PLAIN_TAIL_S = 15;
+const PLAIN_EDGE_FRAC = 0.06; // short tracks: lead/tail are capped at this share each
+// The reader wins: a wheel or a finger on the pane parks the follow, and it picks up
+// again from wherever they left it once they have been still for this long.
+const PLAIN_HOLD_MS = 4000;
+let plainTarget = -1; // scrollTop the pane is gliding toward; -1 = not following
+let plainPos = 0; // our own fractional copy of scrollTop, since the DOM rounds it
+let plainRaf = 0;
+let plainUserAt = 0;
+
+function stopPlainFollow() {
+  plainTarget = -1;
+  plainPos = 0;
+  if (plainRaf) cancelAnimationFrame(plainRaf);
+  plainRaf = 0;
+}
+
+function plainFraction(position: number, duration: number): number {
+  if (!(duration > 0)) return 0;
+  const lead = Math.min(PLAIN_LEAD_S, duration * PLAIN_EDGE_FRAC);
+  const tail = Math.min(PLAIN_TAIL_S, duration * PLAIN_EDGE_FRAC);
+  const span = duration - lead - tail;
+  const f = span > 0 ? (position - lead) / span : position / duration;
+  return Math.max(0, Math.min(1, f));
+}
+
+function followPlainLyrics(position: number, duration: number) {
+  if (lyricEditor.isEditing()) return;
+  if (Date.now() - plainUserAt < PLAIN_HOLD_MS) return;
+  const lines = lyricsEl.querySelectorAll<HTMLElement>(".line.plain");
+  if (lines.length === 0) return;
+  const paneTop = lyricsEl.getBoundingClientRect().top;
+  const first = lines[0].getBoundingClientRect().top - paneTop + lyricsEl.scrollTop;
+  const last = lines[lines.length - 1].getBoundingClientRect().bottom - paneTop + lyricsEl.scrollTop;
+  const want = first + plainFraction(position, duration) * (last - first) - lyricsEl.clientHeight / 2;
+  const max = Math.max(0, lyricsEl.scrollHeight - lyricsEl.clientHeight);
+  plainTarget = Math.max(0, Math.min(max, want));
+  if (!plainRaf) {
+    // The glide was idle, so the pane's real position is the truth — it may have been
+    // scrolled by hand while we held off.
+    plainPos = lyricsEl.scrollTop;
+    plainRaf = requestAnimationFrame(glidePlain);
+  }
+}
+
+// The playhead ticks a few times a second and each tick moves the target by a couple
+// of pixels; stepping there would be visible. Ease toward it per frame instead, from a
+// fractional position of our own, so the motion stays continuous however the DOM rounds.
+function glidePlain() {
+  plainRaf = 0;
+  if (plainTarget < 0) return;
+  const d = plainTarget - plainPos;
+  if (Math.abs(d) < 0.05) {
+    plainPos = plainTarget;
+    lyricsEl.scrollTo({ top: plainPos, behavior: "instant" });
+    return;
+  }
+  plainPos += d * 0.1;
+  lyricsEl.scrollTo({ top: plainPos, behavior: "instant" });
+  plainRaf = requestAnimationFrame(glidePlain);
+}
+
+for (const ev of ["wheel", "touchstart", "pointerdown"] as const) {
+  lyricsEl.addEventListener(
+    ev,
+    () => {
+      if (plainTarget < 0) return;
+      plainUserAt = Date.now();
+      if (plainRaf) cancelAnimationFrame(plainRaf);
+      plainRaf = 0;
+    },
+    { passive: true }
+  );
+}
+
+/// One entry point for the playhead: synced lyrics light a line, plain ones drift.
+function followLyrics(position: number, duration: number) {
+  if (syncedLines) highlightLine(position);
+  else followPlainLyrics(position, duration);
 }
 
 // Manual lyric sync offset (seconds), per-track, persisted. Nudge with [ and ].
@@ -498,6 +591,7 @@ async function loadLyricsFor(
     lyricsEditBtn.hidden = true;
     syncedLines = null;
     introEl = introBar = null;
+    stopPlainFollow();
     lyricsEl.innerHTML = `<div class="line empty">Lyrics unavailable</div>`;
     lyricsStatus.textContent = "Lyrics";
   }
@@ -533,6 +627,7 @@ function applyLyrics(res: Lyrics) {
   } else {
     syncedLines = null;
     introEl = introBar = null;
+    stopPlainFollow();
     lyricsEl.innerHTML = `<div class="line empty">No lyrics found</div>`;
     lyricsStatus.textContent = "Lyrics";
   }
@@ -600,7 +695,7 @@ function onPlayhead(ph: Playhead) {
   } else if (now - lastMoveAt > 1600 && now >= optimisticUntil) {
     setPlayingIcon(false);
   }
-  highlightLine(ph.position);
+  followLyrics(ph.position, ph.duration);
 }
 
 // ---- controls ----------------------------------------------------------
@@ -1514,7 +1609,7 @@ setInterval(() => {
   tCur.textContent = fmt(pos);
   tDur.textContent = fmt(remote.duration);
   if (Date.now() >= optimisticUntil) setPlayingIcon(remote.playing);
-  highlightLine(pos);
+  followLyrics(pos, remote.duration);
 }, 400);
 
 // ---- events from the engine bridge ------------------------------------
