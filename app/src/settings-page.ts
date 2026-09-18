@@ -92,8 +92,19 @@ const outputSel = createSelect($("set-output-device"), [{ value: FOLLOW_DEFAULT,
 
 let current: Settings | null = null;
 
+/// How long `.closing` stays on before the page is hidden. Not shorter than the closing
+/// animation in styles.css, or the panel vanishes mid-retreat. Same shape as the Stations
+/// panel, for the same reasons — including the timer rather than `animationend`, which is
+/// dispatched on a frame that an off-screen window may not get.
+const CLOSE_MS = 200;
+let closeTimer: ReturnType<typeof setTimeout> | undefined;
+
 export function open() {
+  clearTimeout(closeTimer);
+  page.classList.remove("closing");
   page.hidden = false;
+  page.classList.add("opening");
+  page.addEventListener("animationend", () => page.classList.remove("opening"), { once: true });
   void refreshAccount();
   void refreshSettings();
 }
@@ -416,7 +427,13 @@ $("set-recents-order").addEventListener("change", () => {
 });
 
 function close() {
-  page.hidden = true;
+  page.classList.remove("opening");
+  page.classList.add("closing");
+  clearTimeout(closeTimer);
+  closeTimer = setTimeout(() => {
+    page.classList.remove("closing");
+    page.hidden = true;
+  }, CLOSE_MS);
 }
 
 async function refreshAccount() {

@@ -1375,25 +1375,17 @@ body.remote #remote-vol-wrap {
    Deliberately a page, not a dropdown: an export walks the whole collection a
    station at a time, so it needs room for a list, progress and results, and it
    must not vanish because a click landed outside a popover. */
-#settings-page {
-  position: fixed;
-  inset: 0;
-  z-index: 8;
-  display: flex;
-  flex-direction: column;
-  background: var(--page);
-  backdrop-filter: blur(24px);
-}
-
-/* ---- the Stations panel ----
-   A sheet over the player rather than a page replacing it. The music does not stop when
-   you go looking for a station, and the margin is there so you can still see it going:
-   the progress bar moving, the art changing between songs. That is the whole reason this
-   is 90% and not 100%.
+/* ---- the Stations and Settings panels ----
+   Sheets over the player rather than pages replacing it. The music does not stop when
+   you go looking for a station or a setting, and the margin is there so you can still
+   see it going: the progress bar moving, the art changing between songs. That is the
+   whole reason these are not 100%. Stations gets 90% because a long collection wants the
+   room; Settings gets 80% because it does not.
 
    The scrim is deliberately unblurred. A blur would turn the thing it is meant to let you
    watch into a smear — dimming keeps the motion legible where blurring destroys it. */
-#stations-page {
+#stations-page,
+#settings-page {
   position: fixed;
   inset: 0;
   z-index: 8;
@@ -1401,9 +1393,15 @@ body.remote #remote-vol-wrap {
   place-items: center;
   background: var(--overlay);
 }
+#stations-page {
+  --panel: 90%;
+}
+#settings-page {
+  --panel: 80%;
+}
 .page-panel {
-  width: 90%;
-  height: 90%;
+  width: var(--panel);
+  height: var(--panel);
   display: flex;
   flex-direction: column;
   /* The panel keeps the blur: it is the surface being read, and what is behind *it*
@@ -1439,24 +1437,33 @@ body.remote #remote-vol-wrap {
     opacity: 1;
   }
 }
-#stations-page.opening {
+#stations-page.opening,
+#settings-page.opening {
   animation: scrim-in 220ms ease-out;
 }
-#stations-page.opening .page-panel {
+#stations-page.opening .page-panel,
+#settings-page.opening .page-panel {
   animation: stations-in 320ms cubic-bezier(0.22, 0.75, 0.25, 1);
 }
-/* Closing runs the same shapes backwards; stations-page.ts hides the page when it ends. */
-#stations-page.closing {
+/* Closing runs the same shapes backwards; each page's module hides it when the timer
+   ends. */
+#stations-page.closing,
+#settings-page.closing {
   animation: scrim-in 200ms ease-in reverse;
 }
-#stations-page.closing .page-panel {
+#stations-page.closing .page-panel,
+#settings-page.closing .page-panel {
   animation: stations-in 200ms cubic-bezier(0.4, 0, 0.7, 0.3) reverse;
 }
 @media (prefers-reduced-motion: reduce) {
   #stations-page.opening,
   #stations-page.opening .page-panel,
   #stations-page.closing,
-  #stations-page.closing .page-panel {
+  #stations-page.closing .page-panel,
+  #settings-page.opening,
+  #settings-page.opening .page-panel,
+  #settings-page.closing,
+  #settings-page.closing .page-panel {
     animation: none;
   }
 }
