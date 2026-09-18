@@ -2,9 +2,9 @@
 
 Plan path: `plans/stations-modal.md`
 
-Status: **one item open.** `25223c1` was a misreading and has been undone; the spine is
-vertical again and the original complaint — it is hidden by the album art on the user's
-machine — is unreproduced and waiting on a screenshot. Settings became an 80% panel.
+Status: **done and committed.** The station name has moved to the top-right controls, beside
+the all-stations button, and the stations and cast buttons have swapped places. The
+spine and the row above the title are both gone.
 
 Follows `plans/station-picker-rich.md`, which turned the station dropdown into this page.
 
@@ -34,8 +34,12 @@ Four things, from the user on 2026-09-17:
   element got read as picking the fix. It was not: on 2026-09-18 the user said they never
   asked for the horizontal row. `25223c1` is reverted by `fd656a4`; the spine is
   back as in `edda67b`. **Don't offer a remedy inside an identification question.**
+- **Taken back on 2026-09-18: the station name goes top-right**, next to the all-stations
+  button, and that button swaps places with cast so the name has room to extend left.
+  Neither the spine nor the row above the title comes back. The "hidden by the album art"
+  report referred to `25223c1` having put the name *below* the art; it is moot now.
 - **The flight's quarter-turn is conditional** on the source running vertically, so it
-  survives the spine coming and going without further edits.
+  survived the spine coming and going, and now simply never fires.
 - **The scrim is dimmed, not blurred.** The whole point of the 10% margin is watching the
   player keep playing; a blur destroys exactly the motion it is meant to reveal.
 - **Settings is a panel too, at 80%** (user, 2026-09-18). Same scrim, same reveal, same
@@ -77,8 +81,13 @@ Four things, from the user on 2026-09-17:
       `fd656a4`**. The spine is vertical again and `--stage-reserve` is 272 again; the
       flight's rotation stays conditional.
 - [x] Settings as an 80% panel sharing the Stations scrim, reveal and close — `26f6866`.
-- [ ] The spine hidden by the art on the user's machine: unreproduced, waiting on a
-      screenshot (see the open question).
+- [x] ~~The spine hidden by the art~~ — moot: the user meant `25223c1` had put the name
+      below the art, and has now taken the whole spine back.
+- [x] Station name into the topbar as a pill beside the stations button; stations and
+      cast swapped; spine CSS and the `.art-wrap` positioning removed — `bae0caa`.
+      Verified at 1920×1080: order station → stations → cast → settings on one 34px row;
+      a long name ellipsises at 320px; nothing left in the stage; the flight runs from
+      the pill's words (1705,31) to the row's words (243,367).
 - [x] 90% panel over a dimmed, unblurred scrim; `.page-panel` split from the scrim —
       `4d350ae`.
 - [x] clip-path open/close, reduced-motion opt-out, close on a timer — `adef618`.
@@ -89,20 +98,12 @@ Four things, from the user on 2026-09-17:
       table columns aligned to the pixel against the heading row; an 855px panel falls back
       to the stacked layout with its second line. `bun run build` clean at every step.
 
-## Open questions for the user
-
-1. **How is the spine hidden?** At every size reproducible here (1500×900, 1920×1080
-   side-by-side, 860×1000, 700×900) it does not overlap the art, is on screen, and is the
-   top element at its own text. The likeliest explanation is not geometry but legibility:
-   the spine is `--faint` text sitting inside the art's `0 30px 80px` drop shadow, and on
-   a big, bright cover it may simply vanish. A screenshot from the real app would settle
-   it in one look.
-
 ## Things not to do
 
 - Don't animate the panel's entry with anything that moves its contents — see the finding.
 - Don't blur the scrim.
-- Don't put the station name back on a horizontal row. The user wants the spine.
+- Don't put the station name back under the album art in any form — not a row, not a
+  spine. It lives in the top-right controls now.
 - Don't switch the table's breakpoint to a media query.
 - Don't start a dev server on port 1420 from this worktree.
 
