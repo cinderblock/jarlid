@@ -1070,12 +1070,13 @@ $("login-form").addEventListener("submit", async (e) => {
   }
 });
 // ---- station switching ---------------------------------------------------
-// The spine *is* the picker's active row, so clicking it opens the Stations page and flies
-// the name into place rather than dropping a second, poorer list next to the first. A
-// station is identified by its tuner token: the name is not unique.
+// The station name in the top-right controls *is* the picker's active row, so clicking it
+// opens the Stations panel and flies the name into place rather than dropping a second,
+// poorer list next to the first. A station is identified by its tuner token: the name is
+// not unique.
 //
 // The list itself lives on the Stations page now — this module keeps only the name it paints
-// on the spine.
+// on the name.
 let activeStation = "";
 
 /// The centre of an element's *text*, not of its box.
@@ -1107,7 +1108,7 @@ const FLIGHT_MS = 460;
  * end, which is also what hides the player's name being uppercase with wide tracking while
  * the row's is neither.
  */
-function openStationsFromSpine() {
+function openStationsFromName() {
   const name = stationBtn.textContent || "";
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (!name || reduced) {
@@ -1183,14 +1184,14 @@ function openStationsFromSpine() {
   anim.addEventListener("finish", land);
   anim.addEventListener("cancel", land);
   // A `finish` event is dispatched on a frame, and a window that is not on screen barely gets
-  // any: clicking the spine and immediately switching away would otherwise leave the spine
-  // hidden and the name missing from its row until you came back. `land` is safe to run twice.
+  // any: clicking the name and immediately switching away would otherwise leave it hidden
+  // and missing from its row until you came back. `land` is safe to run twice.
   setTimeout(land, FLIGHT_MS + 250);
 }
 
 stationBtn.addEventListener("click", (e) => {
   e.stopPropagation();
-  openStationsFromSpine();
+  openStationsFromName();
 });
 
 // Which station is playing, with its token. The nowplaying event carries only the name,

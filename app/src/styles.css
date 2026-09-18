@@ -182,8 +182,8 @@ body {
 
      272px = meta's 26 top margin + progress 42 + transport 100 + history 96,
      plus 8 of slop. Two things that used to be in it are not any more: the
-     station name is a spine up the art's left edge and occupies no row, and the
-     album shares the artist's line rather than taking one below it.
+     station name lives in the top-right controls and occupies no row here, and
+     the album shares the artist's line rather than taking one below it.
 
      An over-estimate costs a few pixels of art; an under-estimate is caught by
      the `min()` on `.art-wrap`, so this never clips the transport. Keep it in
@@ -222,11 +222,9 @@ body {
   width: min(100%, var(--stage-w));
 }
 
-/* The wrapper does not clip any more — the station spine lives inside it, hanging
-   off the art's left edge, and `overflow: hidden` here would cut it off. The image
-   rounds its own corners instead, which is all the clipping there ever was. */
+/* The image rounds its own corners rather than being clipped by the wrapper. Same
+   result, one less thing deciding what may hang off the art's edges. */
 .art-wrap {
-  position: relative;
   aspect-ratio: 1;
 }
 #art {
@@ -261,39 +259,28 @@ body.remote #history {
   display: none;
 }
 
-/* The station name runs up the art's left edge. It is absolutely positioned on
-   purpose: a lane of its own in the stage would either push the art off the centre
-   line that the progress bar and the history strip sit on, or need a matching empty
-   lane on the right, which costs the art more width than the 31px row it saves.
-   Out of flow it costs nothing — it hangs into the column's slack, and on a window
-   tall enough for that slack to close, into the page's own 4vw padding. */
+/* The station you are on, in the top-right controls beside the button for all of
+   them. A pill in the same family as the round icon buttons either side of it —
+   same height, same wash, same hover — so the row reads as one set of controls
+   with a label in it rather than a label that wandered into a row of buttons.
+   It has been a row above the title and a spine up the art's edge; both took
+   something from the album art, and this takes nothing. */
 #station-wrap {
-  position: absolute;
-  top: 0;
-  right: calc(100% + 10px);
-  height: 100%;
+  display: contents;
 }
-#station {
-  /* Rising from the art's bottom-left corner, the way a spine reads. */
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  height: 100%;
+#topbar #station {
+  width: auto;
+  max-width: min(40vw, 320px);
+  padding: 0 14px;
+  border-radius: 17px;
   text-transform: uppercase;
   letter-spacing: 0.14em;
   font-size: 0.72rem;
-  color: var(--faint);
-  background: transparent;
-  border: none;
-  outline: none;
-  padding: 0;
   font-family: inherit;
-  cursor: pointer;
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-#station:hover {
-  color: var(--dim);
 }
 /* The station name in flight between the spine and its row in the Stations page. A copy,
    living on top of everything, with the spine's type so the quarter turn is the only thing
