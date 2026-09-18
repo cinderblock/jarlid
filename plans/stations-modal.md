@@ -2,8 +2,9 @@
 
 Plan path: `plans/stations-modal.md`
 
-Status: **done and committed** (`25223c1`, `4d350ae`, `adef618`, `0134e25`).
-Nothing outstanding.
+Status: **one item open.** `25223c1` was a misreading and has been undone; the spine is
+vertical again and the original complaint — it is hidden by the album art on the user's
+machine — is unreproduced and waiting on a screenshot. Settings became an 80% panel.
 
 Follows `plans/station-picker-rich.md`, which turned the station dropdown into this page.
 
@@ -27,16 +28,18 @@ Four things, from the user on 2026-09-17:
 
 ## Decisions already made (don't re-ask)
 
-- **"Bookend" meant the station name.** Nothing in the app is called that; the user
-  confirmed which element on 2026-09-17. It is back on its own row above the song title,
-  and the album art is 31px shorter for it — a cost stated when the choice was offered.
-- **The quarter-turn is gone with it.** The rotation existed because one end of the flight
-  ran vertically. It is now conditional on the name actually being vertical rather than
-  rotating a horizontal name to horizontal.
+- **"Bookend" meant the station name — and the user wants it vertical.** Nothing in the
+  app is called that; asked which element they meant, they picked the spine. The option's
+  description had baked in a remedy ("put it back on its own row"), and picking the
+  element got read as picking the fix. It was not: on 2026-09-18 the user said they never
+  asked for the horizontal row. `25223c1` is reverted by `fd656a4`; the spine is
+  back as in `edda67b`. **Don't offer a remedy inside an identification question.**
+- **The flight's quarter-turn is conditional** on the source running vertically, so it
+  survives the spine coming and going without further edits.
 - **The scrim is dimmed, not blurred.** The whole point of the 10% margin is watching the
   player keep playing; a blur destroys exactly the motion it is meant to reveal.
-- **The Settings page still fills the window.** It is somewhere you go, not something you
-  consult while the music plays. Only the Stations view became a panel.
+- **Settings is a panel too, at 80%** (user, 2026-09-18). Same scrim, same reveal, same
+  close; one custom property sets the size per page.
 - **A table is not the grid the user vetoed.** `plans/station-galaxy.md` records "don't
   make my eyes scan in two dimensions at once", which is about finding a known name among
   cards. One station per row with its facts aligned beside it is one dimension.
@@ -70,8 +73,12 @@ Four things, from the user on 2026-09-17:
 
 ## Progress log
 
-- [x] Station name back on its own row; `--stage-reserve` 272 → 303; flight's rotation made
-      conditional — `25223c1`.
+- [x] ~~Station name back on its own row~~ — `25223c1`, **a misreading, reverted by
+      `fd656a4`**. The spine is vertical again and `--stage-reserve` is 272 again; the
+      flight's rotation stays conditional.
+- [x] Settings as an 80% panel sharing the Stations scrim, reveal and close — `26f6866`.
+- [ ] The spine hidden by the art on the user's machine: unreproduced, waiting on a
+      screenshot (see the open question).
 - [x] 90% panel over a dimmed, unblurred scrim; `.page-panel` split from the scrim —
       `4d350ae`.
 - [x] clip-path open/close, reduced-motion opt-out, close on a timer — `adef618`.
@@ -82,11 +89,20 @@ Four things, from the user on 2026-09-17:
       table columns aligned to the pixel against the heading row; an 855px panel falls back
       to the stacked layout with its second line. `bun run build` clean at every step.
 
+## Open questions for the user
+
+1. **How is the spine hidden?** At every size reproducible here (1500×900, 1920×1080
+   side-by-side, 860×1000, 700×900) it does not overlap the art, is on screen, and is the
+   top element at its own text. The likeliest explanation is not geometry but legibility:
+   the spine is `--faint` text sitting inside the art's `0 30px 80px` drop shadow, and on
+   a big, bright cover it may simply vanish. A screenshot from the real app would settle
+   it in one look.
+
 ## Things not to do
 
 - Don't animate the panel's entry with anything that moves its contents — see the finding.
 - Don't blur the scrim.
-- Don't reintroduce the vertical spine; it was tried and put back.
+- Don't put the station name back on a horizontal row. The user wants the spine.
 - Don't switch the table's breakpoint to a media query.
 - Don't start a dev server on port 1420 from this worktree.
 
