@@ -1,5 +1,5 @@
-// The Stations page: browse and play the whole collection, or select stations to
-// export their preferences (and, later, import them back).
+// The Stations page: browse and play the whole collection, send a station to the speakers,
+// or select stations to export their preferences (and import them back).
 //
 // This is a full page rather than the dropdown it started as. An export walks the
 // collection one station at a time with a deliberate gap between each, so it needs
@@ -72,6 +72,104 @@ const cancelBtn = $<HTMLButtonElement>("sp-cancel");
 
 let stations: StationInfo[] = [];
 let activeName = "";
+
+// ---- casting -------------------------------------------------------------
+// Jarlid never streams to the speakers; a WiiM plays Pandora itself, from the presets set up
+// in the WiiM Home app. So "cast this station" is "fire the preset with this station's name",
+// and a station with no preset cannot be cast until one is made for it. Every row still
+// carries the button, because a dim button that says why is more use than a missing one.
+interface Preset {
+  number: number;
+  name: string;
+  source: string;
+  art: string;
+}
+/// The network player's name, or empty when none is on the LAN.
+let remoteDevice = "";
+let presets: Preset[] = [];
+/// Set once a preset query has succeeded. A generic UPnP renderer has no presets and answers
+/// the query with an error; rows on such a device get no cast button rather than a useless
+/// one.
+let presetsKnown = false;
+let presetFetch = 0;
+
+/** Called by main.ts whenever the remote-player state arrives; cheap unless the name changed. */
+export function setRemoteDevice(name: string) {
+  if (name === remoteDevice) return;
+  remoteDevice = name;
+  presets = [];
+  presetsKnown = false;
+  if (name) void refreshPresets();
+  else if (!page.hidden) render();
+}
+
+async function refreshPresets() {
+  if (!remoteDevice) return;
+  const seq = ++presetFetch;
+  let next: Preset[] | null = null;
+  try {
+    next = await invoke<Preset[]>("remote_presets");
+  } catch {
+    next = null;
+  }
+  if (seq !== presetFetch) return; // a newer query is in flight, or the device changed
+  const known = next !== null;
+  const list = next ?? [];
+  // Re-render only on a change. Opening the page asks again, and the station name is flying
+  // into its row at that moment; rebuilding the rows under it would land it on nothing.
+  const same = known === presetsKnown && JSON.stringify(list) === JSON.stringify(presets);
+  presetsKnown = known;
+  presets = list;
+  if (!same && !page.hidden) render();
+}
+
+const castable = () => !!remoteDevice && presetsKnown && !selectMode;
+
+const fold = (s: string) => s.trim().toLowerCase();
+
+/// The device preset that plays this station, if one exists. Matched by name — the presets
+/// carry no station token. A preset whose source names some other service is not it, however
+/// alike the names.
+function presetFor(st: StationInfo): Preset | undefined {
+  const want = fold(st.name);
+  return presets.find(
+    (p) => fold(p.name) === want && (!p.source || /pandora/i.test(p.source))
+  );
+}
+
+function cast(st: StationInfo) {
+  const p = presetFor(st);
+  if (!p) {
+    setStatus(
+      `“${st.name}” is not a preset on ${remoteDevice} — add it in the WiiM Home app, then cast it from here.`,
+      "err"
+    );
+    return;
+  }
+  // Moving playback, not adding a second source: the local engine stops, and the display
+  // follows the speakers once they report what they are playing.
+  invoke("remote_cmd", { cmd: `preset:${p.number}` })
+    .then(() => invoke("player_cmd", { cmd: "pause" }).catch(() => {}))
+    .catch((e) => setStatus(String(e), "err"));
+  close();
+}
+
+const CAST_ICON =
+  '<svg viewBox="0 0 24 24"><path d="M12 19h7a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v1"/><path d="M3 11a9 9 0 0 1 9 9M3 15a5 5 0 0 1 5 5M3 20h.01"/></svg>';
+
+function castButton(st: StationInfo) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "sp-cast" + (presetFor(st) ? "" : " unmatched");
+  btn.setAttribute("aria-label", `Cast to ${remoteDevice}`);
+  btn.innerHTML = CAST_ICON;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!busy) cast(st);
+  });
+  return btn;
+}
+
 /// The playing station's token. Preferred over the name for deciding which row is the
 /// active one, because a name is not unique.
 let activeToken = "";
@@ -315,9 +413,12 @@ const CELLS: { cls: string; label: string; of: (st: StationInfo) => string }[] =
 ];
 
 function stationRow(st: StationInfo, special: boolean) {
-  const row = document.createElement("button");
+  // A div acting as a button, because the row holds a real button (cast) and a button may
+  // not contain another. Enter and Space do what a click does, below.
+  const row = document.createElement("div");
   row.className = "sp-row" + (isActive(st) ? " active" : "") + (special ? " special" : "");
-  row.type = "button";
+  row.setAttribute("role", "button");
+  row.tabIndex = 0;
   row.dataset.token = st.token;
 
   if (selectMode) {
@@ -351,6 +452,13 @@ function stationRow(st: StationInfo, special: boolean) {
     row.appendChild(cell);
   }
 
+  if (castable()) row.appendChild(castButton(st));
+
+  row.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    row.click();
+  });
   row.addEventListener("click", () => {
     if (busy) return;
     if (selectMode) {
@@ -376,7 +484,7 @@ function render() {
   // One centred column. A responsive grid meant scanning across *and* down at once to
   // find a name, which is the wrong shape for a list you read rather than browse.
   const col = document.createElement("div");
-  col.className = "sp-col" + (selectMode ? " selecting" : "");
+  col.className = "sp-col" + (selectMode ? " selecting" : "") + (castable() ? " cast" : "");
   listEl.appendChild(col);
 
   if (!rows.length) {
@@ -405,6 +513,9 @@ function render() {
     h.textContent = c.label;
     headRow.appendChild(h);
   }
+  // The cast column heads itself with its icon; a word over a column of the same icon
+  // would say it twice.
+  if (castable()) headRow.appendChild(document.createElement("span"));
   col.appendChild(headRow);
 
   for (const g of groups(rows)) {
@@ -488,6 +599,8 @@ export function open() {
   search.value = "";
   setStatus("");
   render();
+  // Presets are edited in the WiiM Home app while Jarlid runs; each opening asks again.
+  void refreshPresets();
   // Added after the render, so the panel animates in around contents that are already
   // laid out — the station name flying in from the player measures its landing row now.
   page.classList.add("opening");

@@ -30,8 +30,8 @@ anywhere in it.
 - **Network player (UPnP/DLNA + WiiM) remote mode**: when local playback is idle and a
   renderer on the LAN is playing, Jarlid becomes its display — "Now playing on …" with art and
   synced lyrics. WiiM devices use the native LinkPlay API, so metadata works for the WiiM's own
-  sources too, and Jarlid can start playback on the device from its preset list and control
-  play/pause/skip.
+  sources too, and every row on the Stations page gets a cast button that starts that station
+  on the device (by way of the matching WiiM preset), plus play/pause/skip control.
 - **Native audio**: 128 kbit/s MP3 (double Pandora's 64 kbit/s default), decoded and resampled to
   the output device's rate, streamed with a lock-free ring buffer. Playback position is measured
   from frames actually delivered to the device, which is what keeps synced lyrics honest — decoding

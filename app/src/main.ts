@@ -56,6 +56,9 @@ const artistEl = $("artist");
 const albumEl = $("album");
 const bylineEl = document.querySelector(".byline") as HTMLElement;
 const stationBtn = $("station");
+// The name inside the pill; the pill itself also holds the list icon, which stays when
+// there is no name to show.
+const stationNameEl = $("station-name");
 const sourceEl = $("source-station");
 const histEl = $("history");
 const barEl = $("bar");
@@ -313,7 +316,7 @@ async function onNowPlaying(np: NowPlaying) {
   requestAnimationFrame(measureTitle);
   artistEl.textContent = np.artist || "";
   albumEl.textContent = np.album || "";
-  if (np.station) stationBtn.textContent = np.station;
+  if (np.station) stationNameEl.textContent = np.station;
   // QuickMix blends many stations; without this there's no way to tell which one is playing.
   sourceEl.textContent = np.sourceStation ? `from ${np.sourceStation}` : "";
   sourceEl.hidden = !np.sourceStation;
@@ -1102,7 +1105,7 @@ $("login-form").addEventListener("submit", async (e) => {
 // not unique.
 //
 // The list itself lives on the Stations page now — this module keeps only the name it paints
-// on the name.
+// into the pill.
 let activeStation = "";
 
 /// The centre of an element's *text*, not of its box.
@@ -1135,16 +1138,17 @@ const FLIGHT_MS = 460;
  * the row's is neither.
  */
 function openStationsFromName() {
-  const name = stationBtn.textContent || "";
+  const name = stationNameEl.textContent || "";
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (!name || reduced) {
+  // No name to fly in remote mode either: the pill is only its icon there.
+  if (!name || reduced || remoteMode) {
     stationsPage.open();
     return;
   }
 
-  const from = textCentre(stationBtn);
-  const startSize = parseFloat(getComputedStyle(stationBtn).fontSize);
-  const wasVertical = getComputedStyle(stationBtn).writingMode.startsWith("vertical");
+  const from = textCentre(stationNameEl);
+  const startSize = parseFloat(getComputedStyle(stationNameEl).fontSize);
+  const wasVertical = getComputedStyle(stationNameEl).writingMode.startsWith("vertical");
 
   stationsPage.open();
 
@@ -1166,7 +1170,7 @@ function openStationsFromName() {
   fly.style.fontSize = `${startSize}px`;
   document.body.appendChild(fly);
 
-  stationBtn.style.visibility = "hidden";
+  stationNameEl.style.visibility = "hidden";
   target.style.opacity = "0";
 
   const dx = to.x - from.x;
@@ -1204,7 +1208,7 @@ function openStationsFromName() {
   const land = () => {
     fly.remove();
     reveal.cancel();
-    stationBtn.style.visibility = "";
+    stationNameEl.style.visibility = "";
     target.style.opacity = "";
   };
   anim.addEventListener("finish", land);
@@ -1239,10 +1243,6 @@ listen<{ stations: StationInfo[] }>("engine://stations", (e) => {
 });
 
 // ---- top-right pages -----------------------------------------------------
-$("stations-btn").addEventListener("click", (e) => {
-  e.stopPropagation();
-  stationsPage.open();
-});
 $("settings-btn").addEventListener("click", (e) => {
   e.stopPropagation();
   settingsPage.open();
@@ -1250,7 +1250,7 @@ $("settings-btn").addEventListener("click", (e) => {
 // index.html paints from a cached preference before the first frame; this is the
 // authoritative answer arriving a moment later.
 void settingsPage.applyStoredAppearance();
-attachTip($("stations-btn"), () => "All stations — browse, export");
+attachTip(stationBtn, () => "All stations — browse, cast, export");
 attachTip($("settings-btn"), () => "Settings");
 
 // ---- station modes (My Station / Crowd Faves / Discovery / Deep Cuts …) ----
@@ -1532,80 +1532,12 @@ let remoteDevice = "";
 listen<RemoteState>("remote://state", (e) => {
   const st = e.payload;
   remoteDevice = st?.device || "";
-  speakersBtn.hidden = !remoteDevice;
+  // Casting lives on the Stations page: each row can send its station to the speakers.
+  stationsPage.setRemoteDevice(remoteDevice);
   remote = st && st.title ? st : null;
   remoteAt = Date.now();
   updateMode();
   reflectRemoteVolume();
-});
-
-// ---- "Play on Speakers": the network player's presets --------------------
-interface Preset {
-  number: number;
-  name: string;
-  source: string;
-  art: string;
-}
-const speakersBtn = $("speakers-btn");
-const speakersPanel = $("speakers-panel");
-const speakersHead = $("speakers-head");
-const speakersList = $("speakers-list");
-
-speakersBtn.addEventListener("click", async (ev) => {
-  ev.stopPropagation();
-  if (!speakersPanel.hidden) {
-    speakersPanel.hidden = true;
-    return;
-  }
-  speakersPanel.hidden = false;
-  speakersHead.textContent = `Play on ${remoteDevice || "speakers"}`;
-  speakersList.innerHTML = `<div class="sp-empty">Loading presets…</div>`;
-  try {
-    const presets = await invoke<Preset[]>("remote_presets");
-    speakersList.innerHTML = "";
-    if (!presets.length) {
-      speakersList.innerHTML = `<div class="sp-empty">No presets configured — add them in the WiiM Home app.</div>`;
-      return;
-    }
-    for (const p of presets) {
-      const item = document.createElement("div");
-      item.className = "preset-item";
-      if (p.art) {
-        const img = new Image();
-        img.src = p.art;
-        img.className = "preset-art";
-        img.onerror = () => img.remove();
-        item.appendChild(img);
-      }
-      const text = document.createElement("div");
-      const name = document.createElement("div");
-      name.className = "preset-name";
-      name.textContent = p.name;
-      text.appendChild(name);
-      if (p.source) {
-        const src = document.createElement("div");
-        src.className = "preset-source";
-        src.textContent = p.source;
-        text.appendChild(src);
-      }
-      item.appendChild(text);
-      item.addEventListener("click", () => {
-        invoke("remote_cmd", { cmd: `preset:${p.number}` }).catch(() => {});
-        speakersPanel.hidden = true;
-      });
-      speakersList.appendChild(item);
-    }
-  } catch (err) {
-    speakersList.innerHTML = `<div class="sp-empty">${String(err)}</div>`;
-  }
-});
-window.addEventListener("click", (e) => {
-  if (!speakersPanel.hidden && !(e.target as HTMLElement).closest("#speakers-panel, #speakers-btn")) {
-    speakersPanel.hidden = true;
-  }
-});
-window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") speakersPanel.hidden = true;
 });
 
 // ---- remote volume slider -------------------------------------------------
@@ -1723,7 +1655,7 @@ function reportIssue(note = "") {
   invoke("native_report_issue", {
     context: {
       userAgent: navigator.userAgent,
-      station: stationBtn.textContent ?? "",
+      station: stationNameEl.textContent ?? "",
       sourceStation: sourceEl.textContent ?? "",
       mode: modeBtn.textContent ?? "",
       remote: remoteMode,
