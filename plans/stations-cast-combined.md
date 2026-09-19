@@ -175,3 +175,21 @@ Bare `rustfmt`/`cargo fmt` wants to wrap the file's established one-liner idiom
 (`ctl.target.lock().await.clone().ok_or(...)?`) used throughout upnp.rs. The file is not
 default-rustfmt formatted; new code matches the surrounding style deliberately. Don't run bare
 `cargo fmt` here.
+
+## UI revision + v1.10.0 (2026-09-19)
+
+The combine had gone too far: the station name and all-stations icon folded into one pill
+that showed only an icon when nothing played, and the top-bar cast button was removed
+entirely. Per the user, reverted to two clear controls in the top bar:
+
+- `#station`: a text pill showing the current station name (fallback "Stations" so it is
+  never blank), opening the Stations panel. The redundant separate list-icon button stays
+  merged in.
+- `#speakers-btn`: a separate cast button, shown only when `canCast`, opening the same
+  Stations panel. Per-row casting on that page is unchanged.
+
+Files: `app/index.html`, `app/src/main.ts`, `app/src/styles.css`. Verified in the browser
+via Vite (name pill + cast button + settings, in that order). Committed `ba72f77`.
+
+Then cut **v1.10.0** (minor) as a version-only four-file commit `f0afabe`, tagged and pushed;
+release workflow running.
