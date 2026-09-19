@@ -78,3 +78,24 @@ Three asks from the user on 2026-09-19:
 
 - Don't bump the version inside the feature commit.
 - Don't run bare `cargo fmt`.
+
+## Follow-up: is there a better WiiM API than presets? (2026-09-19)
+
+Researched after the release. Public documentation gives two layers:
+
+- **HTTP API (what Jarlid uses).** `getPresetInfo` (name/source/picurl, no station id),
+  `MCUKeyShortClick:N` / `setPlayerCmd:playLocalList:N` to fire a preset, `setPlayerCmd:play:<url>`
+  for a raw stream. Nothing addresses a Pandora station. Official PDF and forum threads agree;
+  staff answer to "start a service playlist from the API" was "use a preset".
+- **UPnP `urn:schemas-wiimu-com:service:PlayQueue:1` (port 59152).** Much richer, undocumented
+  by WiiM, signatures known from `shumatech/wiimplay/upnp`: `GetKeyMapping`/`SetKeyMapping`
+  (presets as XML; a Pandora preset shows `<Source>Pandora2</Source>` and a `Name_#~timestamp`
+  name), `BrowseQueue`/`CreateQueue`/`PlayQueueWithIndex` (queue contexts with DIDL-Lite
+  tracks), and service-aware `GetUserFavorites(AccountSource, MediaType, Filter)`,
+  `GetQueueOnline(QueueName, QueueID, QueueType, ...)`, `SearchQueueOnline`. For Tidal/Qobuz
+  people use these to play by service id. No public example of the Pandora station-list or
+  station-start call exists; the WiiM Home app must use one, since the device holds the login.
+
+Next step if pursued: probe the real device read-only — `GetKeyMapping`, `BrowseQueue("TotalQueue")`,
+`GetUserFavorites("Pandora2", …)` — and capture what the WiiM Home app sends when it starts a
+station. Only then can Jarlid start any station rather than only preset ones.
