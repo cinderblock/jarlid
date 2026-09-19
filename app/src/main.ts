@@ -83,6 +83,12 @@ let syncedLines: LyricLine[] | null = null;
 // both needed to edit, and to file the edit against the right track.
 let lastLyrics: Lyrics | null = null;
 let lastMeta = { title: "", artist: "", album: "" };
+// A lookup that failed to reach LRCLIB is tried again while the song is still playing:
+// after these pauses, in order, and then no more. The backend already retries each
+// request a few times, so this covers an outage of a minute or so, not a long one —
+// LRCLIB is a volunteer-run service and a song is only a few minutes long anyway.
+const LYRICS_RETRY_DELAYS_MS = [20_000, 60_000];
+let lyricsRetryTimer: ReturnType<typeof setTimeout> | null = null;
 // remote (network player) mode
 let remote: RemoteState | null = null;
 let remoteAt = 0; // Date.now() when the last remote state arrived
@@ -569,9 +575,15 @@ async function loadLyrics(np: NowPlaying) {
 async function loadLyricsFor(
   meta: { title: string; artist: string; album: string },
   duration: number | null,
-  key: string
+  key: string,
+  attempt = 0
 ) {
-  lyricsStatus.textContent = "Loading lyrics…";
+  // A retry queued for the previous track is moot now, whichever track this is for.
+  if (lyricsRetryTimer !== null) {
+    clearTimeout(lyricsRetryTimer);
+    lyricsRetryTimer = null;
+  }
+  lyricsStatus.textContent = attempt ? "Loading lyrics… (retrying)" : "Loading lyrics…";
   try {
     const res = await invoke<Lyrics>("fetch_lyrics", {
       artist: meta.artist,
@@ -585,6 +597,10 @@ async function loadLyricsFor(
     lastMeta = meta;
     applyLyrics(res);
   } catch (e) {
+    if (key !== currentKey) return;
+    // The backend only fails when LRCLIB could not be reached (a miss is a result, not
+    // an error), so this is a network problem worth logging and worth another go.
+    console.warn("lyrics lookup failed", e);
     // Don't leave the pencil pointing at the last track's lyrics: `lastMeta` was not
     // updated, so editing now would file the edit against the wrong song.
     lastLyrics = null;
@@ -593,7 +609,17 @@ async function loadLyricsFor(
     introEl = introBar = null;
     stopPlainFollow();
     lyricsEl.innerHTML = `<div class="line empty">Lyrics unavailable</div>`;
-    lyricsStatus.textContent = "Lyrics";
+    const delay = LYRICS_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) {
+      lyricsStatus.textContent = "Lyrics";
+      return;
+    }
+    lyricsStatus.textContent = "Lyrics · will retry";
+    lyricsRetryTimer = setTimeout(() => {
+      lyricsRetryTimer = null;
+      if (key !== currentKey) return;
+      void loadLyricsFor(meta, duration, key, attempt + 1);
+    }, delay);
   }
 }
 

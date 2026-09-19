@@ -11,6 +11,8 @@ anywhere in it.
 
 - **Synced (karaoke-style) lyrics** from [LRCLIB](https://lrclib.net), with duration-aware
   version matching, a permanent on-disk cache, and per-track sync nudging (`[` / `]`, ±0.25 s).
+  A lookup that cannot reach LRCLIB is retried while the song plays, and is never reported as
+  "no lyrics found".
   Lyrics with no timestamps still follow the song: the pane drifts through them in proportion to
   the elapsed time, and holds still while you scroll it yourself.
 - **Native Windows media integration**: hardware media keys and the volume-flyout / lock-screen

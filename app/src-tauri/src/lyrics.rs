@@ -13,6 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 use tauri::Manager;
 
 const USER_AGENT: &str =
@@ -143,10 +144,7 @@ pub async fn fetch_lyrics(
         }
     }
 
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = lrclib_client()?;
 
     // 1) exact match via /get (needs duration)
     if let Some(dur) = duration {
@@ -160,17 +158,8 @@ pub async fn fetch_lyrics(
                 q.push(("album_name", al));
             }
         }
-        if let Ok(resp) = client
-            .get("https://lrclib.net/api/get")
-            .query(&q)
-            .send()
-            .await
-        {
-            if resp.status().is_success() {
-                if let Ok(v) = resp.json::<serde_json::Value>().await {
-                    return Ok(cache_and_return(from_lrclib(&v, "lrclib/get"), &cache_file));
-                }
-            }
+        if let Some(v) = lrclib_get(&client, "https://lrclib.net/api/get", &q).await? {
+            return Ok(cache_and_return(from_lrclib(&v, "lrclib/get"), &cache_file));
         }
     }
 
@@ -181,21 +170,13 @@ pub async fn fetch_lyrics(
         candidates.push(("simple", simple));
     }
     for (label, t) in candidates {
-        if let Ok(resp) = client
-            .get("https://lrclib.net/api/search")
-            .query(&[("track_name", t.as_str()), ("artist_name", artist.as_str())])
-            .send()
-            .await
-        {
-            if resp.status().is_success() {
-                if let Ok(arr) = resp.json::<serde_json::Value>().await {
-                    if let Some(best) = pick_best(&arr, duration) {
-                        return Ok(cache_and_return(
-                            from_lrclib(best, &format!("lrclib/search/{label}")),
-                            &cache_file,
-                        ));
-                    }
-                }
+        let q = [("track_name", t.as_str()), ("artist_name", artist.as_str())];
+        if let Some(arr) = lrclib_get(&client, "https://lrclib.net/api/search", &q).await? {
+            if let Some(best) = pick_best(&arr, duration) {
+                return Ok(cache_and_return(
+                    from_lrclib(best, &format!("lrclib/search/{label}")),
+                    &cache_file,
+                ));
             }
         }
     }
@@ -204,6 +185,73 @@ pub async fn fetch_lyrics(
         source: "none".into(),
         ..Default::default()
     })
+}
+
+/// How long one attempt may take. LRCLIB is slow, not hung: a reply that has not
+/// started in this long is not coming, and holding the pane on "Loading lyrics…" for
+/// the rest of the song would be worse than trying again.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Pauses between attempts at one request. Two retries, so a request that fails for a
+/// passing reason gets three tries in a little over half a minute at worst.
+const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+
+fn lrclib_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// One LRCLIB lookup, retried while the failure is the kind that a retry can fix.
+///
+/// The three outcomes a caller has to tell apart:
+///
+/// - `Ok(Some(body))` — LRCLIB answered. For `/get` that is the record; for `/search`
+///   it is an array, possibly empty.
+/// - `Ok(None)` — LRCLIB answered "no such record" (a 404). Only `/get` does this;
+///   `/search` says the same thing with an empty array.
+/// - `Err` — no answer. A timeout, a connection error, a 5xx or a 429 is tried again
+///   after each of [`RETRY_DELAYS`] before it becomes this; any other 4xx becomes this
+///   at once, since asking the same question again would get the same refusal.
+///
+/// The distinction matters because a miss and an outage look identical from the pane
+/// otherwise, and "No lyrics found" is a claim about the track, not about the network.
+async fn lrclib_get<Q: serde::Serialize + ?Sized>(
+    client: &reqwest::Client,
+    url: &str,
+    query: &Q,
+) -> Result<Option<serde_json::Value>, String> {
+    let mut delays = RETRY_DELAYS.iter();
+    loop {
+        let failure = match client.get(url).query(query).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.json().await {
+                Ok(v) => return Ok(Some(v)),
+                // A body that stopped short or came back as something other than JSON
+                // is as transient as a dropped connection.
+                Err(e) => format!("unreadable reply: {e}"),
+            },
+            Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => return Ok(None),
+            Ok(resp)
+                if resp.status().is_server_error()
+                    || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+            {
+                format!("HTTP {}", resp.status())
+            }
+            Ok(resp) => {
+                return Err(format!(
+                    "LRCLIB refused the lookup (HTTP {})",
+                    resp.status()
+                ))
+            }
+            Err(e) => e.to_string(),
+        };
+        match delays.next() {
+            Some(d) => tokio::time::sleep(*d).await,
+            None => return Err(format!("Could not reach LRCLIB: {failure}")),
+        }
+    }
 }
 
 /// From a search-results array, prefer entries with synced lyrics and the closest
@@ -454,10 +502,7 @@ pub async fn publish_lyrics(app: tauri::AppHandle, publication: Publication) -> 
         return Err("Refusing to publish empty lyrics".into());
     }
 
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = lrclib_client()?;
     let token = publish_token(&client).await?;
 
     let resp = client
@@ -495,10 +540,7 @@ pub async fn publish_lyrics(app: tauri::AppHandle, publication: Publication) -> 
 /// matched to the wrong song entirely and there is nothing worth correcting by hand.
 #[tauri::command]
 pub async fn flag_lyrics(track_id: i64, content: Option<String>) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = lrclib_client()?;
     let token = publish_token(&client).await?;
 
     let mut body = serde_json::json!({ "trackId": track_id });
