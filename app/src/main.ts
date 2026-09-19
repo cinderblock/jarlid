@@ -42,6 +42,8 @@ interface RemoteState {
   position: number;
   duration: number;
   volume: number;
+  /// The device can start a Pandora station itself (a WiiM whose PlayQueue service was found).
+  canCast: boolean;
 }
 
 // ---- element helpers ---------------------------------------------------
@@ -1533,7 +1535,7 @@ listen<RemoteState>("remote://state", (e) => {
   const st = e.payload;
   remoteDevice = st?.device || "";
   // Casting lives on the Stations page: each row can send its station to the speakers.
-  stationsPage.setRemoteDevice(remoteDevice);
+  stationsPage.setRemoteDevice(remoteDevice, !!st?.canCast);
   remote = st && st.title ? st : null;
   remoteAt = Date.now();
   updateMode();

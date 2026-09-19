@@ -1607,12 +1607,6 @@ body.remote #remote-vol-wrap {
   color: var(--fg);
   background: rgba(var(--wash), 0.14);
 }
-.sp-cast.unmatched {
-  opacity: 0.35;
-}
-.sp-cast.unmatched:hover {
-  opacity: 0.7;
-}
 /* Shrink-to-fit, not flex:1 — a growing name would shove the tag to the far edge of
    a wide grid cell, leaving it floating unattached to the station it describes. */
 .sp-name {

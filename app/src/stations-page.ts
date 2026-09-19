@@ -74,81 +74,29 @@ let stations: StationInfo[] = [];
 let activeName = "";
 
 // ---- casting -------------------------------------------------------------
-// Jarlid never streams to the speakers; a WiiM plays Pandora itself, from the presets set up
-// in the WiiM Home app. So "cast this station" is "fire the preset with this station's name",
-// and a station with no preset cannot be cast until one is made for it. Every row still
-// carries the button, because a dim button that says why is more use than a missing one.
-interface Preset {
-  number: number;
-  name: string;
-  source: string;
-  art: string;
-}
+// Jarlid never streams to the speakers; a WiiM plays Pandora itself. "Cast this station" asks
+// the device to start it by its tuner token, over the proprietary PlayQueue service — so any
+// station casts, not just ones set up as presets in the WiiM Home app. The button shows only
+// when a device that can do this is on the LAN.
 /// The network player's name, or empty when none is on the LAN.
 let remoteDevice = "";
-let presets: Preset[] = [];
-/// Set once a preset query has succeeded. A generic UPnP renderer has no presets and answers
-/// the query with an error; rows on such a device get no cast button rather than a useless
-/// one.
-let presetsKnown = false;
-let presetFetch = 0;
+/// Whether that device can start a station itself (a WiiM with a PlayQueue service).
+let canCast = false;
 
-/** Called by main.ts whenever the remote-player state arrives; cheap unless the name changed. */
-export function setRemoteDevice(name: string) {
-  if (name === remoteDevice) return;
+/** Called by main.ts whenever the remote-player state arrives; cheap unless something changed. */
+export function setRemoteDevice(name: string, cast: boolean) {
+  if (name === remoteDevice && cast === canCast) return;
   remoteDevice = name;
-  presets = [];
-  presetsKnown = false;
-  if (name) void refreshPresets();
-  else if (!page.hidden) render();
+  canCast = cast;
+  if (!page.hidden) render();
 }
 
-async function refreshPresets() {
-  if (!remoteDevice) return;
-  const seq = ++presetFetch;
-  let next: Preset[] | null = null;
-  try {
-    next = await invoke<Preset[]>("remote_presets");
-  } catch {
-    next = null;
-  }
-  if (seq !== presetFetch) return; // a newer query is in flight, or the device changed
-  const known = next !== null;
-  const list = next ?? [];
-  // Re-render only on a change. Opening the page asks again, and the station name is flying
-  // into its row at that moment; rebuilding the rows under it would land it on nothing.
-  const same = known === presetsKnown && JSON.stringify(list) === JSON.stringify(presets);
-  presetsKnown = known;
-  presets = list;
-  if (!same && !page.hidden) render();
-}
-
-const castable = () => !!remoteDevice && presetsKnown && !selectMode;
-
-const fold = (s: string) => s.trim().toLowerCase();
-
-/// The device preset that plays this station, if one exists. Matched by name — the presets
-/// carry no station token. A preset whose source names some other service is not it, however
-/// alike the names.
-function presetFor(st: StationInfo): Preset | undefined {
-  const want = fold(st.name);
-  return presets.find(
-    (p) => fold(p.name) === want && (!p.source || /pandora/i.test(p.source))
-  );
-}
+const castable = () => !!remoteDevice && canCast && !selectMode;
 
 function cast(st: StationInfo) {
-  const p = presetFor(st);
-  if (!p) {
-    setStatus(
-      `“${st.name}” is not a preset on ${remoteDevice} — add it in the WiiM Home app, then cast it from here.`,
-      "err"
-    );
-    return;
-  }
   // Moving playback, not adding a second source: the local engine stops, and the display
   // follows the speakers once they report what they are playing.
-  invoke("remote_cmd", { cmd: `preset:${p.number}` })
+  invoke("remote_play_station", { name: st.name, token: st.token })
     .then(() => invoke("player_cmd", { cmd: "pause" }).catch(() => {}))
     .catch((e) => setStatus(String(e), "err"));
   close();
@@ -160,8 +108,8 @@ const CAST_ICON =
 function castButton(st: StationInfo) {
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = "sp-cast" + (presetFor(st) ? "" : " unmatched");
-  btn.setAttribute("aria-label", `Cast to ${remoteDevice}`);
+  btn.className = "sp-cast";
+  btn.setAttribute("aria-label", `Cast ${st.name} to ${remoteDevice}`);
   btn.innerHTML = CAST_ICON;
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -599,8 +547,6 @@ export function open() {
   search.value = "";
   setStatus("");
   render();
-  // Presets are edited in the WiiM Home app while Jarlid runs; each opening asks again.
-  void refreshPresets();
   // Added after the render, so the panel animates in around contents that are already
   // laid out — the station name flying in from the player measures its landing row now.
   page.classList.add("opening");

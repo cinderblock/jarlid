@@ -146,3 +146,32 @@ device description; add `cast_station(name, token)` = SOAP `CreateQueue` + `Play
 expose as `remote_cmd` `station:<token>` or a new command; the Stations page drops preset
 matching and `castable()` becomes "device has the PlayQueue service". Presets no longer
 needed at all for casting.
+
+## Implemented direct station casting (2026-09-19)
+
+Replaced preset-matching with real per-station casting over the WiiM PlayQueue service.
+
+- `app/src-tauri/src/upnp.rs`: `Target::LinkPlay` gains `pq_ctrl` (the PlayQueue control URL,
+  parsed from the device description and resolved against the SSDP location). `RemoteState`
+  gains `can_cast` (true when that URL was found). New `play_station(name, token)` builds the
+  station queue context, calls `CreateQueue` then `PlayQueueWithIndex` via a wiimu-namespaced
+  SOAP helper; `pandora_user_id()` reads the account's Pandora userId from `GetBasicUserInfo`
+  to fill `Login_username`, matching a device-made queue.
+- `app/src-tauri/src/lib.rs`: `remote_play_station { name, token }` command, registered.
+- `app/src/main.ts`: `RemoteState.canCast`; forwarded via `setRemoteDevice(name, canCast)`.
+- `app/src/stations-page.ts`: dropped presets, `refreshPresets`, `presetFor`, and the
+  unmatched/dim state. `castable()` = device present AND `canCast` AND not select mode. The
+  cast button always acts; `cast()` calls `remote_play_station` then pauses local playback.
+- `app/src/styles.css`: removed `.sp-cast.unmatched`. README updated.
+
+Verification: frontend `tsc`+build and `cargo check` both pass. The SOAP sequence itself was
+verified live against the warehouse WiiM during the probe (CreateQueue + PlayQueueWithIndex
+started a non-preset station in ~2s). The compiled app has NOT yet been run end-to-end against
+the device — the Rust envelope is byte-equivalent to the verified probe (same actions, same
+context XML, same double-escaping), but a live run through the app is still worth doing.
+
+### Note on `cargo fmt`
+Bare `rustfmt`/`cargo fmt` wants to wrap the file's established one-liner idiom
+(`ctl.target.lock().await.clone().ok_or(...)?`) used throughout upnp.rs. The file is not
+default-rustfmt formatted; new code matches the surrounding style deliberately. Don't run bare
+`cargo fmt` here.

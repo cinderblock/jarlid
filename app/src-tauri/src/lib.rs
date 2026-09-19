@@ -84,6 +84,17 @@ async fn remote_presets(
     upnp::presets(&client, &ctl).await
 }
 
+/// Start a Pandora station on the network player. `token` is the tuner station token.
+#[tauri::command]
+async fn remote_play_station(
+    ctl: tauri::State<'_, upnp::RemoteCtl>,
+    name: String,
+    token: String,
+) -> Result<(), String> {
+    let client = upnp::device_client();
+    upnp::play_station(&client, &ctl, &name, &token).await
+}
+
 /// Native Windows SMTC (media keys, volume-flyout / lock-screen media panel).
 /// WebView2 does not bridge the page's MediaSession to Windows, so we own the
 /// media session from Rust: bridge events feed metadata/state in, and SMTC
@@ -535,7 +546,8 @@ pub fn run() {
             native::native_output_device,
             player_cmd,
             remote_cmd,
-            remote_presets
+            remote_presets,
+            remote_play_station
         ])
         .setup(|app| {
             // The native engine: speaks Pandora's protocol directly and plays audio itself.

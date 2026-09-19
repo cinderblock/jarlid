@@ -25,12 +25,21 @@ pub struct RemoteState {
     pub duration: f64,
     /// 0-100; -1 when the device doesn't report volume (generic DLNA fallback).
     pub volume: f64,
+    /// True when the device can start a Pandora station itself (a LinkPlay unit whose
+    /// PlayQueue service was found). The Stations page shows a cast button per row only then.
+    pub can_cast: bool,
 }
 
 #[derive(Clone)]
 pub enum Target {
     /// LinkPlay/WiiM native HTTP API, `base` like "https://192.168.1.50".
-    LinkPlay { base: String, name: String },
+    /// `pq_ctrl` is the proprietary PlayQueue UPnP control URL when the device
+    /// advertises it — the only way to start a specific Pandora station.
+    LinkPlay {
+        base: String,
+        name: String,
+        pq_ctrl: Option<String>,
+    },
     /// Generic DLNA AVTransport control endpoint.
     Upnp { ctrl_url: String, name: String },
 }
@@ -224,10 +233,23 @@ async fn probe_device(client: &reqwest::Client, location: &str) -> Option<Target
             if let Ok(text) = resp.text().await {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                     if v.get("status").is_some() {
-                        eprintln!("[remote] {name}: LinkPlay API @ {api_base}");
+                        // The PlayQueue service lives in the UPnP description, on a different
+                        // port than the HTTP API; resolve its control URL against the SSDP
+                        // location so a station can be started later.
+                        let pq_ctrl = xml
+                            .split("<service>")
+                            .find(|c| c.contains("urn:schemas-wiimu-com:service:PlayQueue"))
+                            .and_then(|c| tag_content(c, "controlURL"))
+                            .and_then(|u| base_url.join(&u).ok())
+                            .map(|u| u.to_string());
+                        eprintln!(
+                            "[remote] {name}: LinkPlay API @ {api_base} (cast: {})",
+                            pq_ctrl.is_some()
+                        );
                         return Some(Target::LinkPlay {
                             base: api_base,
                             name,
+                            pq_ctrl,
                         });
                     }
                 }
@@ -260,7 +282,12 @@ async fn linkplay_get(
     serde_json::from_str(&text).ok()
 }
 
-async fn poll_linkplay(client: &reqwest::Client, base: &str, name: &str) -> Option<RemoteState> {
+async fn poll_linkplay(
+    client: &reqwest::Client,
+    base: &str,
+    name: &str,
+    can_cast: bool,
+) -> Option<RemoteState> {
     let status = linkplay_get(client, base, "getPlayerStatus").await?;
     let s = |k: &str| status.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let playing = matches!(s("status").as_str(), "play" | "loading" | "load");
@@ -305,6 +332,7 @@ async fn poll_linkplay(client: &reqwest::Client, base: &str, name: &str) -> Opti
         position,
         duration,
         volume,
+        can_cast,
     })
 }
 
@@ -357,6 +385,7 @@ async fn poll_upnp(client: &reqwest::Client, ctrl_url: &str, name: &str) -> Opti
         position,
         duration,
         volume: -1.0,
+        can_cast: false,
     })
 }
 
@@ -406,6 +435,118 @@ pub async fn presets(client: &reqwest::Client, ctl: &RemoteCtl) -> Result<Vec<Pr
         })
         .filter(|p| p.number > 0 && !p.name.is_empty())
         .collect())
+}
+
+// ---------- PlayQueue (starting a station on a WiiM) ----------
+//
+// A WiiM plays Pandora itself; Jarlid never streams to it. Starting a specific station is a
+// proprietary UPnP call on the wiimu PlayQueue service: build a queue whose search URL is
+// `wiimu_search://<token>` (the token is Jarlid's own tuner station token — verified equal to
+// the id the device uses), create it, then play it. The device fetches the audio from Pandora.
+
+const WIIMU_PQ: &str = "urn:schemas-wiimu-com:service:PlayQueue:1";
+
+/// Escape text for inclusion in an XML element. `&` first, or it double-escapes the others.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// One SOAP call to the PlayQueue service. Unlike AVTransport, its actions take no
+/// `InstanceID`; `inner` is the full argument XML.
+async fn pq_soap(
+    client: &reqwest::Client,
+    ctrl_url: &str,
+    action: &str,
+    inner: &str,
+) -> Option<String> {
+    let envelope = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action} xmlns:u="{WIIMU_PQ}">{inner}</u:{action}></s:Body></s:Envelope>"#
+    );
+    let resp = client
+        .post(ctrl_url)
+        .header("SOAPAction", format!("\"{WIIMU_PQ}#{action}\""))
+        .header("Content-Type", "text/xml; charset=\"utf-8\"")
+        .body(envelope)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.text().await.ok()
+}
+
+/// The account's numeric Pandora user id, read from the device's own linked-service list.
+/// The station queue copies it into `Login_username`, matching a device-made queue.
+async fn pandora_user_id(client: &reqwest::Client, pq_ctrl: &str) -> Option<String> {
+    let resp = pq_soap(client, pq_ctrl, "GetBasicUserInfo", "").await?;
+    let result = xml_unescape(&tag_content(&resp, "Result")?);
+    let v: serde_json::Value = serde_json::from_str(&result).ok()?;
+    v.get("streamServices")?
+        .as_array()?
+        .iter()
+        .find(|s| s.get("id").and_then(|x| x.as_str()) == Some("Pandora2"))
+        .and_then(|s| s.get("userId").and_then(|x| x.as_str()))
+        .map(|s| s.to_string())
+}
+
+/// The queue-context XML for one Pandora station, shaped like a device-made queue.
+fn station_queue_context(name: &str, token: &str, user_id: &str) -> String {
+    format!(
+        concat!(
+            "<?xml version=\"1.0\"?>\n<PlayList>\n",
+            "<ListName>{name}</ListName>\n<ListInfo>\n",
+            "<SourceName>Pandora2</SourceName>\n",
+            "<SearchUrl>wiimu_search://{token}</SearchUrl>\n",
+            "<Login_username>{user}</Login_username>\n",
+            "<MarkSearch>0</MarkSearch>\n<TrackNumber>0</TrackNumber>\n",
+            "<TotalNumber>0</TotalNumber>\n<Quality>0</Quality>\n",
+            "<requestQuality>High</requestQuality>\n<UpdateTime>0</UpdateTime>\n",
+            "<LastPlayIndex>1</LastPlayIndex>\n<UserId>0</UserId>\n",
+            "<StationBackup>1</StationBackup>\n<ContentType>station</ContentType>\n",
+            "<SwitchPageMode>0</SwitchPageMode>\n<CurrentPage>0</CurrentPage>\n",
+            "<TotalPages>0</TotalPages>\n<searching>0</searching>\n",
+            "<PressType>0</PressType>\n<Volume>0</Volume>\n</ListInfo>\n",
+            "<Tracks></Tracks>\n</PlayList>"
+        ),
+        name = xml_escape(name),
+        token = xml_escape(token),
+        user = xml_escape(user_id),
+    )
+}
+
+/// Start a Pandora station on the current network player. `token` is Jarlid's tuner station
+/// token. The device then streams the station itself.
+pub async fn play_station(
+    client: &reqwest::Client,
+    ctl: &RemoteCtl,
+    name: &str,
+    token: &str,
+) -> Result<(), String> {
+    let target = ctl.target.lock().await.clone().ok_or("no network player found")?;
+    let Target::LinkPlay {
+        pq_ctrl: Some(pq), ..
+    } = target
+    else {
+        return Err("this device can't start a Pandora station directly".into());
+    };
+    // Empty is acceptable — the device uses its own logged-in session; the id only matches a
+    // device-made queue. A failed lookup should not block casting.
+    let user_id = pandora_user_id(client, &pq).await.unwrap_or_default();
+    let ctx = station_queue_context(name, token, &user_id);
+    let create = format!("<QueueContext>{}</QueueContext>", xml_escape(&ctx));
+    pq_soap(client, &pq, "CreateQueue", &create)
+        .await
+        .ok_or("CreateQueue failed")?;
+    let play = format!("<QueueName>{}</QueueName><Index>1</Index>", xml_escape(name));
+    pq_soap(client, &pq, "PlayQueueWithIndex", &play)
+        .await
+        .ok_or("PlayQueueWithIndex failed")?;
+    Ok(())
 }
 
 // ---------- public API ----------
@@ -489,7 +630,9 @@ pub fn start(app: tauri::AppHandle, ctl: RemoteCtl) {
             let target = ctl.target.lock().await.clone();
             if let Some(t) = target {
                 let polled = match &t {
-                    Target::LinkPlay { base, name } => poll_linkplay(&client, base, name).await,
+                    Target::LinkPlay { base, name, pq_ctrl } => {
+                        poll_linkplay(&client, base, name, pq_ctrl.is_some()).await
+                    }
                     Target::Upnp { ctrl_url, name } => poll_upnp(&client, ctrl_url, name).await,
                 };
                 match polled {
