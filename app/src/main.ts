@@ -58,8 +58,8 @@ const artistEl = $("artist");
 const albumEl = $("album");
 const bylineEl = document.querySelector(".byline") as HTMLElement;
 const stationBtn = $("station");
-// The name inside the pill; the pill itself also holds the list icon, which stays when
-// there is no name to show.
+// The station name is the button's label; it falls back to "Stations" (set in index.html)
+// until a track names one, so the button is never blank.
 const stationNameEl = $("station-name");
 const sourceEl = $("source-station");
 const histEl = $("history");
@@ -1245,6 +1245,13 @@ listen<{ stations: StationInfo[] }>("engine://stations", (e) => {
 });
 
 // ---- top-right pages -----------------------------------------------------
+// Cast is its own button, hidden until a WiiM that can start a station is on the LAN. It
+// opens the same Stations panel as the station name — casting lives on the rows there.
+const speakersBtn = $("speakers-btn");
+speakersBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  stationsPage.open();
+});
 $("settings-btn").addEventListener("click", (e) => {
   e.stopPropagation();
   settingsPage.open();
@@ -1252,7 +1259,8 @@ $("settings-btn").addEventListener("click", (e) => {
 // index.html paints from a cached preference before the first frame; this is the
 // authoritative answer arriving a moment later.
 void settingsPage.applyStoredAppearance();
-attachTip(stationBtn, () => "All stations — browse, cast, export");
+attachTip(stationBtn, () => "Stations — browse, cast, export");
+attachTip(speakersBtn, () => "Cast a station to the speakers");
 attachTip($("settings-btn"), () => "Settings");
 
 // ---- station modes (My Station / Crowd Faves / Discovery / Deep Cuts …) ----
@@ -1534,8 +1542,11 @@ let remoteDevice = "";
 listen<RemoteState>("remote://state", (e) => {
   const st = e.payload;
   remoteDevice = st?.device || "";
-  // Casting lives on the Stations page: each row can send its station to the speakers.
-  stationsPage.setRemoteDevice(remoteDevice, !!st?.canCast);
+  // Casting lives on the Stations page: each row can send its station to the speakers, and
+  // the top-bar cast button opens that page. Both appear only when the device can cast.
+  const canCast = !!st?.canCast;
+  speakersBtn.hidden = !canCast;
+  stationsPage.setRemoteDevice(remoteDevice, canCast);
   remote = st && st.title ? st : null;
   remoteAt = Date.now();
   updateMode();

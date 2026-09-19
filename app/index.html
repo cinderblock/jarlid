@@ -39,17 +39,18 @@
       <button id="toast-close" aria-label="Dismiss">×</button>
     </div>
     <!-- Top-right controls. A flex row rather than individually-positioned buttons, so a
-         pill that shrinks (the station one, whose name is hidden in remote mode) leaves
-         no gap.
+         hidden one (the cast button, which only appears when a WiiM is on the network)
+         collapses instead of leaving a gap.
 
-         The station you are on and the way to all of them are one control: the list icon
-         says what it opens, the name beside it says where you are. Clicking it opens the
-         Stations panel, which is also where casting lives now — every row has a cast
-         button when a WiiM is on the network. -->
+         The station you are on IS the way to all of them: the button shows the current
+         station name and opens the Stations panel — the name button and the old
+         all-stations button did the same thing, so they are one. It falls back to
+         "Stations" before anything is playing, so it is never a blank pill. Cast is its
+         own button beside it and opens the same panel, where every row can be cast. -->
     <div id="topbar">
-      <button id="station" aria-label="Stations">
-        <svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h9"/><circle cx="18" cy="18" r="3"/></svg>
-        <span id="station-name"></span>
+      <button id="station" aria-label="Stations"><span id="station-name">Stations</span></button>
+      <button id="speakers-btn" aria-label="Cast to speakers" hidden>
+        <svg viewBox="0 0 24 24"><path d="M12 19h7a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v1"/><path d="M3 11a9 9 0 0 1 9 9M3 15a5 5 0 0 1 5 5M3 20h.01"/></svg>
       </button>
       <button id="settings-btn" aria-label="Settings">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 14.6a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.9.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9h-.2a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.4-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1A1.7 1.7 0 0 0 10 4.6v-.2a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.6 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>

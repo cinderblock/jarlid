@@ -250,43 +250,36 @@ body {
   color: var(--accent);
   margin-bottom: 10px;
 }
-/* remote mode: hide local-only controls (thumbs/replay/history). The station pill stays —
-   it is the way to the Stations page, where casting lives — but the name in it goes,
-   because the speakers are playing something else. */
+/* remote mode: hide local-only controls (thumbs/replay/history) and the station name
+   button — the speakers are playing something else, so the local station is meaningless.
+   The cast button stays: it is how you point the speakers at another station. */
 body.remote #thumbUp,
 body.remote #thumbDown,
 body.remote #replay,
 body.remote #history,
-body.remote #station-name {
+body.remote #station {
   display: none;
 }
 
-/* The station you are on and the way to all of them, as one control in the top-right
-   cluster: the list icon and the name beside it. A pill in the same family as the round
-   icon buttons next to it — same height, same wash, same hover — that is exactly the round
-   button when there is no name to show (before anything plays, and in remote mode), so
-   nothing about the cluster changes shape but its width. */
+/* The station you are on IS the way to all of them: one text pill in the top-right cluster,
+   showing the current station name and opening the Stations panel. A pill rather than a
+   round icon because it carries a word — the name button and the old all-stations button
+   did the same thing, so they are one. It shows "Stations" before anything plays, so it is
+   never a blank pill. */
 #topbar #station {
   width: auto;
   max-width: min(40vw, 320px);
-  padding: 0 8px;
+  padding: 0 14px;
   border-radius: 17px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
   font-family: inherit;
 }
 #station-name {
   text-transform: uppercase;
   letter-spacing: 0.14em;
   font-size: 0.72rem;
-  padding-right: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-#station-name:empty {
-  display: none;
 }
 /* The station name in flight between the spine and its row in the Stations page. A copy,
    living on top of everything, with the spine's type so the quarter turn is the only thing
