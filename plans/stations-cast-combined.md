@@ -99,3 +99,50 @@ Researched after the release. Public documentation gives two layers:
 Next step if pursued: probe the real device read-only — `GetKeyMapping`, `BrowseQueue("TotalQueue")`,
 `GetUserFavorites("Pandora2", …)` — and capture what the WiiM Home app sends when it starts a
 station. Only then can Jarlid start any station rather than only preset ones.
+
+## Probe results (2026-09-19, WiiM Pro Plus "Tom Sawyer Labs - Warehouse", fw Linkplay.4.8.827634)
+
+Device found by SSDP at 10.255.14.34; PlayQueue control URL `/upnp/control/PlayQueue1`,
+SCPD `/upnp/PlayQueueSCPD.xml` (35 actions; the full list is in the SCPD, also `SetRating(Source,
+TrackID, Rating)` — Pandora thumbs through the speaker — and `GetUserInfo("Pandora2", 0)`,
+which returns the device's live Pandora session incl. an access token).
+
+**A Pandora station on the WiiM is a queue context, and its id is Jarlid's tuner token.**
+`BrowseQueue("CurrentQueue")` for a Pandora preset gives a `<PlayList>` whose `<ListInfo>` has
+`<SourceName>Pandora2</SourceName>`, `<SearchUrl>wiimu_search://<id></SearchUrl>`,
+`<ContentType>station</ContentType>`, `<Login_username><pandora userId></Login_username>` and
+empty `<Tracks>`. Checked all five Pandora presets against `Client::station_list()`: the
+`wiimu_search` id equals `station_token` (and `station_id`) every time.
+
+**Starting any station works.** `CreateQueue(<that XML with a non-preset token>)` then
+`PlayQueueWithIndex(name, 1)` started "Control Radio" (not a preset) within 2s; the device
+filled `<Tracks>` itself with Pandora audio URLs. So Jarlid can cast every station, not just
+preset ones, and the "dim button, go make a preset" state can go. The device fetches audio
+from Pandora itself — Jarlid still streams nothing.
+
+Minimal queue context that worked (ListInfo fields copied from a device-made one):
+ListName, SourceName=Pandora2, SearchUrl=wiimu_search://TOKEN, Login_username=USERID,
+MarkSearch=0, TrackNumber=0, TotalNumber=0, Quality=0, requestQuality=High, UpdateTime=0,
+LastPlayIndex=1, UserId=0, StationBackup=1, ContentType=station, SwitchPageMode=0,
+CurrentPage=0, TotalPages=0, searching=0, PressType=0, Volume=0; `<Tracks></Tracks>`.
+The Pandora userId comes from `GetBasicUserInfo()` → `streamServices[id=Pandora2].userId`
+(it is also in every Pandora queue's Login_username). Unknown whether Login_username is even
+required; not tested.
+
+**Security finding, told to the user:** `BrowseQueue("TotalQueue")` returns a legacy list
+named "Pandora" (SearchUrl `tuner.pandora.com`) containing the Pandora e-mail *and password in
+plain text*, readable by anything on the LAN with no auth. Not written down here. Deleting
+that queue (`DeleteQueue("Pandora")`) or changing the Pandora password is the user's call.
+
+**Dead ends:** `GetUserFavorites("Pandora2", …)` fails with "UserRegister failed" for
+MediaType station/stations/Station/Stations/playlist and "Action Failed" for "". So the
+station *list* still comes from Jarlid's own Pandora session, which is fine — it has one.
+`GetUserAccountHistory("Pandora2", 10)` → "GetUserInfo failed". Whether a queue's name must be
+unique / whether `CreateQueue` on an existing name replaces it: untested (there is
+`ReplaceQueue` and `DeleteQueue`).
+
+**Implementation sketch (not started):** in `upnp.rs`, keep the PlayQueue control URL from the
+device description; add `cast_station(name, token)` = SOAP `CreateQueue` + `PlayQueueWithIndex`;
+expose as `remote_cmd` `station:<token>` or a new command; the Stations page drops preset
+matching and `castable()` becomes "device has the PlayQueue service". Presets no longer
+needed at all for casting.
