@@ -193,3 +193,16 @@ via Vite (name pill + cast button + settings, in that order). Committed `ba72f77
 
 Then cut **v1.10.0** (minor) as a version-only four-file commit `f0afabe`, tagged and pushed;
 release workflow running.
+
+## Remote mode shows the WiiM's station (2026-09-19)
+
+`BrowseQueue("CurrentQueue")` names the station the speaker is on (`ListName`, minus the
+`_#~timestamp` a preset-made queue carries) and its token (`SearchUrl`), when `SourceName` is
+`Pandora2`. `upnp.rs`: `current_station()`; the poll loop asks on a title change or every 10 s
+and copies the answer into `RemoteState.station` / `station_token`. `main.ts`:
+`reflectRemoteStation()` puts that name in the station button during remote mode, marks the
+row in the Stations page, and restores Jarlid's own station (name + `activeToken`) on exit;
+the button hides in remote mode only for a non-Pandora queue. The CSS rule that hid the
+button in remote mode is gone. Verified read-only against the device: the queue fields are
+as expected (name with suffix, Pandora2, wiimu_search token). Not yet run end-to-end in the
+compiled app. Committed with the feature; no version cut.
