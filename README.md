@@ -28,10 +28,11 @@ anywhere in it.
 - **QuickMix shows its source**: QuickMix blends dozens of your stations, and each track says
   which one it came from — otherwise there's no way to tell what you're actually listening to.
 - **Network player (UPnP/DLNA + WiiM) remote mode**: when local playback is idle and a
-  renderer on the LAN is playing, Jarlid becomes its display — "Now playing on …" with art and
-  synced lyrics. WiiM devices use the native LinkPlay API, so metadata works for the WiiM's own
-  sources too, and every row on the Stations page gets a cast button that starts that station
-  directly on the device over its PlayQueue service (any station, not only saved presets), plus
+  renderer on the LAN is playing, Jarlid becomes its display — "Now playing on …" with art,
+  synced lyrics, and (on a WiiM) the Pandora station it is on, marked in the Stations list.
+  WiiM devices use the native LinkPlay API, so metadata works for the WiiM's own sources too,
+  and every row on the Stations page gets a cast button that starts that station directly on
+  the device over its PlayQueue service (any station, not only saved presets), plus
   play/pause/skip control.
 - **Native audio**: 128 kbit/s MP3 (double Pandora's 64 kbit/s default), decoded and resampled to
   the output device's rate, streamed with a lock-free ring buffer. Playback position is measured

@@ -44,6 +44,10 @@ interface RemoteState {
   volume: number;
   /// The device can start a Pandora station itself (a WiiM whose PlayQueue service was found).
   canCast: boolean;
+  /// The Pandora station the device is playing, and its token (= Jarlid's tuner token). Empty
+  /// when it is playing something else.
+  station: string;
+  stationToken: string;
 }
 
 // ---- element helpers ---------------------------------------------------
@@ -1109,6 +1113,8 @@ $("login-form").addEventListener("submit", async (e) => {
 // The list itself lives on the Stations page now — this module keeps only the name it paints
 // into the pill.
 let activeStation = "";
+/// Its token, kept so the Stations page can be pointed back at it when remote mode ends.
+let activeToken = "";
 
 /// The centre of an element's *text*, not of its box.
 ///
@@ -1142,8 +1148,7 @@ const FLIGHT_MS = 460;
 function openStationsFromName() {
   const name = stationNameEl.textContent || "";
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  // No name to fly in remote mode either: the pill is only its icon there.
-  if (!name || reduced || remoteMode) {
+  if (!name || reduced) {
     stationsPage.open();
     return;
   }
@@ -1232,6 +1237,7 @@ listen<{ name: string; token: string }>("engine://station-active", (e) => {
   if (!e.payload.token) return;
   stationStats.noteActive(e.payload.token);
   activeStation = e.payload.name || activeStation;
+  activeToken = e.payload.token;
   stationsPage.setActiveStation(activeStation, e.payload.token);
 });
 
@@ -1522,6 +1528,7 @@ function updateMode() {
   const want = !!remote && remote.playing && !!remote.title && !localRecent;
   if (want === remoteMode) {
     if (remoteMode && remote) renderRemote(remote); // track change within remote mode
+    reflectRemoteStation();
     return;
   }
   remoteMode = want;
@@ -1535,6 +1542,31 @@ function updateMode() {
     setPlayingIcon(remote.playing);
   } else if (lastLocalNp) {
     onNowPlaying(lastLocalNp);
+  }
+  reflectRemoteStation();
+}
+
+// The station button names the speaker's station while the speaker owns the screen, and
+// the Stations page marks that row — the WiiM says which station its queue is, and its id is
+// Jarlid's own token. Both go back to Jarlid's station when remote mode ends. The button
+// hides only when the speaker is playing something that is not a Pandora station.
+let shownRemoteToken = "";
+function reflectRemoteStation() {
+  const rs = remoteMode && remote?.station ? remote : null;
+  if (rs) {
+    stationBtn.hidden = false;
+    stationNameEl.textContent = rs.station;
+    if (rs.stationToken && rs.stationToken !== shownRemoteToken) {
+      shownRemoteToken = rs.stationToken;
+      stationsPage.setActiveStation(rs.station, rs.stationToken);
+    }
+    return;
+  }
+  stationBtn.hidden = remoteMode;
+  if (shownRemoteToken) {
+    shownRemoteToken = "";
+    stationNameEl.textContent = lastLocalNp?.station || "Stations";
+    if (activeToken) stationsPage.setActiveStation(activeStation, activeToken);
   }
 }
 

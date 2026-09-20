@@ -28,6 +28,12 @@ pub struct RemoteState {
     /// True when the device can start a Pandora station itself (a LinkPlay unit whose
     /// PlayQueue service was found). The Stations page shows a cast button per row only then.
     pub can_cast: bool,
+    /// The Pandora station the device is playing, read from its current queue. Empty when the
+    /// device is playing something that is not a Pandora station, or cannot be asked.
+    pub station: String,
+    /// That station's id — the same value as Jarlid's tuner station token, so the Stations
+    /// page can mark the row.
+    pub station_token: String,
 }
 
 #[derive(Clone)]
@@ -333,6 +339,8 @@ async fn poll_linkplay(
         duration,
         volume,
         can_cast,
+        station: String::new(),
+        station_token: String::new(),
     })
 }
 
@@ -386,6 +394,8 @@ async fn poll_upnp(client: &reqwest::Client, ctrl_url: &str, name: &str) -> Opti
         duration,
         volume: -1.0,
         can_cast: false,
+        station: String::new(),
+        station_token: String::new(),
     })
 }
 
@@ -549,6 +559,28 @@ pub async fn play_station(
     Ok(())
 }
 
+/// The Pandora station the device is playing now: `(name, token)` from its current queue.
+///
+/// A queue the WiiM Home app made from a preset is named `Name_#~YYYY-MM-DD HH:MM:SS`; the
+/// suffix is dropped. `None` when the queue is not a Pandora station (an Amazon album, say).
+pub async fn current_station(client: &reqwest::Client, pq_ctrl: &str) -> Option<(String, String)> {
+    let resp = pq_soap(client, pq_ctrl, "BrowseQueue", "<QueueName>CurrentQueue</QueueName>").await?;
+    let ctx = xml_unescape(&tag_content(&resp, "QueueContext")?);
+    if tag_content(&ctx, "SourceName")?.trim() != "Pandora2" {
+        return None;
+    }
+    let token = tag_content(&ctx, "SearchUrl")?
+        .trim()
+        .strip_prefix("wiimu_search://")?
+        .to_string();
+    let raw = xml_unescape(&tag_content(&ctx, "ListName")?);
+    let name = raw.split("_#~").next().unwrap_or("").trim().to_string();
+    if name.is_empty() || token.is_empty() {
+        return None;
+    }
+    Some((name, token))
+}
+
 // ---------- public API ----------
 
 /// Issue a transport command ("play" | "pause" | "skip") to the current device.
@@ -603,6 +635,11 @@ pub fn start(app: tauri::AppHandle, ctl: RemoteCtl) {
         let client = device_client();
         let mut last = RemoteState::default();
         let mut failures = 0u32;
+        // The station is one more SOAP call; it only changes when the track does, so it is
+        // asked for on a title change and every ten seconds as a backstop, not every poll.
+        let mut station: Option<(String, String)> = None;
+        let mut station_for_title = String::new();
+        let mut station_at = std::time::Instant::now() - Duration::from_secs(60);
         loop {
             let have_target = ctl.target.lock().await.is_some();
             if !have_target {
@@ -634,6 +671,23 @@ pub fn start(app: tauri::AppHandle, ctl: RemoteCtl) {
                         poll_linkplay(&client, base, name, pq_ctrl.is_some()).await
                     }
                     Target::Upnp { ctrl_url, name } => poll_upnp(&client, ctrl_url, name).await,
+                };
+                let polled = match (polled, &t) {
+                    (Some(mut st), Target::LinkPlay { pq_ctrl: Some(pq), .. }) => {
+                        let stale = st.title != station_for_title
+                            || station_at.elapsed() > Duration::from_secs(10);
+                        if stale {
+                            station = current_station(&client, pq).await;
+                            station_for_title = st.title.clone();
+                            station_at = std::time::Instant::now();
+                        }
+                        if let Some((name, token)) = &station {
+                            st.station = name.clone();
+                            st.station_token = token.clone();
+                        }
+                        Some(st)
+                    }
+                    (polled, _) => polled,
                 };
                 match polled {
                     Some(st) => {

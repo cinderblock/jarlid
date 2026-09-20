@@ -250,14 +250,13 @@ body {
   color: var(--accent);
   margin-bottom: 10px;
 }
-/* remote mode: hide local-only controls (thumbs/replay/history) and the station name
-   button — the speakers are playing something else, so the local station is meaningless.
-   The cast button stays: it is how you point the speakers at another station. */
+/* remote mode: hide local-only controls (thumbs/replay/history). The station button stays
+   and names the speaker's station instead (main.ts hides it only when the speaker is playing
+   something that is not a Pandora station); the cast button is how you change it. */
 body.remote #thumbUp,
 body.remote #thumbDown,
 body.remote #replay,
-body.remote #history,
-body.remote #station {
+body.remote #history {
   display: none;
 }
 
