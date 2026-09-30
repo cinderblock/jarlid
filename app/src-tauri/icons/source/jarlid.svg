@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024">
+  <!--
+    Jarlid app icon, full-size art (used for 40 px and up).
+
+    Pandora's "box" was a pithos, a big storage jar; Jarlid is its lid. Here the music (the gold
+    level bars) is what's pushing the lid off: the tallest bar meets the lid's underside.
+
+    The 16-32 px sizes come from jarlid-small.svg instead. Regenerate every icon in ../ with
+    scripts/build-icons.py.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#202a3d"/>
+      <stop offset="1" stop-color="#0b0c10"/>
+    </linearGradient>
+    <linearGradient id="jar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a6dcff"/>
+      <stop offset="1" stop-color="#1767bd"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b8e3ff"/>
+      <stop offset="1" stop-color="#6fb7f2"/>
+    </linearGradient>
+    <linearGradient id="lid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#cdebff"/>
+      <stop offset="1" stop-color="#5aa9ee"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ff8f2a"/>
+      <stop offset="1" stop-color="#ffe08a"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="390" cy="660" r="260" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Neck at the top, broad shoulders, tapering to a narrow foot. -->
+    <path id="pithos" d="M 430 520 C 430 548 404 566 356 582 C 262 614 208 668 214 738
+                         C 222 824 318 880 404 902 L 412 924 L 612 924 L 620 902
+                         C 706 880 802 824 810 738 C 816 668 762 614 668 582
+                         C 620 566 594 548 594 520 Z"/>
+    <clipPath id="body"><use xlink:href="#pithos"/></clipPath>
+  </defs>
+
+  <rect x="24" y="24" width="976" height="976" rx="216" fill="url(#tile)"/>
+
+  <g transform="translate(0 30)">
+    <!-- Level bars. Their bottoms end inside the rim so none of the gold shows below it. -->
+    <rect x="420" y="326" width="54" height="194" rx="27" fill="url(#gold)"/>
+    <rect x="485" y="226" width="54" height="294" rx="27" fill="url(#gold)"/>
+    <rect x="550" y="370" width="54" height="150" rx="27" fill="url(#gold)"/>
+
+    <use xlink:href="#pithos" fill="url(#jar)"/>
+    <g clip-path="url(#body)">
+      <rect width="1024" height="1024" fill="url(#sheen)"/>
+      <!-- Painted bands, curved to follow the belly. -->
+      <path d="M 170 672 Q 512 742 854 672" fill="none" stroke="#0c4786" stroke-width="22" opacity="0.45"/>
+      <path d="M 170 712 Q 512 782 854 712" fill="none" stroke="#0c4786" stroke-width="10" opacity="0.35"/>
+    </g>
+    <rect x="392" y="486" width="240" height="56" rx="28" fill="url(#rim)"/>
+
+    <!-- The lid, tipped up by the tallest bar. -->
+    <g transform="translate(548 184) rotate(-16)" fill="url(#lid)">
+      <rect x="-175" y="0" width="350" height="46" rx="23"/>
+      <path d="M -147 8 C -129 -92 129 -92 147 8 Z"/>
+      <circle cx="0" cy="-90" r="34"/>
+    </g>
+  </g>
+</svg>

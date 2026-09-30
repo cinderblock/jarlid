@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!--
+    Jarlid app icon, small-size art (used for 16-32 px: the taskbar, title bar, Explorer lists).
+
+    Same design as jarlid.svg, redrawn to survive being a few dozen pixels across: the tile runs
+    to the edge, the jar is scaled up, the lid and rim are thicker, and the knob, bands and sheen
+    are gone because at these sizes they only blur the silhouette.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#202a3d"/>
+      <stop offset="1" stop-color="#0b0c10"/>
+    </linearGradient>
+    <linearGradient id="jar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a6dcff"/>
+      <stop offset="1" stop-color="#1767bd"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b8e3ff"/>
+      <stop offset="1" stop-color="#6fb7f2"/>
+    </linearGradient>
+    <linearGradient id="lid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#cdebff"/>
+      <stop offset="1" stop-color="#5aa9ee"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ff8f2a"/>
+      <stop offset="1" stop-color="#ffe08a"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="176" fill="url(#tile)"/>
+
+  <g transform="translate(512 560) scale(1.13) translate(-512 -560)">
+    <rect x="424" y="340" width="62" height="180" rx="31" fill="url(#gold)"/>
+    <rect x="497" y="270" width="62" height="250" rx="31" fill="url(#gold)"/>
+    <rect x="570" y="384" width="62" height="136" rx="31" fill="url(#gold)"/>
+
+    <path fill="url(#jar)" d="M 430 520 C 430 548 404 566 356 582 C 262 614 208 668 214 738
+                              C 222 824 318 880 404 902 L 412 924 L 612 924 L 620 902
+                              C 706 880 802 824 810 738 C 816 668 762 614 668 582
+                              C 620 566 594 548 594 520 Z"/>
+    <rect x="386" y="480" width="252" height="66" rx="33" fill="url(#rim)"/>
+
+    <g transform="translate(560 236) rotate(-16)" fill="url(#lid)">
+      <rect x="-190" y="0" width="380" height="72" rx="36"/>
+      <path d="M -150 10 C -130 -80 130 -80 150 10 Z"/>
+    </g>
+  </g>
+</svg>
