@@ -217,10 +217,11 @@ Worth running against a release build after touching window-state or event-loop 
 pwsh scripts/stress-window-move.ps1 -Exe app/src-tauri/target/release/jarlid.exe
 ```
 
-The app icon is drawn in `app/src-tauri/icons/source/`: `jarlid.svg` for 40 px and up, and
-`jarlid-small.svg`, the same jar redrawn heavier for the 16–32 px sizes the taskbar actually
-shows. Don't edit the PNG/ICO/ICNS files beside them; change an SVG and regenerate the whole set
-(needs Pillow):
+The app icon, a glass mason jar with its lid popped off and a note breaking free, is drawn by
+`app/src-tauri/icons/source/jarlid-art.py`. It models the jar in 3D and writes two SVGs:
+`jarlid.svg` for 40 px and up, and `jarlid-small.svg`, a heavier version for the 16–32 px sizes
+the taskbar actually shows. Don't edit the SVGs or the PNG/ICO/ICNS files; change the script and
+regenerate the whole set (needs Pillow):
 
 ```sh
 python scripts/build-icons.py

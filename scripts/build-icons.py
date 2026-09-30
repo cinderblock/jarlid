@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Regenerate every app icon in app/src-tauri/icons/ from the SVG sources in icons/source/.
+"""Regenerate every app icon in app/src-tauri/icons/ from the art in icons/source/.
+
+First runs icons/source/jarlid-art.py, which draws the two SVGs (the icon is modelled in 3D
+there, so the SVGs are generated output, not something to edit).
 
 `tauri icon` renders one source at every size, which is fine from 40 px up but turns the jar
 into a blur at taskbar sizes. So this renders the full set from jarlid.svg, then replaces the
@@ -22,6 +25,7 @@ from PIL import Image
 
 APP = Path(__file__).resolve().parent.parent / "app"
 ICONS = APP / "src-tauri" / "icons"
+ART = ICONS / "source" / "jarlid-art.py"
 FULL = ICONS / "source" / "jarlid.svg"
 SMALL = ICONS / "source" / "jarlid-small.svg"
 
@@ -42,6 +46,7 @@ def tauri_icon(source: Path, out: Path, *extra: str) -> None:
 
 
 def main() -> None:
+    subprocess.run([sys.executable, str(ART)], check=True)
     with tempfile.TemporaryDirectory() as tmp:
         full_dir = Path(tmp) / "full"
         small_dir = Path(tmp) / "small"
