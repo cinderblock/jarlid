@@ -97,6 +97,18 @@ installer and Start menu all show Tauri's mark rather than Jarlid's.
   below the tile, so everything is clipped to the tile shape.
 - Small art (16-32 px): jar scaled 1.1 and full-bleed tile, glass edge 24 and mouth ring 18
   (a 32-wide ring read as a donut), note scale 2.05, no trail, no back rings.
+- **After the v1.11.1 self-update the pinned taskbar button still showed the old Tauri icon**,
+  while the hover preview (the running window's own icon) showed the new one. Verified the
+  installed `%LOCALAPPDATA%\Jarlid\jarlid.exe` is 1.11.1 and contains every new ICO entry
+  byte-for-byte, so the update was fine. The taskbar pin, Start menu and Desktop `.lnk`s all
+  have an empty IconLocation (the target exe's icon, index 0), and Explorer serves that from
+  its icon cache, keyed by the unchanged exe path. Neither `ie4uinit.exe -show` nor
+  `SHChangeNotify(SHCNE_ASSOCCHANGED)` refreshed the pinned button (checked by screenshotting
+  the taskbar with `scripts/screenshot.ps1`; the primary taskbar is x 1080-4920, y 2112-2160
+  in the 6000x2160 virtual-screen capture). **What fixed it** (with Cameron's OK): kill
+  explorer.exe, delete `%LOCALAPPDATA%\Microsoft\Windows\Explorer\iconcache_*.db`, and start
+  Explorer again. The pinned button then showed the new jar. Any future icon change will hit the
+  same stale cache on every machine that has Jarlid pinned; nothing in the app works around it.
 - Pillow's ICO writer stores PNG entries; `cargo check` (tauri-build + `generate_context!`)
   accepts it.
 
@@ -113,7 +125,8 @@ installer and Start menu all show Tauri's mark rather than Jarlid's.
   `v1.11.1`, pushed with the four logo commits. Release run 36776272165.
 - [x] Release run 36776272165 green (checked with `gh run view --json conclusion`); the
   release has setup.exe, .msi, both .sig files and latest.json, and latest.json says 1.11.1.
-- [ ] Seen live in the taskbar once the installed app updates to v1.11.1
+- [x] Seen live in the taskbar after the self-update to v1.11.1 (needed the icon-cache flush
+  above); the small art reads at the taskbar's real size on Cameron's 150% display
 
 ## Open questions for the user
 
