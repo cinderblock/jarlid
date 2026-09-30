@@ -109,7 +109,11 @@ installer and Start menu all show Tauri's mark rather than Jarlid's.
 - [x] Committed `a53a7b9` (pithos; superseded)
 - [x] Mason jar: flat concepts rejected; isometric concepts; notes concepts; N3 picked
 - [x] N3 refined, generator in repo, icon set rebuilt, `cargo check` passes, committed `86baeba`
-- [ ] Seen live in the taskbar (happens with the next release; no version bump from this task)
+- [x] Released as v1.11.1 (Cameron asked for a new version): bump commit `d7e3233`, tag
+  `v1.11.1`, pushed with the four logo commits. Release run 36776272165.
+- [x] Release run 36776272165 green (checked with `gh run view --json conclusion`); the
+  release has setup.exe, .msi, both .sig files and latest.json, and latest.json says 1.11.1.
+- [ ] Seen live in the taskbar once the installed app updates to v1.11.1
 
 ## Open questions for the user
 
