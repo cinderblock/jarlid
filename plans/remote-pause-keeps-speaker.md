@@ -2,7 +2,7 @@
 
 Plan path: `plans/remote-pause-keeps-speaker.md`
 
-Status: **fix committed, untested on hardware.**
+Status: **shipped in v1.11.2 (`5d7b1e4`); untested on hardware.**
 
 ## Goal
 
@@ -42,5 +42,6 @@ title / becomes unreachable.
 
 - [x] Both rules made sticky; README remote-mode bullet updated.
 - [x] `bun run build`, `cargo check` pass.
+- [x] Released as v1.11.2: Release workflow succeeded; installers, signatures and `latest.json` uploaded.
 - [ ] Verify on the warehouse WiiM: pause → screen stays; play → speaker resumes; media key
       play/pause while paused goes to the speaker; picking a local station still takes over.
