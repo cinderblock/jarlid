@@ -30,7 +30,8 @@ anywhere in it.
 - **Network player (UPnP/DLNA + WiiM) remote mode**: when local playback is idle and a
   renderer on the LAN is playing, Jarlid becomes its display — "Now playing on …" with art,
   synced lyrics, and (on a WiiM) the Pandora station it is on, marked in the Stations list.
-  WiiM devices use the native LinkPlay API, so metadata works for the WiiM's own sources too,
+  Pausing the renderer keeps it on screen, so Play (button, Space, or media key) resumes it;
+  only starting local playback hands the screen back. WiiM devices use the native LinkPlay API, so metadata works for the WiiM's own sources too,
   and every row on the Stations page gets a cast button that starts that station directly on
   the device over its PlayQueue service (any station, not only saved presets), plus
   play/pause/skip control.

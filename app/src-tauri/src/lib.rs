@@ -128,7 +128,8 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     let playing_now = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let optimistic_until = Arc::new(Mutex::new(Instant::now()));
     // Remote (network player) session takes over SMTC when it's the active
-    // audio source: local idle >3s while the renderer plays.
+    // audio source: local idle >3s while the renderer plays. It keeps SMTC while the
+    // renderer is paused, until local playback moves again.
     let ctl = app.state::<upnp::RemoteCtl>().inner().clone();
     let remote_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let last_local_move = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(60)));
@@ -372,7 +373,10 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         let playing = v.get("playing").and_then(|x| x.as_bool()).unwrap_or(false);
         let title = s("title");
         let local_recent = r_local_move.lock().unwrap().elapsed() < Duration::from_secs(3);
-        let active = playing && !title.is_empty() && !local_recent;
+        // Sticky through a pause, like the UI: a paused renderer still owns the media keys,
+        // so Play resumes it rather than starting local playback.
+        let active =
+            !title.is_empty() && !local_recent && (playing || r_active.load(Ordering::Relaxed));
         let was_active = r_active.swap(active, Ordering::Relaxed);
         REMOTE_ACTIVE.store(active, Ordering::Relaxed);
         if !active {

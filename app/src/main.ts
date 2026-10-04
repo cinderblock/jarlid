@@ -1523,9 +1523,13 @@ function renderRemote(r: RemoteState) {
   loadLyricsFor({ title: r.title, artist: r.artist, album: r.album }, r.duration || null, key);
 }
 
+// The speaker takes the screen when it starts playing, and keeps it through a pause: pausing
+// it is not a move back to local playback, so the play button has to resume the speaker. Only
+// local playback starting (or the speaker dropping its track) hands the screen back.
 function updateMode() {
   const localRecent = Date.now() - lastLocalPlayingAt < 3000;
-  const want = !!remote && remote.playing && !!remote.title && !localRecent;
+  const want =
+    !!remote && !!remote.title && !localRecent && (remote.playing || remoteMode);
   if (want === remoteMode) {
     if (remoteMode && remote) renderRemote(remote); // track change within remote mode
     reflectRemoteStation();
