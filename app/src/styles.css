@@ -512,8 +512,8 @@ body.remote #tech {
   padding: 10px 6px;
 }
 
-/* ---- the title marquee ----
-   A title too long for the column is clipped rather than ellipsised, and the whole
+/* ---- the marquee: the title, and the artist · album line under it ----
+   A line too long for the column is clipped rather than ellipsised, and the whole
    of it is reachable three ways: it drifts to the end and back on its own, the
    pointer's x-position scrubs it, and either way the fade is only ever on the side
    that is actually still clipped. A fixed right-edge fade (which is what this was)
@@ -532,24 +532,21 @@ body.remote #tech {
   initial-value: 0px;
 }
 
-#title {
-  font-size: clamp(1.5rem, 3.2vw, 2.6rem);
-  font-weight: 700;
-  margin: 0;
-  line-height: 1.15;
+.marquee {
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
 
-  /* --title-a and --title-b are the two ends of the travel, and --title-cycle its
-     period; main.ts writes all three whenever the title or the column changes.
-     The ends are inset by a few pixels of slack so the first and last words come
-     to rest clear of the edge instead of flush against it — without that, landing
-     on the very start or the very end takes a pixel-perfect pointer. */
-  --title-fade: 28px;
-  --title-a: 0px;
-  --title-b: 0px;
-  --title-cycle: 20s;
+  /* --mq-a and --mq-b are the two ends of the travel, and --mq-cycle its period;
+     main.ts writes all three whenever the text or the column changes. The ends are
+     inset by a few pixels of slack so the first and last words come to rest clear
+     of the edge instead of flush against it — without that, landing on the very
+     start or the very end takes a pixel-perfect pointer. --mq-fade is read back by
+     main.ts, so each line can have a fade in proportion to its type. */
+  --mq-fade: 28px;
+  --mq-a: 0px;
+  --mq-b: 0px;
+  --mq-cycle: 20s;
 
   -webkit-mask-image: linear-gradient(
     90deg,
@@ -567,21 +564,21 @@ body.remote #tech {
   );
   transition: --fade-l 0.12s linear, --fade-r 0.12s linear;
 }
-#title.fits {
+.marquee.fits {
   -webkit-mask-image: none;
   mask-image: none;
 }
-/* A title that overflows is read from its start, so pin it left: centring an
-   overflowing inline-block shows its middle and hides both ends. A short title
-   stays centred over the artist and album. */
-#title:not(.fits) {
+/* A line that overflows is read from its start, so pin it left: centring an
+   overflowing inline-block shows its middle and hides both ends. A short one
+   stays centred like everything else in the column. */
+.marquee:not(.fits) {
   text-align: left;
-  --fade-r: var(--title-fade);
+  --fade-r: var(--mq-fade);
 }
-#title:not(.fits) #title-inner {
-  transform: translateX(var(--title-a));
+.marquee:not(.fits) .marquee-inner {
+  transform: translateX(var(--mq-a));
 }
-#title-inner {
+.marquee-inner {
   display: inline-block;
   transition: transform 0.12s ease-out;
   will-change: transform;
@@ -590,86 +587,76 @@ body.remote #tech {
 /* The idle drift. Split in two because the travel is on the inner span and the
    fades are on the box that clips it, but they share one clock: the paired stops
    are a pause at each end, and the 12%→50% / 62%→100% halves are the walk out and
-   the walk back. main.ts sizes --title-cycle so that walk is a constant speed
-   whatever the title's length. */
-@keyframes title-drift {
+   the walk back. main.ts sizes --mq-cycle so that walk is a constant speed
+   whatever the line's length. */
+@keyframes marquee-drift {
   0%,
   12% {
-    transform: translateX(var(--title-a));
+    transform: translateX(var(--mq-a));
   }
   50%,
   62% {
-    transform: translateX(var(--title-b));
+    transform: translateX(var(--mq-b));
   }
   100% {
-    transform: translateX(var(--title-a));
+    transform: translateX(var(--mq-a));
   }
 }
-@keyframes title-drift-fade {
+@keyframes marquee-drift-fade {
   0%,
   12% {
     --fade-l: 0px;
-    --fade-r: var(--title-fade);
+    --fade-r: var(--mq-fade);
   }
   50%,
   62% {
-    --fade-l: var(--title-fade);
+    --fade-l: var(--mq-fade);
     --fade-r: 0px;
   }
   100% {
     --fade-l: 0px;
-    --fade-r: var(--title-fade);
+    --fade-r: var(--mq-fade);
   }
 }
-#title.drift {
-  animation: title-drift-fade var(--title-cycle) ease-in-out infinite;
+.marquee.drift {
+  animation: marquee-drift-fade var(--mq-cycle) ease-in-out infinite;
 }
-#title.drift #title-inner {
-  animation: title-drift var(--title-cycle) ease-in-out infinite;
+.marquee.drift .marquee-inner {
+  animation: marquee-drift var(--mq-cycle) ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  /* The title still scrubs on hover; it just doesn't move on its own. */
-  #title.drift,
-  #title.drift #title-inner {
+  /* A long line still scrubs on hover; it just doesn't move on its own. */
+  .marquee.drift,
+  .marquee.drift .marquee-inner {
     animation: none;
   }
 }
+
+#title {
+  font-size: clamp(1.5rem, 3.2vw, 2.6rem);
+  font-weight: 700;
+  margin: 0;
+  line-height: 1.15;
+}
 /* One line, not two, and it stays one line: letting it wrap on a long pair would
    put 20px back into the stage and shrink the album art by that much on those
-   tracks alone, so the art would resize every time the song changed. The album
-   gives way instead: it is the only one of the two that shrinks at all, so the
-   artist stays whole until the album has nothing left to give and a max-width is
-   the only thing still holding the line. main.ts puts whatever is lost in a
-   tooltip. */
+   tracks alone, so the art would resize every time the song changed. A pair too
+   long for the column drifts like the title does, as one line, so nothing in it
+   is ever cut off for good. */
 .byline {
-  display: flex;
-  flex-wrap: nowrap;
-  justify-content: center;
-  align-items: baseline;
-  gap: 0.5em;
   margin-top: 8px;
-  overflow: hidden;
-}
-#artist,
-#album {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  --mq-fade: 20px;
 }
 #artist {
-  flex: 0 0 auto;
-  max-width: 100%;
   font-size: clamp(1rem, 1.8vw, 1.3rem);
   color: var(--fg);
 }
 #album {
-  flex: 0 1 auto;
   font-size: 0.9rem;
   color: var(--dim);
 }
 .byline-dot {
-  flex: 0 0 auto;
+  margin: 0 0.5em;
   font-size: 0.9rem;
   color: var(--faint);
 }
@@ -1254,9 +1241,6 @@ body.remote #remote-vol-wrap {
     min-width: 0;
     margin-top: 0;
     text-align: left;
-  }
-  .byline {
-    justify-content: flex-start;
   }
   .progress,
   .controls,

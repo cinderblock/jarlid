@@ -61,6 +61,7 @@ const titleInner = $("title-inner");
 const artistEl = $("artist");
 const albumEl = $("album");
 const bylineEl = document.querySelector(".byline") as HTMLElement;
+const bylineInner = $("byline-inner");
 const stationBtn = $("station");
 // The station name is the button's label; it falls back to "Stations" (set in index.html)
 // until a track names one, so the button is never blank.
@@ -317,11 +318,12 @@ async function onNowPlaying(np: NowPlaying) {
   if (wasSignedOut) renderVersion();
 
   titleInner.textContent = np.title || "—";
-  // Measure once it has been laid out: sets the edge fades and restarts the drift
-  // from the first word (see the title marquee below).
-  requestAnimationFrame(measureTitle);
   artistEl.textContent = np.artist || "";
   albumEl.textContent = np.album || "";
+  // Measure once they have been laid out: sets the edge fades and restarts the drift
+  // from the first word (see the marquee below).
+  requestAnimationFrame(measureTitle);
+  requestAnimationFrame(measureByline);
   if (np.station) stationNameEl.textContent = np.station;
   // QuickMix blends many stations; without this there's no way to tell which one is playing.
   sourceEl.textContent = np.sourceStation ? `from ${np.sourceStation}` : "";
@@ -401,8 +403,7 @@ window.addEventListener("keydown", (e) => {
 const tooltip = $("tooltip");
 function attachTip(el: HTMLElement, text: () => string) {
   el.addEventListener("mouseenter", () => {
-    // An empty string means this element has nothing worth saying right now — the
-    // byline only has something to add when it is too long to show whole.
+    // An empty string means this element has nothing worth saying right now.
     const t = text();
     if (!t) return;
     tooltip.textContent = t;
@@ -414,17 +415,6 @@ function attachTip(el: HTMLElement, text: () => string) {
   });
   el.addEventListener("mouseleave", () => (tooltip.hidden = true));
 }
-
-// The artist and the album share one line so the album art can have the row they
-// used to take between them, and the album is clipped rather than wrapped when
-// they do not both fit. Hovering gives back whatever the clip took — and says
-// nothing at all when nothing was taken.
-const clipped = (el: HTMLElement) => el.scrollWidth > el.clientWidth + 1;
-attachTip(bylineEl, () =>
-  clipped(artistEl) || clipped(albumEl)
-    ? [artistEl.textContent, albumEl.textContent].filter(Boolean).join(" · ")
-    : ""
-);
 
 /**
  * Draw the strip, newest end first.
@@ -1361,103 +1351,113 @@ listen<{ mode: string }>("engine://mode", (e) => {
   }
 });
 
-// ---- title marquee ------------------------------------------------------
-// A title wider than the column drifts slowly to its end and back on its own, and
-// hovering it hands control to the pointer: x scrubs the title under the cursor.
-// Neither reaches a hard edge — both ends of the travel keep TITLE_SLACK of air,
+// ---- marquee: the title, and the artist · album line ---------------------
+// A line wider than the column drifts slowly to its end and back on its own, and
+// hovering it hands control to the pointer: x scrubs the line under the cursor.
+// Neither reaches a hard edge — both ends of the travel keep MARQUEE_SLACK of air,
 // and the pointer gets a dead zone at each end of the box, because otherwise the
 // last word is only readable if you can land on the box's final pixel.
 
-const TITLE_SLACK = 14; // px of air kept at each end of the travel
-const TITLE_FADE = 28; // must match --title-fade in styles.css
-const TITLE_SPEED = 36; // px/s the idle drift walks at
+const MARQUEE_SLACK = 14; // px of air kept at each end of the travel
+const MARQUEE_SPEED = 36; // px/s the idle drift walks at
 // The share of the drift cycle spent walking one way; the rest is the pause at
-// each end. Matches the 12%→50% and 62%→100% halves of @keyframes title-drift.
-const TITLE_WALK = 0.38;
+// each end. Matches the 12%→50% and 62%→100% halves of @keyframes marquee-drift.
+const MARQUEE_WALK = 0.38;
 
-let titleTravel = 0; // px the title can move; 0 when it fits
-let titleHover = false;
-let titleResume: ReturnType<typeof setTimeout> | undefined;
+/** Wire `box` (which clips) and `inner` (which moves) up as a marquee; returns its re-measure. */
+function marquee(box: HTMLElement, inner: HTMLElement): () => void {
+  let travel = 0; // px the line can move; 0 when it fits
+  let fade = 0; // px, from --mq-fade, so each line's fade can suit its type size
+  let hover = false;
+  let resume: ReturnType<typeof setTimeout> | undefined;
 
-/** Put the title at `x` px of translation and fade whichever sides are clipped. */
-function titleAt(x: number) {
-  titleInner.style.transform = `translateX(${x}px)`;
-  const hidL = -x;
-  const hidR = x + titleInner.scrollWidth - titleEl.clientWidth;
-  titleEl.style.setProperty("--fade-l", `${Math.min(TITLE_FADE, Math.max(0, hidL))}px`);
-  titleEl.style.setProperty("--fade-r", `${Math.min(TITLE_FADE, Math.max(0, hidR))}px`);
-}
+  /** Put the line at `x` px of translation and fade whichever sides are clipped. */
+  function at(x: number) {
+    inner.style.transform = `translateX(${x}px)`;
+    const hidL = -x;
+    const hidR = x + inner.scrollWidth - box.clientWidth;
+    box.style.setProperty("--fade-l", `${Math.min(fade, Math.max(0, hidL))}px`);
+    box.style.setProperty("--fade-r", `${Math.min(fade, Math.max(0, hidR))}px`);
+  }
 
-/** Hand the title back to CSS: the rest position, and the drift if it overflows. */
-function titleRelease() {
-  titleInner.style.transform = "";
-  titleEl.style.removeProperty("--fade-l");
-  titleEl.style.removeProperty("--fade-r");
-  if (titleTravel <= 0 || titleHover) return;
-  // Re-add on the next frame so a drift already running restarts from the top —
-  // a new track should be read from its first word, not from wherever the last
-  // one had drifted to.
-  titleEl.classList.remove("drift");
-  requestAnimationFrame(() => {
-    if (!titleHover && titleTravel > 0) titleEl.classList.add("drift");
+  /** Hand the line back to CSS: the rest position, and the drift if it overflows. */
+  function release() {
+    inner.style.transform = "";
+    box.style.removeProperty("--fade-l");
+    box.style.removeProperty("--fade-r");
+    if (travel <= 0 || hover) return;
+    // Re-add on the next frame so a drift already running restarts from the top —
+    // a new track should be read from its first word, not from wherever the last
+    // one had drifted to.
+    box.classList.remove("drift");
+    requestAnimationFrame(() => {
+      if (!hover && travel > 0) box.classList.add("drift");
+    });
+  }
+
+  /** Re-measure after anything that can change the text or the space it has. */
+  function measure() {
+    clearTimeout(resume);
+    fade = parseFloat(getComputedStyle(box).getPropertyValue("--mq-fade")) || 0;
+    const overflow = inner.scrollWidth - box.clientWidth;
+    const fits = overflow <= 1;
+    box.classList.toggle("fits", fits);
+    travel = fits ? 0 : overflow + 2 * MARQUEE_SLACK;
+    box.style.setProperty("--mq-a", `${MARQUEE_SLACK}px`);
+    box.style.setProperty("--mq-b", `${MARQUEE_SLACK - travel}px`);
+    box.style.setProperty(
+      "--mq-cycle",
+      `${Math.max(8, travel / MARQUEE_SPEED / MARQUEE_WALK).toFixed(1)}s`
+    );
+    release();
+  }
+
+  box.addEventListener("pointerenter", () => {
+    hover = true;
+    clearTimeout(resume);
+    if (travel <= 0) return;
+    // Take over from the drift where it actually is, rather than letting the line
+    // snap to the start before the first mousemove lands.
+    const x = new DOMMatrixReadOnly(getComputedStyle(inner).transform).m41;
+    box.classList.remove("drift");
+    inner.style.transition = "none";
+    at(x);
+    void inner.offsetWidth;
+    inner.style.transition = "";
   });
+  box.addEventListener("mousemove", (e) => {
+    if (travel <= 0) return;
+    const rect = box.getBoundingClientRect();
+    const grab = Math.min(60, rect.width * 0.18);
+    const span = Math.max(1, rect.width - 2 * grab);
+    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left - grab) / span));
+    at(MARQUEE_SLACK - ratio * travel);
+  });
+  box.addEventListener("pointerleave", () => {
+    hover = false;
+    inner.style.transform = "";
+    box.style.removeProperty("--fade-l");
+    box.style.removeProperty("--fade-r");
+    // Let it glide home before the drift takes the wheel back, or the handover
+    // reads as a jump.
+    resume = setTimeout(release, 450);
+  });
+
+  return measure;
 }
 
-/** Re-measure after anything that can change the title or the space it has. */
-function measureTitle() {
-  clearTimeout(titleResume);
-  const overflow = titleInner.scrollWidth - titleEl.clientWidth;
-  const fits = overflow <= 1;
-  titleEl.classList.toggle("fits", fits);
-  titleTravel = fits ? 0 : overflow + 2 * TITLE_SLACK;
-  titleEl.style.setProperty("--title-a", `${TITLE_SLACK}px`);
-  titleEl.style.setProperty("--title-b", `${TITLE_SLACK - titleTravel}px`);
-  titleEl.style.setProperty(
-    "--title-cycle",
-    `${Math.max(8, titleTravel / TITLE_SPEED / TITLE_WALK).toFixed(1)}s`
-  );
-  titleRelease();
-}
+const measureTitle = marquee(titleEl, titleInner);
+const measureByline = marquee(bylineEl, bylineInner);
 
-titleEl.addEventListener("pointerenter", () => {
-  titleHover = true;
-  clearTimeout(titleResume);
-  if (titleTravel <= 0) return;
-  // Take over from the drift where it actually is, rather than letting the title
-  // snap to the start before the first mousemove lands.
-  const at = new DOMMatrixReadOnly(getComputedStyle(titleInner).transform).m41;
-  titleEl.classList.remove("drift");
-  titleInner.style.transition = "none";
-  titleAt(at);
-  void titleInner.offsetWidth;
-  titleInner.style.transition = "";
-});
-titleEl.addEventListener("mousemove", (e) => {
-  if (titleTravel <= 0) return;
-  const rect = titleEl.getBoundingClientRect();
-  const grab = Math.min(60, rect.width * 0.18);
-  const span = Math.max(1, rect.width - 2 * grab);
-  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left - grab) / span));
-  titleAt(TITLE_SLACK - ratio * titleTravel);
-});
-titleEl.addEventListener("pointerleave", () => {
-  titleHover = false;
-  titleInner.style.transform = "";
-  titleEl.style.removeProperty("--fade-l");
-  titleEl.style.removeProperty("--fade-r");
-  // Let it glide home before the drift takes the wheel back, or the handover
-  // reads as a jump.
-  titleResume = setTimeout(titleRelease, 450);
-});
-
-// The column's width moves with the window, and with it whether the title fits.
-let titleMeasurePending = false;
+// The column's width moves with the window, and with it whether each line fits.
+let marqueeMeasurePending = false;
 window.addEventListener("resize", () => {
-  if (titleMeasurePending) return;
-  titleMeasurePending = true;
+  if (marqueeMeasurePending) return;
+  marqueeMeasurePending = true;
   requestAnimationFrame(() => {
-    titleMeasurePending = false;
+    marqueeMeasurePending = false;
     measureTitle();
+    measureByline();
   });
 });
 
@@ -1512,9 +1512,10 @@ function renderRemote(r: RemoteState) {
   const key = remoteKey(r);
   if (key === currentKey) return;
   titleInner.textContent = r.title || "—";
-  requestAnimationFrame(measureTitle);
   artistEl.textContent = r.artist || "";
   albumEl.textContent = r.album || "";
+  requestAnimationFrame(measureTitle);
+  requestAnimationFrame(measureByline);
   remoteBadge.textContent = `Now playing on ${r.device}`;
   if (r.art) setArt(r.art, "");
   currentKey = key;
