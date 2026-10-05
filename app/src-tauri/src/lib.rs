@@ -75,6 +75,13 @@ async fn remote_cmd(ctl: tauri::State<'_, upnp::RemoteCtl>, cmd: String) -> Resu
     upnp::command(&client, &ctl, &cmd).await
 }
 
+/// "Back to this computer": a paused renderer gives the media keys back to local playback.
+/// Taken on the next `remote://state`; the renderer playing again takes them back.
+#[tauri::command]
+fn remote_release() {
+    REMOTE_RELEASE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// List the network player's presets (WiiM Home app presets).
 #[tauri::command]
 async fn remote_presets(
@@ -374,9 +381,11 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         let title = s("title");
         let local_recent = r_local_move.lock().unwrap().elapsed() < Duration::from_secs(3);
         // Sticky through a pause, like the UI: a paused renderer still owns the media keys,
-        // so Play resumes it rather than starting local playback.
-        let active =
-            !title.is_empty() && !local_recent && (playing || r_active.load(Ordering::Relaxed));
+        // so Play resumes it rather than starting local playback — until the UI's "Back to
+        // this computer" releases it, after which only the renderer playing takes them back.
+        let released = REMOTE_RELEASE.swap(false, Ordering::Relaxed);
+        let held = r_active.load(Ordering::Relaxed) && !released;
+        let active = !title.is_empty() && !local_recent && (playing || held);
         let was_active = r_active.swap(active, Ordering::Relaxed);
         REMOTE_ACTIVE.store(active, Ordering::Relaxed);
         if !active {
@@ -454,6 +463,9 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
 /// Mirrors the network-player takeover flag for code outside `setup_media_controls`,
 /// which owns the `Arc` and threads it through a dozen closures. Read-only elsewhere.
 static REMOTE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set by the `remote_release` command, consumed by the `remote://state` listener.
+static REMOTE_RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Is a network renderer (WiiM/DLNA) currently driving playback?
 pub(crate) fn remote_active() -> bool {
@@ -551,6 +563,7 @@ pub fn run() {
             player_cmd,
             remote_cmd,
             remote_presets,
+            remote_release,
             remote_play_station
         ])
         .setup(|app| {

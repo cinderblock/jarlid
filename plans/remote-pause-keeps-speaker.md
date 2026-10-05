@@ -2,7 +2,7 @@
 
 Plan path: `plans/remote-pause-keeps-speaker.md`
 
-Status: **shipped in v1.11.2 (`5d7b1e4`); untested on hardware.**
+Status: **shipped in v1.11.2 (`5d7b1e4`); "Back to this computer" follow-up committed, unreleased; untested on hardware.**
 
 ## Goal
 
@@ -29,6 +29,23 @@ while the renderer still has a track and local playback hasn't moved in 3s. Exit
 playback starts (e.g. picking a station on the Stations page), or the renderer loses its
 title / becomes unreachable.
 
+## Follow-up: no way back to local (2026-10-05)
+
+User report: with the speaker paused and owning the screen, nothing returns to the local
+player short of starting a station — the play button resumes the speaker.
+
+Fix: a **Back to this computer** pill under the "Now playing on …" badge, shown only while
+the speaker is paused and there is a local track to go back to. Clicking it leaves remote
+mode in the UI (`setRemoteMode(false)` in `main.ts`) and calls the new `remote_release`
+command, which sets `REMOTE_RELEASE`; the `remote://state` listener in `lib.rs` consumes it
+and drops `remote_active`, so media keys and the taskbar buttons go back to local too.
+
+The exit holds without any extra "dismissed" state: both rules only *enter* remote mode
+when the speaker is playing, so a released, still-paused speaker stays off screen until it
+plays again (e.g. resumed from the WiiM app). The button is hidden while the speaker plays
+for the same reason — a release then would be undone by the next 1 s poll. It does not
+start local playback; the local track comes back paused and Play then plays it here.
+
 ## Findings / gotchas
 
 - LinkPlay `getPlayerStatus.status` is `play`/`pause`/`stop`/`load(ing)`; a paused WiiM keeps
@@ -45,3 +62,6 @@ title / becomes unreachable.
 - [x] Released as v1.11.2: Release workflow succeeded; installers, signatures and `latest.json` uploaded.
 - [ ] Verify on the warehouse WiiM: pause → screen stays; play → speaker resumes; media key
       play/pause while paused goes to the speaker; picking a local station still takes over.
+- [x] "Back to this computer" button + `remote_release` command; `bun run build`, `cargo check` pass.
+- [ ] Verify on hardware: pause speaker → button appears; click → local track on screen,
+      Play/media key plays locally; resume from the WiiM app → speaker takes the screen again.

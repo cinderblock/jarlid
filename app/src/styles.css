@@ -250,6 +250,24 @@ body {
   color: var(--accent);
   margin-bottom: 10px;
 }
+/* Shown while the speaker is paused: the only way off it short of starting a station. */
+#remote-back {
+  background: rgba(var(--wash), 0.08);
+  border: none;
+  outline: none;
+  border-radius: 999px;
+  padding: 3px 12px;
+  margin: -4px 0 10px;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+#remote-back:hover {
+  background: rgba(var(--wash), 0.14);
+  color: var(--fg);
+}
 /* remote mode: hide local-only controls (thumbs/replay/history). The station button stays
    and names the speaker's station instead (main.ts hides it only when the speaker is playing
    something that is not a Pandora station); the cast button is how you change it. */

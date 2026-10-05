@@ -1504,6 +1504,7 @@ listen<{ playing: boolean }>("player://optimistic", (e) => {
 // When the local engine is idle and a UPnP/DLNA renderer on the LAN is
 // playing, the UI becomes a display for it: art, metadata, synced lyrics.
 const remoteBadge = $("remote-badge");
+const remoteBack = $<HTMLButtonElement>("remote-back");
 
 const remoteKey = (r: RemoteState) => `R|${r.title}|${r.artist}|${r.album}`;
 
@@ -1524,8 +1525,9 @@ function renderRemote(r: RemoteState) {
 }
 
 // The speaker takes the screen when it starts playing, and keeps it through a pause: pausing
-// it is not a move back to local playback, so the play button has to resume the speaker. Only
-// local playback starting (or the speaker dropping its track) hands the screen back.
+// it is not a move back to local playback, so the play button has to resume the speaker. Local
+// playback starting, the speaker dropping its track, or "Back to this computer" hands the
+// screen back — and since only the speaker *playing* takes it, a paused speaker stays put.
 function updateMode() {
   const localRecent = Date.now() - lastLocalPlayingAt < 3000;
   const want =
@@ -1533,8 +1535,13 @@ function updateMode() {
   if (want === remoteMode) {
     if (remoteMode && remote) renderRemote(remote); // track change within remote mode
     reflectRemoteStation();
+    reflectRemoteBack();
     return;
   }
+  setRemoteMode(want);
+}
+
+function setRemoteMode(want: boolean) {
   remoteMode = want;
   document.body.classList.toggle("remote", remoteMode);
   remoteBadge.hidden = !remoteMode;
@@ -1546,9 +1553,24 @@ function updateMode() {
     setPlayingIcon(remote.playing);
   } else if (lastLocalNp) {
     onNowPlaying(lastLocalNp);
+    // The icon was the speaker's; show the local engine's until its playhead says otherwise.
+    setPlayingIcon(Date.now() - lastLocalPlayingAt < 1600);
   }
   reflectRemoteStation();
+  reflectRemoteBack();
 }
+
+// While the speaker is paused, the play button resumes it, so getting back to this computer's
+// own (paused) track needs a control of its own. Hidden while the speaker plays — leaving then
+// would only last until its next poll — and when there is no local track to go back to.
+function reflectRemoteBack() {
+  remoteBack.hidden = !(remoteMode && remote && !remote.playing && lastLocalNp);
+}
+remoteBack.addEventListener("click", () => {
+  // The backend keeps the media keys on the speaker by the same sticky rule; tell it too.
+  invoke("remote_release").catch(() => {});
+  setRemoteMode(false);
+});
 
 // The station button names the speaker's station while the speaker owns the screen, and
 // the Stations page marks that row — the WiiM says which station its queue is, and its id is
