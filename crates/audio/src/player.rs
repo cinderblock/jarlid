@@ -133,6 +133,14 @@ pub fn default_output_name() -> Option<String> {
         .and_then(|d| d.name().ok())
 }
 
+/// Whether [`Player::play_on`] would find an endpoint for `output` right now.
+///
+/// A cheap enumeration with no network involved, so an owner waiting out a device outage can
+/// poll it rather than re-opening the stream, and a CDN connection, on every attempt.
+pub fn output_ready(output: &Output) -> bool {
+    resolve_device(output).is_ok()
+}
+
 /// Find the endpoint an [`Output`] asks for.
 ///
 /// A named device that is not present right now falls back to the default instead of
@@ -152,7 +160,7 @@ fn resolve_device(output: &Output) -> Result<cpal::Device> {
         eprintln!("output device {want:?} is not available; falling back to the system default");
     }
     host.default_output_device()
-        .ok_or_else(|| Error::Unsupported("no audio output device".into()))
+        .ok_or_else(|| Error::Device("no audio output device".into()))
 }
 
 struct Shared {
@@ -437,7 +445,7 @@ impl Player {
         let device_name = device.name().unwrap_or_else(|_| "unknown".into());
         let config = device
             .default_output_config()
-            .map_err(|e| Error::Unsupported(format!("no output config: {e}")))?;
+            .map_err(|e| Error::Device(format!("no output config: {e}")))?;
 
         // Decode straight to the device's own format so Media Foundation does any resampling.
         // Pandora is 44.1 kHz and most Windows devices run at 48 kHz; converting here rather than
@@ -747,16 +755,16 @@ impl Player {
                 None,
             ),
             other => {
-                return Err(Error::Unsupported(format!(
+                return Err(Error::Device(format!(
                     "unsupported output sample format {other:?}"
                 )))
             }
         }
-        .map_err(|e| Error::Unsupported(format!("could not open output stream: {e}")))?;
+        .map_err(|e| Error::Device(format!("could not open output stream: {e}")))?;
 
         stream
             .play()
-            .map_err(|e| Error::Unsupported(format!("could not start playback: {e}")))?;
+            .map_err(|e| Error::Device(format!("could not start playback: {e}")))?;
 
         Ok(Self {
             shared,

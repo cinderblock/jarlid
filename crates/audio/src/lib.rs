@@ -24,7 +24,7 @@ mod mixer;
 pub use media_foundation::Decoder;
 pub use mixer::{Curve, Pcm, Voice, MAX_CHANNELS};
 #[cfg(windows)]
-pub use player::{default_output_name, output_devices, Output, Player};
+pub use player::{default_output_name, output_devices, output_ready, Output, Player};
 #[cfg(windows)]
 pub use prefetch::{prefetch, Prefetched};
 pub use tempo::{Tempo, TempoTracker};
@@ -40,6 +40,12 @@ pub enum Error {
 
     #[error("{0}")]
     Unsupported(String),
+
+    /// The output side failed: no endpoint, or one that would not open. Distinct from every
+    /// other variant because it is never the track's fault — an owner should wait for a device
+    /// rather than give up on the song.
+    #[error("{0}")]
+    Device(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

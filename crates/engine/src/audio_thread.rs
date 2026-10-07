@@ -54,6 +54,18 @@ const MAX_RECOVERIES: u32 = 3;
 /// a spell of heavy CPU load could cost a song rather than a few seconds of audio.
 const RECOVERY_FORGIVENESS: Duration = Duration::from_secs(10);
 
+/// First wait before re-opening after the output device fails, doubling up to
+/// [`DEVICE_RETRY_MAX`] while it keeps failing.
+///
+/// **Device trouble is never the track's fault**, so it neither spends [`MAX_RECOVERIES`] nor ever
+/// gives up. A graphics driver update restarts the display adapter and takes its HDMI/DP audio
+/// with it for several seconds, and the endpoint flaps on the way back. Counting that against
+/// the song retired it in under a second, and the engine then skipped track after track into
+/// the same missing device. Skipping cannot conjure a speaker, so the only useful thing is to
+/// hold the place and wait.
+const DEVICE_RETRY_MIN: Duration = Duration::from_millis(500);
+const DEVICE_RETRY_MAX: Duration = Duration::from_secs(5);
+
 /// How often to ask Windows which output is default, while following it.
 ///
 /// Deliberately far slower than [`POLL`]: it is a COM round trip rather than an atomic load, and
@@ -213,6 +225,11 @@ impl AudioThread {
             // The incoming track's URL while a blend runs, so the handover can re-open it live.
             let mut blending: Option<String> = None;
             let mut recovered_at = Duration::ZERO;
+            // Zero while the device is healthy. Otherwise the current wait between attempts,
+            // and when the next one is due. Reset only by trouble-free playback, not by a
+            // successful open: an endpoint that opens and dies at once is still flapping.
+            let mut device_backoff = Duration::ZERO;
+            let mut device_retry_at: Option<Instant> = None;
 
             loop {
                 // Drain commands first so pause and skip feel immediate.
@@ -254,6 +271,9 @@ impl AudioThread {
                             thread_state.paused.store(paused, Ordering::Relaxed);
                             blending = None;
                             thread_state.blending.store(false, Ordering::Relaxed);
+                            // A new track is worth one immediate attempt even mid-outage; if
+                            // the device is still gone it goes straight back to waiting.
+                            device_retry_at = None;
                             player = None; // stop the old device before opening a new one
                             current = Some(Current {
                                 url,
@@ -329,6 +349,8 @@ impl AudioThread {
                                 last_moved = Instant::now();
                                 last_decode = Instant::now();
                                 last_device_check = Instant::now();
+                                // Picking a device mid-outage may be picking the one that works.
+                                device_retry_at = None;
                             }
                         }
                         Ok(Command::StartBlend {
@@ -372,7 +394,21 @@ impl AudioThread {
                 // Build (or rebuild) whenever there is a track to play and nothing playing it.
                 // Every recovery path funnels through here by clearing `player` and leaving
                 // `current` in place.
-                if !paused && player.is_none() {
+                // While waiting out a device outage, attempts are paced by the backoff and gated
+                // on an endpoint existing at all: opening a player opens the CDN stream too, and
+                // there is no sense spending one on a device that is not there.
+                let wanted = !paused && player.is_none() && current.is_some();
+                let device_due = wanted
+                    && match device_retry_at {
+                        None => true,
+                        Some(at) if Instant::now() < at => false,
+                        Some(_) if !audio::output_ready(&output) => {
+                            device_retry_at = Some(next_device_retry(&mut device_backoff));
+                            false
+                        }
+                        Some(_) => true,
+                    };
+                if device_due {
                     if let Some(track) = &current {
                         match audio::Player::play_on(&track.url, track.resume_at, &output) {
                             Ok(new_player) => {
@@ -404,7 +440,20 @@ impl AudioThread {
                                     .position_ms
                                     .store(millis(new_player.started_at()), Ordering::Relaxed);
                                 thread_state.playing.store(true, Ordering::Relaxed);
+                                device_retry_at = None;
                                 player = Some(new_player);
+                            }
+                            Err(audio::Error::Device(e)) => {
+                                // Nothing wrong with the track: keep it, and its position, and
+                                // try again once the device has had a moment.
+                                if device_backoff.is_zero() {
+                                    eprintln!("no usable audio output ({e}); waiting for one");
+                                }
+                                thread_state.playing.store(false, Ordering::Relaxed);
+                                if let Ok(mut slot) = thread_state.device.lock() {
+                                    *slot = None;
+                                }
+                                device_retry_at = Some(next_device_retry(&mut device_backoff));
                             }
                             Err(e) => {
                                 // Re-opening failed, which for a Pandora URL usually means the
@@ -466,6 +515,7 @@ impl AudioThread {
                         // Enough trouble-free playback to trust the stream again.
                         if position.saturating_sub(recovered_at) > RECOVERY_FORGIVENESS {
                             recoveries = 0;
+                            device_backoff = Duration::ZERO;
                         }
                     }
 
@@ -491,14 +541,26 @@ impl AudioThread {
                         }
                     }
 
-                    // Four ways a player dies without saying so out loud, all recoverable the same
-                    // way: rebuild at the position actually reached. Only judged while playing — a
-                    // paused player is *supposed* to look motionless, and its buffer is supposed to
-                    // stay full.
-                    let reason = if paused || blending.is_some() {
+                    // Four ways a player dies without saying so out loud, all recovered by
+                    // rebuilding at the position actually reached. Split by whose fault it is: the
+                    // device's two never count against the track, the stream's two can retire
+                    // it. Only judged while playing — a paused player is *supposed* to look
+                    // motionless, and its buffer is supposed to stay full.
+                    let device_reason = if paused || blending.is_some() {
                         None
                     } else if active.device_error() {
                         Some("audio device failed")
+                    } else if !active.buffered().is_zero() && last_moved.elapsed() > PLAYBACK_STALL
+                    {
+                        // Audio queued and nobody consuming it: the device stopped without saying
+                        // so. Distinct from the stream cases below, where the *supply* is what
+                        // dried up.
+                        Some("playback stalled")
+                    } else {
+                        None
+                    };
+                    let reason = if paused || blending.is_some() || device_reason.is_some() {
+                        None
                     } else if active.decode_error() && active.buffered().is_zero() {
                         // Whatever was already decoded has now been heard; the rest of the song
                         // is still out there.
@@ -512,11 +574,6 @@ impl AudioThread {
                         // decoder that has legitimately finished the track also stops producing
                         // and drains, and must not be mistaken for a hung one.
                         Some("decoding stalled")
-                    } else if !active.buffered().is_zero() && last_moved.elapsed() > PLAYBACK_STALL
-                    {
-                        // Audio queued and nobody consuming it: the device stopped without saying
-                        // so. Distinct from the case above, where the *supply* is what dried up.
-                        Some("playback stalled")
                     } else {
                         None
                     };
@@ -557,6 +614,19 @@ impl AudioThread {
                         thread_state.playing.store(false, Ordering::Relaxed);
                         player = None;
                         current = None;
+                    } else if let Some(reason) = device_reason {
+                        // Rebuilt like any other fault, but on the device backoff and without
+                        // touching the track's recovery budget. See DEVICE_RETRY_MIN.
+                        eprintln!(
+                            "{reason} at {:.1}s; holding the place until the device is back",
+                            position.as_secs_f64()
+                        );
+                        if let Some(track) = &mut current {
+                            track.resume_at = position;
+                        }
+                        thread_state.playing.store(false, Ordering::Relaxed);
+                        device_retry_at = Some(next_device_retry(&mut device_backoff));
+                        player = None;
                     } else if let Some(reason) = reason {
                         recoveries += 1;
                         if recoveries > MAX_RECOVERIES {
@@ -786,6 +856,16 @@ impl AudioThread {
     pub fn take_failed(&self) -> bool {
         self.published.failed.swap(false, Ordering::Relaxed)
     }
+}
+
+/// Advance the device backoff and say when the next attempt is due.
+fn next_device_retry(backoff: &mut Duration) -> Instant {
+    *backoff = if backoff.is_zero() {
+        DEVICE_RETRY_MIN
+    } else {
+        (*backoff * 2).min(DEVICE_RETRY_MAX)
+    };
+    Instant::now() + *backoff
 }
 
 fn millis(d: Duration) -> u64 {
