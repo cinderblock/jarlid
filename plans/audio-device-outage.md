@@ -45,6 +45,7 @@ also counted against the track.
 - [x] `Error::Device`, `output_ready()` in `crates/audio`
 - [x] Audio-thread device backoff; device reasons don't count against `MAX_RECOVERIES`
 - [x] Build, clippy, tests
+- [x] Released as **v1.11.4** (fix `edb9a6d`, bump `cba1c7c`), 2026-10-07
 - [ ] Real-world confirmation: next driver update, or disable/re-enable the output device in
       Device Manager mid-song. Should go silent, then resume at the same spot with no skips.
 
