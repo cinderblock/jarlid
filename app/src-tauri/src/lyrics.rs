@@ -35,12 +35,67 @@ pub struct Lyrics {
     pub duration: Option<f64>,
     /// True when this is a local edit rather than what LRCLIB currently serves.
     pub overridden: bool,
+    /// True when this came from a cache entry old enough that LRCLIB may serve something
+    /// newer. The caller shows it anyway and asks again with `refresh`. Only ever set on
+    /// the way out, never stored or accepted back.
+    #[serde(skip_deserializing, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 impl Lyrics {
     fn is_empty(&self) -> bool {
         self.synced.is_none() && self.plain.is_none()
     }
+}
+
+/// How long a cached LRCLIB record is trusted before it is checked again. Past this it is
+/// still shown — it is almost always still right — while a refresh runs behind it.
+const HIT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How long "LRCLIB has nothing for this track" is believed. Short, because lyrics do get
+/// added, but long enough that replaying a track doesn't cost another slow lookup.
+const MISS_TTL: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// One disk cache file: what LRCLIB answered, and when. A miss is stored as empty lyrics.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CacheEntry {
+    /// Unix seconds. Absent in files written before entries expired, which therefore
+    /// read as stale and pick up a timestamp on their next refresh.
+    #[serde(default)]
+    cached_at: Option<u64>,
+    #[serde(flatten)]
+    lyrics: Lyrics,
+}
+
+impl CacheEntry {
+    fn new(lyrics: Lyrics) -> Self {
+        Self {
+            cached_at: Some(unix_now()),
+            lyrics,
+        }
+    }
+
+    /// Whether this entry is still within its TTL at `now`. A timestamp from the future
+    /// (the clock went backwards) isn't trusted.
+    fn is_fresh(&self, now: u64) -> bool {
+        let ttl = if self.lyrics.is_empty() {
+            MISS_TTL
+        } else {
+            HIT_TTL
+        };
+        match self.cached_at {
+            Some(at) if at <= now => now - at < ttl.as_secs(),
+            _ => false,
+        }
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// FNV-1a of `artist|track|album`, lowercased — the identity of a track as *Pandora*
@@ -107,9 +162,12 @@ fn simplify_title(s: &str) -> String {
     t.trim().to_string()
 }
 
-/// Fetch lyrics: a local edit wins, then the disk cache, then LRCLIB — an exact
-/// `get`, then progressively looser `search`es, choosing the best synced result by
-/// closest duration.
+/// Fetch lyrics: a local edit wins, then the disk cache, then LRCLIB.
+///
+/// A fresh cache entry is the answer, hit or miss. A stale hit is still returned at
+/// once, marked `stale`, so the pane isn't held on a slow lookup for lyrics that almost
+/// never change. The caller then asks again with `refresh` set, which skips the cache and
+/// goes to LRCLIB. A stale miss has nothing worth showing, so it goes to LRCLIB right away.
 #[tauri::command]
 pub async fn fetch_lyrics(
     app: tauri::AppHandle,
@@ -117,6 +175,7 @@ pub async fn fetch_lyrics(
     track: String,
     album: Option<String>,
     duration: Option<f64>,
+    refresh: Option<bool>,
 ) -> Result<Lyrics, String> {
     let artist = undouble(&artist);
     let track = undouble(&track);
@@ -130,61 +189,91 @@ pub async fn fetch_lyrics(
     }
 
     let cache_file = lyrics_cache_path(&app, &key);
-    if let Some(ref p) = cache_file {
-        if let Ok(bytes) = std::fs::read(p) {
-            if let Ok(mut hit) = serde_json::from_slice::<Lyrics>(&bytes) {
-                // Entries cached before the record fields existed can't be corrected —
-                // there is nothing to identify the record. Treat them as a miss so the
-                // cache heals one track at a time instead of needing a wipe.
-                if hit.id.is_some() {
-                    hit.source = format!("{} (cached)", hit.source);
-                    return Ok(hit);
-                }
-            }
+    let cached = cache_file
+        .as_ref()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|bytes| serde_json::from_slice::<CacheEntry>(&bytes).ok())
+        // Hits cached before the record fields existed can't be corrected — there is
+        // nothing to identify the record. Treat them as absent so the cache heals one
+        // track at a time instead of needing a wipe.
+        .filter(|e| e.lyrics.is_empty() || e.lyrics.id.is_some());
+
+    if let Some(entry) = &cached {
+        let fresh = entry.is_fresh(unix_now());
+        if !refresh.unwrap_or(false) && (fresh || !entry.lyrics.is_empty()) {
+            let mut hit = entry.lyrics.clone();
+            hit.source = format!("{} (cached)", hit.source);
+            hit.stale = !fresh;
+            return Ok(hit);
         }
     }
 
+    let found = lookup_lrclib(&artist, &track, album, duration).await?;
+
+    let entry = match (found, cached) {
+        (Some(l), _) => CacheEntry::new(l),
+        // LRCLIB never deletes a record, so finding nothing where something was found
+        // before says more about search than about the track. Keep the copy we have and
+        // stop re-checking it for another TTL.
+        (None, Some(prior)) if !prior.lyrics.is_empty() => {
+            let renewed = CacheEntry::new(prior.lyrics);
+            write_cache(&cache_file, &renewed);
+            let mut hit = renewed.lyrics;
+            hit.source = format!("{} (cached)", hit.source);
+            return Ok(hit);
+        }
+        (None, _) => CacheEntry::new(Lyrics {
+            source: "none".into(),
+            ..Default::default()
+        }),
+    };
+    write_cache(&cache_file, &entry);
+    Ok(entry.lyrics)
+}
+
+/// Ask LRCLIB: an exact `get`, then progressively looser `search`es, choosing the best
+/// synced result by closest duration. `Ok(None)` is a definite miss; `Err` is no answer.
+async fn lookup_lrclib(
+    artist: &str,
+    track: &str,
+    album: Option<String>,
+    duration: Option<f64>,
+) -> Result<Option<Lyrics>, String> {
     let client = lrclib_client()?;
 
     // 1) exact match via /get (needs duration)
     if let Some(dur) = duration {
         let mut q: Vec<(&str, String)> = vec![
-            ("artist_name", artist.clone()),
-            ("track_name", track.clone()),
+            ("artist_name", artist.to_string()),
+            ("track_name", track.to_string()),
             ("duration", (dur.round() as i64).to_string()),
         ];
-        if let Some(al) = album.clone() {
+        if let Some(al) = album {
             if !al.is_empty() {
                 q.push(("album_name", al));
             }
         }
         if let Some(v) = lrclib_get(&client, "https://lrclib.net/api/get", &q).await? {
-            return Ok(cache_and_return(from_lrclib(&v, "lrclib/get"), &cache_file));
+            return Ok(Some(from_lrclib(&v, "lrclib/get")));
         }
     }
 
     // 2) search — full title first, then simplified title
-    let mut candidates: Vec<(&str, String)> = vec![("full", track.clone())];
-    let simple = simplify_title(&track);
+    let mut candidates: Vec<(&str, String)> = vec![("full", track.to_string())];
+    let simple = simplify_title(track);
     if simple != track && !simple.is_empty() {
         candidates.push(("simple", simple));
     }
     for (label, t) in candidates {
-        let q = [("track_name", t.as_str()), ("artist_name", artist.as_str())];
+        let q = [("track_name", t.as_str()), ("artist_name", artist)];
         if let Some(arr) = lrclib_get(&client, "https://lrclib.net/api/search", &q).await? {
             if let Some(best) = pick_best(&arr, duration) {
-                return Ok(cache_and_return(
-                    from_lrclib(best, &format!("lrclib/search/{label}")),
-                    &cache_file,
-                ));
+                return Ok(Some(from_lrclib(best, &format!("lrclib/search/{label}"))));
             }
         }
     }
 
-    Ok(Lyrics {
-        source: "none".into(),
-        ..Default::default()
-    })
+    Ok(None)
 }
 
 /// How long one attempt may take. LRCLIB is slow, not hung: a reply that has not
@@ -288,16 +377,14 @@ fn pick_best<'a>(
     })
 }
 
-/// Persist found lyrics to the cache (misses are not cached so they retry).
-fn cache_and_return(l: Lyrics, path: &Option<std::path::PathBuf>) -> Lyrics {
-    if !l.is_empty() {
-        if let Some(p) = path {
-            if let Ok(json) = serde_json::to_vec(&l) {
-                let _ = std::fs::write(p, json);
-            }
+/// Persist an LRCLIB answer, hit or miss. Best effort: a cache that can't be written
+/// only costs a lookup next time.
+fn write_cache(path: &Option<std::path::PathBuf>, entry: &CacheEntry) {
+    if let Some(p) = path {
+        if let Ok(json) = serde_json::to_vec(entry) {
+            let _ = std::fs::write(p, json);
         }
     }
-    l
 }
 
 fn from_lrclib(v: &serde_json::Value, source: &str) -> Lyrics {
@@ -317,6 +404,7 @@ fn from_lrclib(v: &serde_json::Value, source: &str) -> Lyrics {
         album_name: text("albumName"),
         duration: v.get("duration").and_then(|x| x.as_f64()),
         overridden: false,
+        stale: false,
     }
 }
 
@@ -539,7 +627,14 @@ pub async fn publish_lyrics(app: tauri::AppHandle, publication: Publication) -> 
 /// Report a track whose published lyrics are wrong — the right move when a record is
 /// matched to the wrong song entirely and there is nothing worth correcting by hand.
 #[tauri::command]
-pub async fn flag_lyrics(track_id: i64, content: Option<String>) -> Result<(), String> {
+pub async fn flag_lyrics(
+    app: tauri::AppHandle,
+    track_id: i64,
+    content: Option<String>,
+    artist: String,
+    track: String,
+    album: Option<String>,
+) -> Result<(), String> {
     let client = lrclib_client()?;
     let token = publish_token(&client).await?;
 
@@ -558,6 +653,17 @@ pub async fn flag_lyrics(track_id: i64, content: Option<String>) -> Result<(), S
 
     if !resp.status().is_success() {
         return Err(describe_failure(resp).await);
+    }
+
+    // The flagged record may be pulled or replaced; look again next time rather than
+    // keep showing it for the rest of its TTL.
+    let key = track_key(
+        &undouble(&artist),
+        &undouble(&track),
+        album.as_deref().map(undouble).as_deref(),
+    );
+    if let Some(p) = lyrics_cache_path(&app, &key) {
+        let _ = std::fs::remove_file(p);
     }
     Ok(())
 }
@@ -616,6 +722,73 @@ mod tests {
         assert_eq!(decode_hex("000000FF").unwrap(), vec![0, 0, 0, 255]);
         assert!(decode_hex("abc").is_none());
         assert!(decode_hex("zz").is_none());
+    }
+
+    fn entry(found: bool, cached_at: Option<u64>) -> CacheEntry {
+        CacheEntry {
+            cached_at,
+            lyrics: Lyrics {
+                plain: found.then(|| "words".to_string()),
+                id: found.then_some(1),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn misses_expire_sooner_than_hits() {
+        let now = 1_000_000;
+        let three_hours_ago = Some(now - 3 * 60 * 60);
+        assert!(entry(true, three_hours_ago).is_fresh(now));
+        assert!(!entry(false, three_hours_ago).is_fresh(now));
+
+        let an_hour_ago = Some(now - 60 * 60);
+        assert!(entry(false, an_hour_ago).is_fresh(now));
+
+        let two_days_ago = Some(now - 2 * 24 * 60 * 60);
+        assert!(!entry(true, two_days_ago).is_fresh(now));
+    }
+
+    /// Files from before entries had timestamps, and timestamps from a clock that has
+    /// since gone backwards, must not count as fresh, or they would never be rechecked.
+    #[test]
+    fn untimed_and_future_entries_are_stale() {
+        let now = 1_000_000;
+        assert!(!entry(true, None).is_fresh(now));
+        assert!(!entry(true, Some(now + 60)).is_fresh(now));
+    }
+
+    /// A cache file written before `cachedAt` existed is a bare `Lyrics` object, and has
+    /// to keep loading.
+    #[test]
+    fn reads_untimed_cache_files() {
+        let old = br#"{"synced":null,"plain":"words","source":"lrclib/get","id":7}"#;
+        let e: CacheEntry = serde_json::from_slice(old).expect("loads");
+        assert_eq!(e.cached_at, None);
+        assert_eq!(e.lyrics.id, Some(7));
+
+        let round = serde_json::to_vec(&CacheEntry::new(e.lyrics)).unwrap();
+        let back: CacheEntry = serde_json::from_slice(&round).unwrap();
+        assert!(back.cached_at.is_some());
+        assert_eq!(back.lyrics.plain.as_deref(), Some("words"));
+    }
+
+    /// `stale` describes one answer, not the lyrics. It must not be written to disk or
+    /// accepted back from the frontend (which hands `Lyrics` to `save_lyrics_override`).
+    #[test]
+    fn stale_is_output_only() {
+        let l = Lyrics {
+            stale: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&l).unwrap();
+        assert_eq!(json["stale"], true);
+        let back: Lyrics = serde_json::from_value(json).unwrap();
+        assert!(!back.stale);
+        assert!(serde_json::to_value(Lyrics::default())
+            .unwrap()
+            .get("stale")
+            .is_none());
     }
 
     /// The cache and override files are keyed by how Pandora names the track, and that

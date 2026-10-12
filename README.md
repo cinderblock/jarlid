@@ -10,7 +10,8 @@ anywhere in it.
 ## Features
 
 - **Synced (karaoke-style) lyrics** from [LRCLIB](https://lrclib.net), with duration-aware
-  version matching, a permanent on-disk cache, and per-track sync nudging (`[` / `]`, ±0.25 s).
+  version matching, an on-disk cache (lyrics are rechecked daily in the background, and a miss
+  is remembered for two hours), and per-track sync nudging (`[` / `]`, ±0.25 s).
   A lookup that cannot reach LRCLIB is retried while the song plays, and is never reported as
   "no lyrics found".
   Lyrics with no timestamps still follow the song: the pane drifts through them in proportion to

@@ -33,6 +33,8 @@ export interface Lyrics {
   duration: number | null;
   /// True when this is a local edit rather than what LRCLIB currently serves.
   overridden: boolean;
+  /// Set when this is a cached copy old enough to be worth checking again.
+  stale?: boolean;
 }
 
 export interface EditorContext {
@@ -531,7 +533,11 @@ flagBtn.addEventListener("click", () => {
     go: "Report",
     reason: true,
     run: async () => {
-      await invoke("flag_lyrics", { trackId: id, content: reasonEl.value || null });
+      await invoke("flag_lyrics", {
+        trackId: id,
+        content: reasonEl.value || null,
+        ...keyArgs(),
+      });
       setStatus("Reported to LRCLIB.", "ok");
     },
   });

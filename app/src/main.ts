@@ -595,6 +595,7 @@ async function loadLyricsFor(
 
     lastMeta = meta;
     applyLyrics(res);
+    if (res.stale) void revalidateLyrics(meta, duration, key, res);
   } catch (e) {
     if (key !== currentKey) return;
     // The backend only fails when LRCLIB could not be reached (a miss is a result, not
@@ -620,6 +621,37 @@ async function loadLyricsFor(
       void loadLyricsFor(meta, duration, key, attempt + 1);
     }, delay);
   }
+}
+
+/// A stale cached copy is already on screen; ask LRCLIB whether it still serves that, and
+/// repaint only if not. Quietly gives up on failure — what's showing is still good.
+async function revalidateLyrics(
+  meta: { title: string; artist: string; album: string },
+  duration: number | null,
+  key: string,
+  shown: Lyrics
+) {
+  let res: Lyrics;
+  try {
+    res = await invoke<Lyrics>("fetch_lyrics", {
+      artist: meta.artist,
+      track: meta.title,
+      album: meta.album || null,
+      duration,
+      refresh: true,
+    });
+  } catch (e) {
+    console.warn("lyrics refresh failed", e);
+    return;
+  }
+  // The editor holds the record it would publish against; swapping it mid-edit would
+  // aim a correction at the wrong record. The refreshed copy is cached for next time.
+  if (key !== currentKey || lastLyrics !== shown || lyricEditor.isEditing()) return;
+  if (res.id === shown.id && res.synced === shown.synced && res.plain === shown.plain) {
+    lastLyrics = res;
+    return;
+  }
+  applyLyrics(res);
 }
 
 /// Paint a set of lyrics into the pane. Separate from fetching because the editor hands
