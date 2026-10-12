@@ -2,7 +2,7 @@
 
 Plan path: `plans/source-focus.md`
 
-Status: **implemented, committed, not released, untested on hardware** (2026-10-12).
+Status: **shipped in v1.11.5 (`1f23b8e`); untested on hardware** (2026-10-12).
 
 ## Goal
 
@@ -98,7 +98,7 @@ routing reads `focus::is_remote()`; `crate::remote_active()` (used by updates.rs
 - [x] README remote-mode bullet.
 - [x] `bun run build`, `cargo check`, `cargo test --lib` (97 passed) all pass.
 - [x] Headless-Chrome mockup of toggle + mini (state faked, no backend) — layout OK.
-- [ ] Release (version bump is the user's call — not done).
+- [x] Released as v1.11.5: Release workflow succeeded; installers, signatures and `latest.json` uploaded.
 - [ ] Verify on hardware: pause speaker → start local station → media keys/taskbar control
       local; pause local with speaker playing → screen stays local, mini shows speaker;
       toggle both ways while paused; mini pause/resume; cast from Stations takes the screen.
