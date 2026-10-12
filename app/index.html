@@ -388,8 +388,12 @@
           <img id="art" alt="Album art" />
         </div>
         <div class="meta">
-          <div id="remote-badge" hidden></div>
-          <button id="remote-back" hidden>Back to this computer</button>
+          <!-- Which source the screen, play button and media keys drive. Shown whenever a
+               network player has been found; the dot marks whichever is audibly playing. -->
+          <div id="source-toggle" role="radiogroup" aria-label="Playback source" hidden>
+            <button id="source-local" role="radio"><span class="src-dot"></span>This computer</button>
+            <button id="source-remote" role="radio"><span class="src-dot"></span><span id="source-remote-name"></span><span id="source-remote-idle"> · idle</span></button>
+          </div>
           <div id="source-station" hidden></div>
           <div id="mode-wrap" hidden>
             <button id="mode-btn"></button>
@@ -439,6 +443,23 @@
         <div id="remote-vol-wrap">
           <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
           <input id="remote-vol" type="range" min="0" max="100" step="1" />
+        </div>
+
+        <!-- The source that is NOT on screen, while it plays: the speakers while this
+             computer has the screen, or this computer while the speakers do. Its own
+             play/pause drives that source; the rest of the card switches to it. -->
+        <div id="mini" hidden>
+          <button id="mini-open" class="mini-body">
+            <img id="mini-art" alt="" />
+            <span class="mini-text">
+              <span id="mini-title"></span>
+              <span id="mini-sub"></span>
+            </span>
+          </button>
+          <button id="mini-play" class="icon" aria-label="Play or pause">
+            <svg id="mini-play-icon" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg>
+            <svg id="mini-pause-icon" viewBox="0 0 24 24"><path d="M7 4h4v16H7zM13 4h4v16h-4z"/></svg>
+          </button>
         </div>
 
         <div id="history"></div>

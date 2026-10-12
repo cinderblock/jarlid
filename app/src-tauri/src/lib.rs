@@ -1,6 +1,7 @@
 mod build_info;
 mod diagnostics;
 mod export;
+mod focus;
 mod import;
 mod lyrics;
 mod native;
@@ -75,11 +76,18 @@ async fn remote_cmd(ctl: tauri::State<'_, upnp::RemoteCtl>, cmd: String) -> Resu
     upnp::command(&client, &ctl, &cmd).await
 }
 
-/// "Back to this computer": a paused renderer gives the media keys back to local playback.
-/// Taken on the next `remote://state`; the renderer playing again takes them back.
+/// Does the network renderer have focus? The UI asks once at startup, then follows
+/// `remote://focus`.
 #[tauri::command]
-fn remote_release() {
-    REMOTE_RELEASE.store(true, std::sync::atomic::Ordering::Relaxed);
+fn remote_focus() -> bool {
+    focus::is_remote()
+}
+
+/// The source toggle: point the screen, play button and media keys at the renderer or at
+/// this computer. Neither source is started or paused by it.
+#[tauri::command]
+fn remote_focus_set(app: tauri::AppHandle, remote: bool) {
+    focus::choose(&app, remote);
 }
 
 /// List the network player's presets (WiiM Home app presets).
@@ -94,12 +102,16 @@ async fn remote_presets(
 /// Start a Pandora station on the network player. `token` is the tuner station token.
 #[tauri::command]
 async fn remote_play_station(
+    app: tauri::AppHandle,
     ctl: tauri::State<'_, upnp::RemoteCtl>,
     name: String,
     token: String,
 ) -> Result<(), String> {
     let client = upnp::device_client();
-    upnp::play_station(&client, &ctl, &name, &token).await
+    upnp::play_station(&client, &ctl, &name, &token).await?;
+    // Casting is choosing the speaker, even if local is still winding down when it starts.
+    focus::choose(&app, true);
+    Ok(())
 }
 
 /// Native Windows SMTC (media keys, volume-flyout / lock-screen media panel).
@@ -134,12 +146,14 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     let cell: Arc<Mutex<Option<MediaControls>>> = Arc::new(Mutex::new(None));
     let playing_now = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let optimistic_until = Arc::new(Mutex::new(Instant::now()));
-    // Remote (network player) session takes over SMTC when it's the active
-    // audio source: local idle >3s while the renderer plays. It keeps SMTC while the
-    // renderer is paused, until local playback moves again.
+    // The network player owns SMTC while it has focus (see focus.rs). Each source's last
+    // metadata and state are kept so a focus change can show the new owner at once — the
+    // renderer only reports on a change, and a paused one never changes.
     let ctl = app.state::<upnp::RemoteCtl>().inner().clone();
-    let remote_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let last_local_move = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(60)));
+    let local_meta: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+    let local_playing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let local_pos = Arc::new(Mutex::new(0.0f64));
+    let remote_last: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
 
     // Thumb state as the bridge reads it off Pandora's own buttons; it drives
     // the taskbar glyphs (filled when set).
@@ -151,7 +165,6 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         let playing = playing_now.clone();
         let up = thumb_up.clone();
         let down = thumb_down.clone();
-        let remote = remote_active.clone();
         Arc::new(move || {
             use std::sync::atomic::Ordering;
             if let Some(b) = bar.lock().unwrap().as_ref() {
@@ -159,7 +172,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
                     playing: playing.load(Ordering::Relaxed),
                     thumb_up: up.load(Ordering::Relaxed),
                     thumb_down: down.load(Ordering::Relaxed),
-                    remote: remote.load(Ordering::Relaxed),
+                    remote: focus::is_remote(),
                 });
             }
         })
@@ -183,7 +196,6 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     let cb_cell = cell.clone();
     let cb_playing = playing_now.clone();
     let cb_until = optimistic_until.clone();
-    let cb_remote_active = remote_active.clone();
     let cb_ctl = ctl.clone();
     let cb_push = push_bar.clone();
     let dispatch: Arc<dyn Fn(Action) + Send + Sync> = Arc::new(move |action| {
@@ -200,7 +212,7 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
             Action::ThumbUp => ("thumbUp", "", None),
             Action::ThumbDown => ("thumbDown", "", None),
         };
-        if cb_remote_active.load(Ordering::Relaxed) {
+        if focus::is_remote() {
             if remote_c.is_empty() {
                 return; // thumbs mean nothing to a DLNA/WiiM renderer
             }
@@ -286,27 +298,35 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         });
     }
 
-    // Track metadata from the bridge (local mode only).
-    let c_meta = cell.clone();
-    let meta_remote_active = remote_active.clone();
-    app.listen_any("engine://nowplaying", move |event| {
-        if meta_remote_active.load(std::sync::atomic::Ordering::Relaxed) {
-            return;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
-            return;
-        };
-        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).filter(|x| !x.is_empty());
-        if let Some(c) = c_meta.lock().unwrap().as_mut() {
-            let _ = c.set_metadata(MediaMetadata {
-                title: s("title"),
-                artist: s("artist"),
-                album: s("album"),
-                cover_url: s("artFallback").or_else(|| s("art")),
-                duration: None,
-            });
-        }
-    });
+    // Track metadata from the bridge; it owns SMTC while local has focus.
+    let set_local_meta: Arc<dyn Fn(&serde_json::Value) + Send + Sync> = {
+        let cell = cell.clone();
+        Arc::new(move |v| {
+            let s = |k: &str| v.get(k).and_then(|x| x.as_str()).filter(|x| !x.is_empty());
+            if let Some(c) = cell.lock().unwrap().as_mut() {
+                let _ = c.set_metadata(MediaMetadata {
+                    title: s("title"),
+                    artist: s("artist"),
+                    album: s("album"),
+                    cover_url: s("artFallback").or_else(|| s("art")),
+                    duration: None,
+                });
+            }
+        })
+    };
+    {
+        let set_local_meta = set_local_meta.clone();
+        let local_meta = local_meta.clone();
+        app.listen_any("engine://nowplaying", move |event| {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
+                return;
+            };
+            if !focus::is_remote() {
+                set_local_meta(&v);
+            }
+            *local_meta.lock().unwrap() = Some(v);
+        });
+    }
 
     // Playback state, motion-derived from the playhead (same logic as the UI:
     // Pandora's DOM and audio elements misreport paused, position motion doesn't).
@@ -314,8 +334,8 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
     let c_play = cell.clone();
     let p_now = playing_now.clone();
     let p_until = optimistic_until.clone();
-    let p_remote_active = remote_active.clone();
-    let p_local_move = last_local_move.clone();
+    let p_local_playing = local_playing.clone();
+    let p_local_pos = local_pos.clone();
     let p_push = push_bar.clone();
     let motion = Arc::new(Mutex::new((f64::MIN, Instant::now(), Instant::now())));
     app.listen_any("engine://playhead", move |event| {
@@ -332,13 +352,18 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         if (pos - *last_pos).abs() > 0.05 {
             *last_pos = pos;
             *last_move = now;
-            *p_local_move.lock().unwrap() = now;
             new_playing = true;
         } else if now.duration_since(*last_move) > Duration::from_millis(1600) {
             new_playing = false;
         }
-        // While the remote session owns SMTC, local (paused) state stays out.
-        if p_remote_active.load(Ordering::Relaxed) {
+        // Kept current while the renderer has focus, for the moment it hands focus back.
+        p_local_playing.store(
+            now.duration_since(*last_move) <= Duration::from_millis(1600),
+            Ordering::Relaxed,
+        );
+        *p_local_pos.lock().unwrap() = pos;
+        // While the remote session owns SMTC, local state stays out.
+        if focus::is_remote() {
             return;
         }
         if now < *p_until.lock().unwrap() {
@@ -361,115 +386,130 @@ fn setup_media_controls(app: &tauri::App) -> Result<(), Box<dyn std::error::Erro
         }
     });
 
-    // Remote session → SMTC: when the network player is the active source,
-    // its metadata and state own the Windows media panel and media keys.
-    let c_remote = cell.clone();
-    let r_now = playing_now.clone();
-    let r_active = remote_active.clone();
-    let r_local_move = last_local_move.clone();
-    let r_until = optimistic_until.clone();
-    let r_push = push_bar.clone();
-    let r_last_meta = Arc::new(Mutex::new(String::new()));
-    let r_last_sent = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(60)));
-    app.listen_any("remote://state", move |event| {
-        use std::sync::atomic::Ordering;
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
-            return;
-        };
-        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let playing = v.get("playing").and_then(|x| x.as_bool()).unwrap_or(false);
-        let title = s("title");
-        let local_recent = r_local_move.lock().unwrap().elapsed() < Duration::from_secs(3);
-        // Sticky through a pause, like the UI: a paused renderer still owns the media keys,
-        // so Play resumes it rather than starting local playback — until the UI's "Back to
-        // this computer" releases it, after which only the renderer playing takes them back.
-        let released = REMOTE_RELEASE.swap(false, Ordering::Relaxed);
-        let held = r_active.load(Ordering::Relaxed) && !released;
-        let active = !title.is_empty() && !local_recent && (playing || held);
-        let was_active = r_active.swap(active, Ordering::Relaxed);
-        REMOTE_ACTIVE.store(active, Ordering::Relaxed);
-        if !active {
-            if was_active {
-                r_last_meta.lock().unwrap().clear();
-                r_push(); // back to local: the Pandora-only buttons live again
-            }
-            return;
-        }
-        if !was_active {
-            r_push(); // renderer took over: grey out what it can't do
-        }
-
-        let artist = s("artist");
-        let album = s("album");
-        let art = s("art");
-        let meta_key = format!("{title}|{artist}|{album}|{art}");
-        {
-            let mut lm = r_last_meta.lock().unwrap();
-            if *lm != meta_key {
-                *lm = meta_key;
-                if let Some(c) = c_remote.lock().unwrap().as_mut() {
-                    fn opt(x: &str) -> Option<&str> {
-                        if x.is_empty() {
-                            None
-                        } else {
-                            Some(x)
+    // Remote session → SMTC: while the network player has focus, its metadata and state
+    // own the Windows media panel. `force` re-sends both regardless of what was last sent,
+    // for the moment it takes focus.
+    let apply_remote: Arc<dyn Fn(&serde_json::Value, bool) + Send + Sync> = {
+        let cell = cell.clone();
+        let r_now = playing_now.clone();
+        let r_until = optimistic_until.clone();
+        let r_push = push_bar.clone();
+        let r_last_meta = Mutex::new(String::new());
+        let r_last_sent = Mutex::new(Instant::now() - Duration::from_secs(60));
+        Arc::new(move |v, force| {
+            use std::sync::atomic::Ordering;
+            let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let playing = v.get("playing").and_then(|x| x.as_bool()).unwrap_or(false);
+            let title = s("title");
+            let artist = s("artist");
+            let album = s("album");
+            let art = s("art");
+            let meta_key = format!("{title}|{artist}|{album}|{art}");
+            {
+                let mut lm = r_last_meta.lock().unwrap();
+                if force || *lm != meta_key {
+                    *lm = meta_key;
+                    if let Some(c) = cell.lock().unwrap().as_mut() {
+                        fn opt(x: &str) -> Option<&str> {
+                            if x.is_empty() {
+                                None
+                            } else {
+                                Some(x)
+                            }
                         }
+                        let _ = c.set_metadata(MediaMetadata {
+                            title: opt(&title),
+                            artist: opt(&artist),
+                            album: opt(&album),
+                            cover_url: opt(&art),
+                            duration: None,
+                        });
                     }
-                    let _ = c.set_metadata(MediaMetadata {
-                        title: opt(&title),
-                        artist: opt(&artist),
-                        album: opt(&album),
-                        cover_url: opt(&art),
-                        duration: None,
-                    });
                 }
             }
-        }
 
-        let now = Instant::now();
-        let was_playing = r_now.load(Ordering::Relaxed);
-        if now < *r_until.lock().unwrap() && playing != was_playing {
-            return; // optimistic grace after an SMTC button press
-        }
-        let mut send = playing != was_playing || !was_active;
-        {
-            let mut ls = r_last_sent.lock().unwrap();
-            if now.duration_since(*ls) > Duration::from_secs(5) {
-                send = true;
+            let now = Instant::now();
+            let was_playing = r_now.load(Ordering::Relaxed);
+            if !force && now < *r_until.lock().unwrap() && playing != was_playing {
+                return; // optimistic grace after an SMTC button press
+            }
+            let mut send = force || playing != was_playing;
+            {
+                let mut ls = r_last_sent.lock().unwrap();
+                if now.duration_since(*ls) > Duration::from_secs(5) {
+                    send = true;
+                }
+                if send {
+                    *ls = now;
+                }
             }
             if send {
-                *ls = now;
+                r_now.store(playing, Ordering::Relaxed);
+                r_push();
+                let pos = v.get("position").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                let progress = Some(MediaPosition(Duration::from_secs_f64(pos.max(0.0))));
+                let state = if playing {
+                    MediaPlayback::Playing { progress }
+                } else {
+                    MediaPlayback::Paused { progress }
+                };
+                if let Some(c) = cell.lock().unwrap().as_mut() {
+                    let _ = c.set_playback(state);
+                }
             }
-        }
-        if send {
-            r_now.store(playing, Ordering::Relaxed);
-            r_push();
-            let pos = v.get("position").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        })
+    };
+    {
+        let apply_remote = apply_remote.clone();
+        let remote_last = remote_last.clone();
+        app.listen_any("remote://state", move |event| {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
+                return;
+            };
+            if focus::is_remote() {
+                apply_remote(&v, false);
+            }
+            *remote_last.lock().unwrap() = Some(v);
+        });
+    }
+
+    // Focus moved: the new owner's metadata and state go to SMTC at once, and the taskbar
+    // buttons follow (the Pandora-only ones are inert while the renderer has focus). Reads
+    // the focus itself rather than the payload, so a late event cannot apply a stale one.
+    app.listen_any("remote://focus", move |_| {
+        use std::sync::atomic::Ordering;
+        if focus::is_remote() {
+            let last = remote_last.lock().unwrap().clone();
+            if let Some(v) = last {
+                apply_remote(&v, true);
+            }
+        } else {
+            let meta = local_meta.lock().unwrap().clone();
+            if let Some(v) = meta {
+                set_local_meta(&v);
+            }
+            let playing = local_playing.load(Ordering::Relaxed);
+            playing_now.store(playing, Ordering::Relaxed);
+            let pos = *local_pos.lock().unwrap();
             let progress = Some(MediaPosition(Duration::from_secs_f64(pos.max(0.0))));
             let state = if playing {
                 MediaPlayback::Playing { progress }
             } else {
                 MediaPlayback::Paused { progress }
             };
-            if let Some(c) = c_remote.lock().unwrap().as_mut() {
+            if let Some(c) = cell.lock().unwrap().as_mut() {
                 let _ = c.set_playback(state);
             }
         }
+        push_bar();
     });
 
     Ok(())
 }
 
-/// Mirrors the network-player takeover flag for code outside `setup_media_controls`,
-/// which owns the `Arc` and threads it through a dozen closures. Read-only elsewhere.
-static REMOTE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Set by the `remote_release` command, consumed by the `remote://state` listener.
-static REMOTE_RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 /// Is a network renderer (WiiM/DLNA) currently driving playback?
 pub(crate) fn remote_active() -> bool {
-    REMOTE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+    focus::is_remote()
 }
 
 /// Set by the panic hook, drained into diagnostics once the app is up.
@@ -563,7 +603,8 @@ pub fn run() {
             player_cmd,
             remote_cmd,
             remote_presets,
-            remote_release,
+            remote_focus,
+            remote_focus_set,
             remote_play_station
         ])
         .setup(|app| {

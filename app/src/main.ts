@@ -706,8 +706,7 @@ function onPlayhead(ph: Playhead) {
   if (moved) {
     lastPos = ph.position;
     lastMoveAt = now;
-    lastLocalPlayingAt = now; // local playback active — used for mode switching
-    updateMode();
+    lastLocalPlayingAt = now; // local playback active — for the source toggle and mini player
   }
   if (remoteMode) return; // remote overlay owns progress/icon/highlight
 
@@ -1501,10 +1500,35 @@ listen<{ playing: boolean }>("player://optimistic", (e) => {
 });
 
 // ---- remote (network player) mode ----------------------------------------
-// When the local engine is idle and a UPnP/DLNA renderer on the LAN is
-// playing, the UI becomes a display for it: art, metadata, synced lyrics.
-const remoteBadge = $("remote-badge");
-const remoteBack = $<HTMLButtonElement>("remote-back");
+// Which source has focus — this computer or the network renderer — is decided once, in the
+// backend (focus.rs), and the screen, the play button and the media keys all follow it. While
+// the renderer has focus the UI is a display for it: art, metadata, synced lyrics.
+//
+// Whichever source *starts* playing takes focus (the speaker only while local is not
+// playing), the source toggle chooses outright, and pausing never moves it. A source that
+// keeps playing off screen shows in the mini player instead of taking the screen.
+const sourceToggle = $("source-toggle");
+const sourceLocalBtn = $<HTMLButtonElement>("source-local");
+const sourceRemoteBtn = $<HTMLButtonElement>("source-remote");
+const sourceRemoteName = $("source-remote-name");
+const sourceRemoteIdle = $("source-remote-idle");
+
+let focusRemote = false;
+let focusHeard = false;
+listen<{ remote: boolean }>("remote://focus", (e) => {
+  focusHeard = true;
+  focusRemote = e.payload.remote;
+  updateMode();
+});
+invoke<boolean>("remote_focus")
+  .then((r) => {
+    if (focusHeard) return; // an event already said something newer
+    focusRemote = r;
+    updateMode();
+  })
+  .catch(() => {});
+
+const localPlaying = () => Date.now() - lastLocalPlayingAt < 1600;
 
 const remoteKey = (r: RemoteState) => `R|${r.title}|${r.artist}|${r.album}`;
 
@@ -1516,7 +1540,6 @@ function renderRemote(r: RemoteState) {
   albumEl.textContent = r.album || "";
   requestAnimationFrame(measureTitle);
   requestAnimationFrame(measureByline);
-  remoteBadge.textContent = `Now playing on ${r.device}`;
   if (r.art) setArt(r.art, "");
   currentKey = key;
   syncedLines = null;
@@ -1525,18 +1548,14 @@ function renderRemote(r: RemoteState) {
   loadLyricsFor({ title: r.title, artist: r.artist, album: r.album }, r.duration || null, key);
 }
 
-// The speaker takes the screen when it starts playing, and keeps it through a pause: pausing
-// it is not a move back to local playback, so the play button has to resume the speaker. Local
-// playback starting, the speaker dropping its track, or "Back to this computer" hands the
-// screen back — and since only the speaker *playing* takes it, a paused speaker stays put.
+// Focus can name the speaker a moment before its state arrives (and the speaker can lose its
+// track first); the screen switches only when there is a speaker track to show.
 function updateMode() {
-  const localRecent = Date.now() - lastLocalPlayingAt < 3000;
-  const want =
-    !!remote && !!remote.title && !localRecent && (remote.playing || remoteMode);
+  const want = focusRemote && !!remote;
   if (want === remoteMode) {
     if (remoteMode && remote) renderRemote(remote); // track change within remote mode
     reflectRemoteStation();
-    reflectRemoteBack();
+    reflectSources();
     return;
   }
   setRemoteMode(want);
@@ -1545,8 +1564,8 @@ function updateMode() {
 function setRemoteMode(want: boolean) {
   remoteMode = want;
   document.body.classList.toggle("remote", remoteMode);
-  remoteBadge.hidden = !remoteMode;
   currentKey = ""; // force full re-render for the new source
+  miniHeld = false; // the mini now shows the other source
   if (remoteMode && remote) {
     loginHint.hidden = true;
     showPlayer();
@@ -1555,23 +1574,106 @@ function setRemoteMode(want: boolean) {
   } else if (lastLocalNp) {
     onNowPlaying(lastLocalNp);
     // The icon was the speaker's; show the local engine's until its playhead says otherwise.
-    setPlayingIcon(Date.now() - lastLocalPlayingAt < 1600);
+    setPlayingIcon(localPlaying());
   }
   reflectRemoteStation();
-  reflectRemoteBack();
+  reflectSources();
 }
 
-// While the speaker is paused, the play button resumes it, so getting back to this computer's
-// own (paused) track needs a control of its own. Hidden while the speaker plays — leaving then
-// would only last until its next poll — and when there is no local track to go back to.
-function reflectRemoteBack() {
-  remoteBack.hidden = !(remoteMode && remote && !remote.playing && lastLocalNp);
+// The source toggle: always on screen once a network player has been found. It moves focus
+// only — neither source is started or paused by it. The dot on a segment means that source
+// is audibly playing, so a speaker playing in the background is never a surprise.
+function reflectSources() {
+  sourceToggle.hidden = !remoteDevice;
+  sourceRemoteName.textContent = remoteDevice;
+  // Nothing loaded on the speaker means nothing to show; casting a station gives it a track.
+  sourceRemoteIdle.hidden = !!remote;
+  sourceRemoteBtn.disabled = !remote;
+  setSegment(sourceLocalBtn, !remoteMode, localPlaying());
+  setSegment(sourceRemoteBtn, remoteMode, !!remote?.playing);
+  reflectMini();
 }
-remoteBack.addEventListener("click", () => {
-  // The backend keeps the media keys on the speaker by the same sticky rule; tell it too.
-  invoke("remote_release").catch(() => {});
-  setRemoteMode(false);
+function setSegment(b: HTMLButtonElement, on: boolean, playing: boolean) {
+  b.classList.toggle("on", on);
+  b.setAttribute("aria-checked", String(on));
+  b.classList.toggle("playing", playing);
+}
+function chooseSource(toRemote: boolean) {
+  if (toRemote === remoteMode) return;
+  invoke("remote_focus_set", { remote: toRemote }).catch(() => {});
+}
+sourceLocalBtn.addEventListener("click", () => chooseSource(false));
+sourceRemoteBtn.addEventListener("click", () => chooseSource(true));
+
+// ---- mini player: the source that is not on screen ----------------------
+// Shown while that source plays, so audio is never coming from somewhere the screen doesn't
+// mention. Its play/pause drives that source directly; once paused from here it stays, so it
+// can be resumed, until focus moves. Starting a source can itself move focus (see above), so
+// resuming this computer from here brings it on screen.
+const mini = $("mini");
+const miniArt = $<HTMLImageElement>("mini-art");
+const miniTitle = $("mini-title");
+const miniSub = $("mini-sub");
+const miniPlayIcon = $("mini-play-icon");
+const miniPauseIcon = $("mini-pause-icon");
+let miniHeld = false;
+let miniOptimistic: { playing: boolean; until: number } | null = null;
+
+interface MiniSource {
+  title: string;
+  sub: string;
+  art: string;
+  playing: boolean;
+}
+function miniSource(): MiniSource | null {
+  if (remoteMode) {
+    if (!lastLocalNp) return null;
+    const np = lastLocalNp;
+    return {
+      title: np.title,
+      sub: [np.artist, "this computer"].filter(Boolean).join(" · "),
+      art: np.art || np.artFallback,
+      playing: localPlaying(),
+    };
+  }
+  if (!remote) return null;
+  return {
+    title: remote.title,
+    sub: [remote.artist, `on ${remote.device}`].filter(Boolean).join(" · "),
+    art: remote.art,
+    playing: remote.playing,
+  };
+}
+
+function reflectMini() {
+  const m = miniSource();
+  if (!m) miniHeld = false;
+  if (!m || !(m.playing || miniHeld)) {
+    mini.hidden = true;
+    return;
+  }
+  mini.hidden = false;
+  if (miniTitle.textContent !== m.title) miniTitle.textContent = m.title;
+  if (miniSub.textContent !== m.sub) miniSub.textContent = m.sub;
+  if (m.art && miniArt.getAttribute("src") !== m.art) miniArt.src = m.art;
+  miniArt.hidden = !m.art;
+  const playing =
+    miniOptimistic && Date.now() < miniOptimistic.until ? miniOptimistic.playing : m.playing;
+  miniPlayIcon.toggleAttribute("hidden", playing);
+  miniPauseIcon.toggleAttribute("hidden", !playing);
+}
+
+$("mini-play").addEventListener("click", () => {
+  const m = miniSource();
+  if (!m) return;
+  const desired = !m.playing;
+  miniHeld = true;
+  miniOptimistic = { playing: desired, until: Date.now() + 2000 };
+  if (remoteMode) cmd(desired ? "play" : "pause");
+  else invoke("remote_cmd", { cmd: desired ? "play" : "pause" }).catch(() => {});
+  reflectMini();
 });
+$("mini-open").addEventListener("click", () => chooseSource(!remoteMode));
 
 // The station button names the speaker's station while the speaker owns the screen, and
 // the Stations page marks that row — the WiiM says which station its queue is, and its id is
@@ -1630,8 +1732,10 @@ function reflectRemoteVolume() {
   remoteVol.parentElement!.style.visibility = remote.volume >= 0 ? "visible" : "hidden";
 }
 
-// Interpolate the remote position between the 1s device polls.
+// Interpolate the remote position between the 1s device polls. The source toggle's playing
+// dots and the mini player follow local motion too, which has no event of its own to stop on.
 setInterval(() => {
+  reflectSources();
   if (!remoteMode || !remote) return;
   let pos = remote.position + (remote.playing ? (Date.now() - remoteAt) / 1000 : 0);
   if (remote.duration > 0) pos = Math.min(pos, remote.duration);

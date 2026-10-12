@@ -310,16 +310,18 @@ async fn attach(
                     .await
                     .map(|t| t.track_length as f64)
                     .unwrap_or(0.0);
+                let position = engine.position().as_secs_f64();
                 let _ = app.emit(
                     "engine://playhead",
                     json!({
-                        "position": engine.position().as_secs_f64(),
+                        "position": position,
                         "duration": duration,
                         // Authoritative, unlike the DOM-scraping era's guesswork.
                         "paused": engine.is_paused(),
                         "volume": 1.0,
                     }),
                 );
+                crate::focus::local_playhead(&app, position);
             }
         });
     }

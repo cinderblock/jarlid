@@ -218,6 +218,7 @@ body {
 
 .art-wrap,
 .progress,
+#mini,
 #history {
   width: min(100%, var(--stage-w));
 }
@@ -243,30 +244,64 @@ body {
   margin-top: 26px;
   max-width: 100%;
 }
-#remote-badge {
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  font-size: 0.72rem;
-  color: var(--accent);
-  margin-bottom: 10px;
+/* Which source the screen and controls drive. Two segments in one pill; the chosen one takes
+   the accent. Shown whenever a network player has been found. */
+#source-toggle {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 3px;
+  margin-bottom: 12px;
+  border-radius: 999px;
+  background: rgba(var(--wash), 0.07);
 }
-/* Shown while the speaker is paused: the only way off it short of starting a station. */
-#remote-back {
-  background: rgba(var(--wash), 0.08);
+#source-toggle button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
   border: none;
   outline: none;
   border-radius: 999px;
-  padding: 3px 12px;
-  margin: -4px 0 10px;
-  color: var(--dim);
+  padding: 4px 12px;
+  background: transparent;
+  color: var(--faint);
   font-family: inherit;
-  font-size: 0.72rem;
-  letter-spacing: 0.02em;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
+  transition: color 0.15s, background 0.15s;
 }
-#remote-back:hover {
-  background: rgba(var(--wash), 0.14);
+#source-toggle button:hover:not(:disabled) {
   color: var(--fg);
+}
+#source-toggle button.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+#source-toggle button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+/* Lit and breathing while that source is audibly playing; a hollow ring otherwise. */
+.src-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+#source-toggle button.playing .src-dot {
+  background: currentColor;
+  animation: src-breathe 1.6s ease-in-out infinite;
+}
+@keyframes src-breathe {
+  50% {
+    opacity: 0.35;
+  }
 }
 /* remote mode: hide local-only controls (thumbs/replay/history). The station button stays
    and names the speaker's station instead (main.ts hides it only when the speaker is playing
@@ -805,6 +840,75 @@ body.remote #remote-vol-wrap {
   background: var(--fg);
 }
 
+/* ---- mini player: the source that is not on screen ---- */
+#mini {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 18px;
+  padding: 6px;
+  border-radius: 14px;
+  background: rgba(var(--wash), 0.07);
+  box-shadow: 0 0 0 1px rgba(var(--wash), 0.06);
+}
+.mini-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+#mini-art {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: rgba(var(--wash), 0.06);
+}
+.mini-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+#mini-title,
+#mini-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#mini-title {
+  font-size: 0.86rem;
+  color: var(--fg);
+}
+#mini-sub {
+  font-size: 0.72rem;
+  color: var(--dim);
+}
+.mini-body:hover #mini-title {
+  color: var(--accent);
+}
+#mini-play {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+}
+#mini-play svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  stroke: none;
+}
+
 /* ---- recently-played gallery ---- */
 #history {
   display: flex;
@@ -1245,6 +1349,7 @@ body.remote #remote-vol-wrap {
   .progress,
   .controls,
   #remote-vol-wrap,
+  #mini,
   #history {
     flex: 0 0 100%;
     width: 100%;

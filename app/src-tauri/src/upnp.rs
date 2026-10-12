@@ -692,10 +692,14 @@ pub fn start(app: tauri::AppHandle, ctl: RemoteCtl) {
                 match polled {
                     Some(st) => {
                         failures = 0;
+                        let (playing, has_track) = (st.playing, !st.title.is_empty());
                         if st != last {
                             let _ = app.emit("remote://state", &st);
                             last = st;
                         }
+                        // Every poll, not only on a change: focus also depends on local
+                        // playback, and the state it was last told must stay current.
+                        crate::focus::remote_state(&app, playing, has_track);
                     }
                     None => {
                         failures += 1;
@@ -705,6 +709,7 @@ pub fn start(app: tauri::AppHandle, ctl: RemoteCtl) {
                             failures = 0;
                             let _ = app.emit("remote://state", &RemoteState::default());
                             last = RemoteState::default();
+                            crate::focus::remote_state(&app, false, false);
                         }
                     }
                 }

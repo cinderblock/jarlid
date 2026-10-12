@@ -27,12 +27,15 @@ anywhere in it.
   shown inline. Switching clears the queued tracks so the change is audible within a song or two.
 - **QuickMix shows its source**: QuickMix blends dozens of your stations, and each track says
   which one it came from — otherwise there's no way to tell what you're actually listening to.
-- **Network player (UPnP/DLNA + WiiM) remote mode**: when local playback is idle and a
-  renderer on the LAN is playing, Jarlid becomes its display — "Now playing on …" with art,
-  synced lyrics, and (on a WiiM) the Pandora station it is on, marked in the Stations list.
-  Pausing the renderer keeps it on screen, so Play (button, Space, or media key) resumes it;
-  starting local playback, or **Back to this computer** (shown while it is paused), hands
-  the screen and media keys back. WiiM devices use the native LinkPlay API, so metadata works for the WiiM's own sources too,
+- **Network player (UPnP/DLNA + WiiM) remote mode**: a **This computer | speaker** toggle,
+  always on screen once a renderer is found, picks which source the screen, the play button
+  (and Space) and the media keys drive; a dot marks whichever is audibly playing. Whichever
+  source *starts* playing takes over on its own (the speaker only while local is idle), and
+  pausing never moves it — so Play resumes whatever you paused. With the speaker chosen,
+  Jarlid is its display: art, synced lyrics, and (on a WiiM) the Pandora station it is on,
+  marked in the Stations list. The source *not* on screen shows as a **mini player** while it
+  plays, with its own play/pause; click it to switch. WiiM devices use the native LinkPlay
+  API, so metadata works for the WiiM's own sources too,
   and every row on the Stations page gets a cast button that starts that station directly on
   the device over its PlayQueue service (any station, not only saved presets), plus
   play/pause/skip control.
