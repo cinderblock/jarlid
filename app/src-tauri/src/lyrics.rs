@@ -208,7 +208,7 @@ pub async fn fetch_lyrics(
         }
     }
 
-    let found = lookup_lrclib(&artist, &track, album, duration).await?;
+    let found = lookup_lrclib(&artist, &track, album.as_deref(), duration).await?;
 
     let entry = match (found, cached) {
         (Some(l), _) => CacheEntry::new(l),
@@ -232,11 +232,11 @@ pub async fn fetch_lyrics(
 }
 
 /// Ask LRCLIB: an exact `get`, then progressively looser `search`es, choosing the best
-/// synced result by closest duration. `Ok(None)` is a definite miss; `Err` is no answer.
+/// result by [`rank`]. `Ok(None)` is a definite miss; `Err` is no answer.
 async fn lookup_lrclib(
     artist: &str,
     track: &str,
-    album: Option<String>,
+    album: Option<&str>,
     duration: Option<f64>,
 ) -> Result<Option<Lyrics>, String> {
     let client = lrclib_client()?;
@@ -248,10 +248,8 @@ async fn lookup_lrclib(
             ("track_name", track.to_string()),
             ("duration", (dur.round() as i64).to_string()),
         ];
-        if let Some(al) = album {
-            if !al.is_empty() {
-                q.push(("album_name", al));
-            }
+        if let Some(al) = album.filter(|a| !a.is_empty()) {
+            q.push(("album_name", al.to_string()));
         }
         if let Some(v) = lrclib_get(&client, "https://lrclib.net/api/get", &q).await? {
             return Ok(Some(from_lrclib(&v, "lrclib/get")));
@@ -259,21 +257,31 @@ async fn lookup_lrclib(
     }
 
     // 2) search — full title first, then simplified title
-    let mut candidates: Vec<(&str, String)> = vec![("full", track.to_string())];
-    let simple = simplify_title(track);
-    if simple != track && !simple.is_empty() {
-        candidates.push(("simple", simple));
-    }
-    for (label, t) in candidates {
+    let want = Want {
+        track,
+        album,
+        duration,
+    };
+    for (label, t) in search_titles(track) {
         let q = [("track_name", t.as_str()), ("artist_name", artist)];
         if let Some(arr) = lrclib_get(&client, "https://lrclib.net/api/search", &q).await? {
-            if let Some(best) = pick_best(&arr, duration) {
+            if let Some(best) = pick_best(&arr, &want) {
                 return Ok(Some(from_lrclib(best, &format!("lrclib/search/{label}"))));
             }
         }
     }
 
     Ok(None)
+}
+
+/// The titles to search under, tightest first: as Pandora names it, then simplified.
+fn search_titles(track: &str) -> Vec<(&'static str, String)> {
+    let mut titles = vec![("full", track.to_string())];
+    let simple = simplify_title(track);
+    if simple != track && !simple.is_empty() {
+        titles.push(("simple", simple));
+    }
+    titles
 }
 
 /// How long one attempt may take. LRCLIB is slow, not hung: a reply that has not
@@ -343,38 +351,65 @@ async fn lrclib_get<Q: serde::Serialize + ?Sized>(
     }
 }
 
-/// From a search-results array, prefer entries with synced lyrics and the closest
-/// duration to what's playing.
-fn pick_best<'a>(
-    arr: &'a serde_json::Value,
+/// What's playing, as far as matching a search result goes.
+struct Want<'a> {
+    track: &'a str,
+    album: Option<&'a str>,
     duration: Option<f64>,
-) -> Option<&'a serde_json::Value> {
-    let items = arr.as_array()?;
-    if items.is_empty() {
-        return None;
-    }
-    let target = duration.unwrap_or(0.0);
-    let score = |v: &serde_json::Value| -> (i32, f64) {
-        let has_synced = v
-            .get("syncedLyrics")
-            .and_then(|x| x.as_str())
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        let dur = v.get("duration").and_then(|x| x.as_f64()).unwrap_or(0.0);
-        let dur_gap = if target > 0.0 && dur > 0.0 {
-            (dur - target).abs()
-        } else {
-            9999.0
-        };
-        // synced first (lower rank better), then smallest duration gap
-        (if has_synced { 0 } else { 1 }, dur_gap)
+}
+
+/// Durations further apart than this are a different cut of the song (radio edit,
+/// extended mix), and synced timings from one will drift against the other.
+const SAME_CUT_SECS: f64 = 3.0;
+
+/// How closely two names agree: 0 identical (ignoring case and spacing), 1 identical once
+/// parentheticals and " - " suffixes are stripped, 2 otherwise.
+fn name_distance(a: &str, b: &str) -> u8 {
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
     };
-    items.iter().min_by(|a, b| {
-        let (sa, ga) = score(a);
-        let (sb, gb) = score(b);
-        sa.cmp(&sb)
-            .then(ga.partial_cmp(&gb).unwrap_or(std::cmp::Ordering::Equal))
-    })
+    if norm(a) == norm(b) {
+        0
+    } else if norm(&simplify_title(a)) == norm(&simplify_title(b)) {
+        1
+    } else {
+        2
+    }
+}
+
+/// Sort key for one search result; lower is better.
+///
+/// Title comes first. A record whose title names a different version ("French Version",
+/// "Split Brain Version") has the wrong words, which is worse than timings that drift
+/// or no timings at all. Then same cut, then synced, then album, then the exact gap.
+/// Without the title and album terms a song with many versions of one length (all
+/// equally synced, all 165s) was decided by whatever order LRCLIB returned them in.
+fn rank(v: &serde_json::Value, want: &Want) -> (u8, u8, u8, u8, i64) {
+    let field = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("");
+    let has_synced = !field("syncedLyrics").is_empty();
+    let gap = match (want.duration, v.get("duration").and_then(|x| x.as_f64())) {
+        (Some(w), Some(d)) if w > 0.0 && d > 0.0 => Some((d - w).abs()),
+        _ => None,
+    };
+    let album = match want.album.filter(|a| !a.is_empty()) {
+        Some(a) => name_distance(a, field("albumName")),
+        None => 0,
+    };
+    (
+        name_distance(want.track, field("trackName")),
+        gap.map_or(1, |g| (g > SAME_CUT_SECS) as u8),
+        !has_synced as u8,
+        album,
+        gap.map_or(i64::MAX, |g| (g * 1000.0) as i64),
+    )
+}
+
+/// The best of a search-results array for what's playing. See [`rank`].
+fn pick_best<'a>(arr: &'a serde_json::Value, want: &Want) -> Option<&'a serde_json::Value> {
+    arr.as_array()?.iter().min_by_key(|v| rank(v, want))
 }
 
 /// Persist an LRCLIB answer, hit or miss. Best effort: a cache that can't be written
@@ -789,6 +824,77 @@ mod tests {
             .unwrap()
             .get("stale")
             .is_none());
+    }
+
+    fn result(id: i64, track: &str, album: &str, duration: f64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "trackName": track, "albumName": album, "duration": duration,
+            "syncedLyrics": "[00:00.22] words", "plainLyrics": "words",
+        })
+    }
+
+    /// The shape of LRCLIB's answer for Madelline — "Dopamine": many versions, all synced,
+    /// nearly all 165s, in an order that put a different version first. Duration alone
+    /// can't separate them; title and album have to.
+    #[test]
+    fn picks_by_title_and_album_when_durations_tie() {
+        let arr = serde_json::json!([
+            result(
+                33935652,
+                "Dopamine",
+                "Dopamine (Split Brain Version)",
+                165.0
+            ),
+            result(
+                36641358,
+                "dopamine (Version Française)",
+                "dopamine - Single",
+                165.0
+            ),
+            result(2162555, "dopamine", "dopamine", 165.0),
+            result(2162554, "Dopamine", "Dopamine - Single", 165.0),
+            result(26107595, "dopamine", "dopamine", 181.5),
+        ]);
+        let id = |want: &Want| pick_best(&arr, want).unwrap()["id"].as_i64().unwrap();
+
+        let want = |album| Want {
+            track: "Dopamine",
+            album,
+            duration: Some(165.4),
+        };
+        assert_eq!(id(&want(Some("Dopamine - Single"))), 2162554);
+        assert_eq!(id(&want(Some("dopamine"))), 2162555);
+
+        // A version Pandora names is the version it gets.
+        let split = Want {
+            track: "Dopamine (Split Brain Version)",
+            album: None,
+            duration: Some(165.0),
+        };
+        let arr2 = serde_json::json!([
+            result(2162555, "dopamine", "dopamine", 165.0),
+            result(35090140, "Dopamine (Split Brain Version)", "x", 165.0),
+        ]);
+        assert_eq!(pick_best(&arr2, &split).unwrap()["id"], 35090140);
+    }
+
+    /// Among equally-named records, a different cut loses to synced-but-right-length,
+    /// and synced beats plain.
+    #[test]
+    fn prefers_same_cut_then_synced() {
+        let mut plain = result(3, "Song", "A", 200.0);
+        plain["syncedLyrics"] = serde_json::Value::Null;
+        let arr = serde_json::json!([
+            result(1, "Song", "A", 240.0),
+            plain,
+            result(2, "Song", "B", 201.0)
+        ]);
+        let want = Want {
+            track: "Song",
+            album: Some("A"),
+            duration: Some(200.0),
+        };
+        assert_eq!(pick_best(&arr, &want).unwrap()["id"], 2);
     }
 
     /// The cache and override files are keyed by how Pandora names the track, and that
