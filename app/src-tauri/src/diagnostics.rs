@@ -296,7 +296,7 @@ pub async fn native_report_issue(
             // counterpart for crackle: the device's own buffer running out because the output
             // callback was late, which `starved` cannot see. The device buffer is reported next
             // to it because it grows in response.
-            "position {:.0}s, buffered {:.1}s, drift {:.2}s, starved {:.2}s,              underruns {} (device buffer {} ms){}",
+            "position {:.0}s, buffered {:.1}s, drift {:.2}s, starved {:.2}s, underruns {} (device buffer {} ms){}",
             engine.position().as_secs_f64(),
             engine.buffered().as_secs_f64(),
             engine.drift().as_secs_f64(),
