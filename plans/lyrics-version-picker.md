@@ -120,3 +120,9 @@ Decided: tag them in the picker **and** show them as two languages anywhere dete
 - [x] Detector, tests, pane display, chip, picker tag, README.
 - [ ] See it in the real app on Dopamine (Split Brain): readability of the subtitle line, chip cycling,
       and the highlight staying centred when rows change height.
+- [ ] **Release as v1.12.0 (minor). On hold, Cameron's call (2026-10-13).** master also carries another
+      session's `a1e116d` (audio device buffer that grows under load). That change is not yet confirmed
+      under real load (`plans/audio-dropouts-under-load.md`), and a release from HEAD would ship it.
+      Release once that session has confirmed it. The release is a version-only bump commit (four files,
+      see CLAUDE.md), push master, then push tag `v1.12.0`. Afterwards verify with
+      `gh run view --json conclusion` and check the assets, not `gh run watch`.
