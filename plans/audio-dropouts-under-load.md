@@ -97,3 +97,32 @@ provoke the load deliberately.
 As of 2026-08-12 a build could not be started anyway: 2 of 4 slots were held by a long-lived
 `svdsa presentation dev (cargo+vite)` server, and a cargo build wants all four, so the claim would
 have queued behind a process that does not exit on its own.
+
+## Round 2 (2026-10-13): "scratchy", not gaps
+
+User report: under CPU load the audio gets *scratchy*. That is a different sound from the
+multi-second hole a dry 5 s ring buffer makes, and it points at the **device buffer**, not the
+decode thread.
+
+- `Player::new` opens the stream with `default_output_config().config()`, i.e.
+  `BufferSize::Default`. cpal 0.16 turns that into `buffer_duration = 0` in
+  `IAudioClient::Initialize` (`src/host/wasapi/device.rs`), so WASAPI shared mode uses its
+  minimum: roughly one ~10 ms engine period of cushion between our callback and the speaker.
+- A callback that is late by more than that glitches, even at `TIME_CRITICAL`, and even with
+  five seconds of decoded audio sitting in the ring. Short repeated glitches are heard as
+  crackle.
+- **`starved` cannot see this.** It counts the ring running dry inside the callback; a late
+  callback with a full ring counts zero. A clean `starved` reading would not clear the app.
+- cpal fills `buffer_frames - GetCurrentPadding()` each event, so a larger requested buffer
+  is real cushion, not just a bigger allocation.
+
+Proposed (not started, awaiting the user's go-ahead):
+
+- [ ] Request `BufferSize::Fixed(~100 ms)`, clamped to the device's `SupportedBufferSize`.
+      Costs: pause/volume react up to ~100 ms later; the playhead (lyrics) runs ahead by the
+      device latency unless corrected from `OutputCallbackInfo::timestamp()`.
+- [ ] Measure callback lateness (gap between callbacks vs. the buffer length) and report it
+      next to `starved` in diagnostics, so "scratchy" has a number too.
+- [ ] First check: when it crackles, does other audio on the machine (browser, etc.)
+      crackle at the same moment? If yes, it is `audiodg` / driver / DPC latency and no
+      change here can fix it.
