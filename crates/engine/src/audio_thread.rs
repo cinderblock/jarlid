@@ -98,6 +98,11 @@ const GROW_WINDOW: Duration = Duration::from_secs(60);
 /// for correctness, and it is not worth a gap in the music.
 const SHRINK_AFTER: Duration = Duration::from_secs(10 * 60);
 
+/// How long past the device buffer to wait for the end of a track to play out before ending it
+/// anyway. See [`audio::Player::drained`]: this only matters if the device stops calling back,
+/// and then the track is over regardless, so it only has to be comfortably more than one poll.
+const TAIL_GRACE: Duration = Duration::from_millis(250);
+
 /// How big the next player's device buffer should be, learned from the underruns of the ones
 /// before it. See [`audio::DEVICE_BUFFER`] for what the buffer is.
 ///
@@ -307,6 +312,9 @@ impl AudioThread {
             // Per-player, so it resets with each rebuild; the published total does not.
             let mut last_starved = Duration::ZERO;
             let mut last_underruns = 0u64;
+            // When the live player had handed the device the last of its track. Per-player, like
+            // the two above. See TAIL_GRACE.
+            let mut drained_at: Option<Instant> = None;
             // Outlives every player, so what one player learned about this machine is used to
             // build the next.
             let mut device_buffer = DeviceBuffer::new(Instant::now());
@@ -533,6 +541,7 @@ impl AudioThread {
                                 last_decode = Instant::now();
                                 last_starved = Duration::ZERO;
                                 last_underruns = 0;
+                                drained_at = None;
                                 built_with = device_buffer.size();
                                 recovered_at = new_player.started_at();
                                 thread_state
@@ -742,7 +751,19 @@ impl AudioThread {
                         thread_state.blending.store(false, Ordering::Relaxed);
                     }
 
-                    if blending.is_none() && active.is_finished() {
+                    // Ended once the device has played the last of it, not when the last of it was
+                    // handed over; see `Player::is_finished`. The grace only bounds a device that
+                    // went quiet without reporting it.
+                    let ended = if active.drained() {
+                        let since = *drained_at.get_or_insert_with(Instant::now);
+                        active.is_finished()
+                            || since.elapsed() > active.device_buffer() + TAIL_GRACE
+                    } else {
+                        drained_at = None;
+                        false
+                    };
+
+                    if blending.is_none() && ended {
                         thread_state.track_ended.store(true, Ordering::Relaxed);
                         thread_state.playing.store(false, Ordering::Relaxed);
                         player = None;

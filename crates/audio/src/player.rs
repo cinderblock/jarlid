@@ -1053,11 +1053,28 @@ impl Player {
         f32::from_bits(self.shared.volume.load(Ordering::Relaxed))
     }
 
-    /// True once the decoder finished *and* the queue has drained — i.e. the listener has actually
-    /// heard the end, not merely that we stopped decoding.
+    /// True once the listener has actually heard the end: the decoder finished, the queue has
+    /// drained, *and* the device has played what it was handed.
+    ///
+    /// The last part is what makes it safe to drop the player the moment this goes true.
+    /// Dropping the stream stops Windows at once, and whatever is still in the device buffer is
+    /// thrown away mid-waveform. At the old ~22 ms that was usually already gone by the time
+    /// anyone looked; at the 240 ms the buffer can grow to, it is the last quarter-second of the
+    /// song, cut off with a click.
     ///
     /// Deliberately false when decoding stopped because of an error; see [`Player::decode_error`].
     pub fn is_finished(&self) -> bool {
+        self.drained() && self.shared.device_audio.load(Ordering::Relaxed) == 0
+    }
+
+    /// True once the decoder finished and the queue has drained: everything has been handed to
+    /// the device, though up to [`Player::device_buffer`] of it may not have played yet.
+    ///
+    /// The owner's fallback for [`Player::is_finished`]. The device's share is only counted down
+    /// by the callback, so a device that stops calling back without reporting an error would
+    /// leave it stuck, and the track would never end. Waiting a little longer than the buffer
+    /// after this goes true bounds that.
+    pub fn drained(&self) -> bool {
         self.shared.decoder_finished.load(Ordering::Relaxed)
             && self.shared.queued.load(Ordering::Relaxed) == 0
     }
