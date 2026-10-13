@@ -557,6 +557,12 @@ impl AudioThread {
                                     .store(millis(new_player.started_at()), Ordering::Relaxed);
                                 thread_state.playing.store(true, Ordering::Relaxed);
                                 device_retry_at = None;
+                                eprintln!(
+                                    "[audio] opened {:?} at {:.1}s, {} ms device buffer",
+                                    new_player.device_name(),
+                                    new_player.started_at().as_secs_f64(),
+                                    new_player.device_buffer().as_millis()
+                                );
                                 player = Some(new_player);
                             }
                             Err(audio::Error::Device(e)) => {
@@ -622,6 +628,13 @@ impl AudioThread {
                         thread_state
                             .starved_ms
                             .fetch_add(millis(fresh), Ordering::Relaxed);
+                        // Each fault gets a line of its own, with where in the song it was, so a
+                        // debug log can be read against "it glitched near the end".
+                        eprintln!(
+                            "[audio] starved: {} ms of silence at {:.1}s",
+                            millis(fresh),
+                            position.as_secs_f64()
+                        );
                     }
                     last_starved = starved;
 
@@ -635,6 +648,12 @@ impl AudioThread {
                         thread_state
                             .device_underruns
                             .fetch_add(fresh_underruns, Ordering::Relaxed);
+                        eprintln!(
+                            "[audio] {fresh_underruns} device underrun{} at {:.1}s ({} ms buffer)",
+                            if fresh_underruns == 1 { "" } else { "s" },
+                            position.as_secs_f64(),
+                            active.device_buffer().as_millis()
+                        );
                         grew = device_buffer.underran(fresh_underruns, Instant::now());
                         if grew {
                             eprintln!(
@@ -780,6 +799,15 @@ impl AudioThread {
                     };
 
                     if blending.is_none() && ended {
+                        eprintln!(
+                            "[audio] track ended at {:.1}s{}",
+                            position.as_secs_f64(),
+                            if active.is_finished() {
+                                ""
+                            } else {
+                                " (the device stopped calling back before it played out)"
+                            }
+                        );
                         thread_state.track_ended.store(true, Ordering::Relaxed);
                         thread_state.playing.store(false, Ordering::Relaxed);
                         player = None;

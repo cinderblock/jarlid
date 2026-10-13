@@ -432,6 +432,10 @@ impl Engine {
             next.track
         };
 
+        eprintln!(
+            "[engine] next: {:?} by {}",
+            track.song_title, track.artist_name
+        );
         self.audio.play(&self.source_of(&track), start);
         let _ = self.events.send(Event::TrackStarted(Box::new(track)));
 
