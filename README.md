@@ -9,8 +9,10 @@ anywhere in it.
 
 ## Features
 
-- **Synced (karaoke-style) lyrics** from [LRCLIB](https://lrclib.net), with duration-aware
-  version matching, an on-disk cache (lyrics are rechecked daily in the background, and a miss
+- **Synced (karaoke-style) lyrics** from [LRCLIB](https://lrclib.net), with version matching by
+  title, album and duration. When it picks the wrong version, the versions button lists every
+  record LRCLIB found and lets you try each one live against the song, then keep the right one
+  for that track. Also an on-disk cache (lyrics are rechecked daily in the background, and a miss
   is remembered for two hours), and per-track sync nudging (`[` / `]`, ±0.25 s).
   A lookup that cannot reach LRCLIB is retried while the song plays, and is never reported as
   "no lyrics found".

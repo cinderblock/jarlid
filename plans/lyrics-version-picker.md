@@ -49,12 +49,26 @@ express).
 ## Plan / steps
 
 - [x] Investigate the Dopamine case against the live API.
-- [ ] Backend: `lyrics_candidates`, `choose_lyrics`, `clear_lyrics_choice`, pin honoured in
-      `fetch_lyrics`, `pinned` output flag. Better `pick_best` ranking (own commit).
-- [ ] Frontend: versions button in `.lyrics-head`, candidate list, live preview, use / back /
-      return to automatic.
-- [ ] `cargo test`, `bun run build`.
-- [ ] Run in the real app against a multi-version track (needs Cameron).
+- [x] Better ranking: `rank` = (title, same cut ≤3s, synced, album, gap). Commit `0aad0c1`.
+      Unit tests use the real Dopamine result shape.
+- [x] Backend: `lyrics_candidates` (track+artist searches, plus free-text `q`, run
+      concurrently, deduped, other artists sorted last), `choose_lyrics`, `clear_lyrics_choice`,
+      pin honoured in `fetch_lyrics` (refreshes go to `/api/get/{id}`; a 404 drops the pin),
+      `pinned` output-only flag. Commit `b1f85f5`.
+- [x] Frontend: `app/src/lyric-picker.ts`. Layers button beside the pencil, list with
+      length vs playing, synced/plain, opening lines, and a "Showing now" / "Your choice" / "Best match" label.
+      Click previews in the pane live; ‹ › or arrow keys step; Esc backs out; "Use this" pins;
+      "Back to automatic" unpins. Commit `b1f85f5`.
+- [x] `cargo test --lib` (106 pass), `bun run build` clean, all `$("id")` lookups resolve.
+- [x] Checked live: `/api/get/{id}?` → 200, unknown id → 404 `TrackNotFound`.
+- [ ] **Run in the real app against a multi-version track (needs Cameron).** Things to watch:
+      list layout in the pane, preview highlighting, the pin surviving a restart, and
+      "Back to automatic" re-matching.
+
+## Notes
+
+- Cached picks made before `0aad0c1` stay until their 24h TTL expires, so a wrong pick can
+  survive a day after the ranking fix. Choosing a version replaces it immediately.
 
 ## Things not to do
 
