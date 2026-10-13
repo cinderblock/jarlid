@@ -57,7 +57,7 @@ The disk cache in `app/src-tauri/src/lyrics.rs` had two opposite failures, raise
   clean on `lyrics.rs`, and `bun run build` passes. The clippy warnings in `lyrics.rs` are
   all in code that was already there.
 - [x] README feature line updated.
-- [ ] Not yet seen live in the running app (cache files in `%LOCALAPPDATA%`).
+- [ ] Shipped in v1.11.6 (`b124b16`). Not yet seen live in the running app (cache files in `%LOCALAPPDATA%`).
 
 ## Findings / gotchas
 
