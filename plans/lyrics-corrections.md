@@ -281,6 +281,11 @@ Cameron's feedback after timing a song by clicking:
   line between it and the line before it keeps its time only if it still falls between
   their times (`dropMisplacedGaps`). Blank lines after the last line must start after it.
 
+Released in **v1.12.1** (2026-10-13; tag `v1.12.1` on the bump commit `e148a89`), along with
+the track-change fix above. CI release run `38468012327` succeeded, and the release has the
+installer, MSI, their `.sig` files and `latest.json`. Not yet tried in the app: a timing pass
+(centring at both ends, blank lines skipped, Back 5s, gap stamps dropped on retime).
+
 ## Things not to do
 
 - Don't read the track's duration from the playhead inside the editor; once playback moves
