@@ -222,7 +222,48 @@ is on, **the editor owns the pane**: it renders the rows (keeping `.line` and
 `data-idx` so nothing else breaks) and drives its own cursor, and `highlightLine` stands
 down. Normal rendering and highlighting resume on exit.
 
+## Findings — publishing after the track changed (2026-10-13)
+
+Cameron edited Cloudy June — "Hoe Anthem" and pressed Publish after it had ended and
+bludnymph — "ORAL HEX (spell on you)" was playing. It looked as if the publish went to
+ORAL HEX. Reconstructed from the play history in localStorage and the data-dir file times:
+
+- **The publish itself went to the right record**, `17334846` (Hoe Anthem / Crazy Woman /
+  171.97s). The identity came from `ctx.lyrics`, which belonged to Hoe Anthem. `settle()`
+  found LRCLIB serving the edit and dropped the override, which is why
+  `lyrics-overrides/` was empty. No Hoe Anthem record exists at ORAL HEX's 195s, and no
+  ORAL HEX record carries Hoe Anthem's words.
+- **What went wrong was the pane.** `saveOverride()` and `settle()` both call
+  `ctx.onApplied`, which was main.ts's `applyLyrics`. That sets `lastLyrics`, so Hoe
+  Anthem's lyrics were adopted as *ORAL HEX's*, and Done painted them under ORAL HEX.
+  Memory only, but it made the pencil and the version picker work against the wrong
+  song. Cameron then picked ORAL HEX's version by hand (the pin in `lyrics-picks/`,
+  13:50), which was the same record the automatic match picks anyway (`5756152`).
+- **Latent: the playhead's duration stood in for the track's.** `publication()` fell back
+  to `ctx.playhead().duration` when the record had no duration (every new-lyrics publish),
+  and `settle()`/Discard looked the track up with it. After a track change that is the
+  next song's length, so a new-lyrics publish would have created a record with the right
+  names and the wrong duration. The settle lookup on 2026-10-13 did run with 195s; it fell
+  through to search and still found the right record.
+- **Latent: a window after every track change** (up to 2.5s waiting for the duration,
+  plus the fetch) where the pencil and versions button still showed and still pointed at
+  the previous track while `notePlaybackMoved()` had already run — so an editor opened
+  then was not marked stale and would time against the new song.
+
+Fixes: the editor carries `duration` captured at `begin()` and only falls back to the
+playhead while not stale; main.ts ignores `onApplied` once `currentKey` has moved; both
+buttons hide on a track change until that track's lyrics arrive.
+
+Local data repair: moved the ORAL HEX pin and its `lrclib/chosen` cache entry to
+`%LOCALAPPDATA%\Temp\jarlid-lyrics-fix-2026-10-13\` so it goes back to the automatic
+match. Hoe Anthem's cache matches what LRCLIB serves and was left alone.
+
 ## Things not to do
+
+- Don't read the track's duration from the playhead inside the editor; once playback moves
+  on it is another song's. Use `ctx.duration`.
+- Don't hand the editor main.ts's `applyLyrics` directly as `onApplied` — it adopts
+  whatever it is given as the *current* track's lyrics.
 
 - Don't key a publish off Pandora's now-playing metadata when a matched LRCLIB record
   exists — mismatched `albumName`/`duration` silently creates a *new* record instead of

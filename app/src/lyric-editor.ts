@@ -43,6 +43,9 @@ export interface EditorContext {
   /// Pandora's naming for the track. Also the key local edits are filed under.
   meta: { title: string; artist: string; album: string };
   lyrics: Lyrics;
+  /// The edited track's length, captured when editing began. The playhead's own duration
+  /// can't stand in for it: once playback moves on it is the next song's.
+  duration: number | null;
   playhead: () => { position: number; duration: number; paused: boolean };
   transport: (cmd: string) => void;
   seek: (position: number) => void;
@@ -386,6 +389,12 @@ function setBusy(on: boolean) {
   confirmGo.disabled = on;
 }
 
+/// The edited track's length. The live playhead only fills in while this track is still
+/// the one playing — after that it describes another song, and a publish or lookup keyed
+/// on it would land on that song's identity.
+const trackDuration = () =>
+  ctx?.duration || (ctx && !stale ? ctx.playhead().duration : 0) || null;
+
 const keyArgs = () => ({
   artist: ctx!.meta.artist,
   track: ctx!.meta.title,
@@ -439,7 +448,7 @@ revertBtn.addEventListener("click", async () => {
     await invoke("clear_lyrics_override", keyArgs());
     const fresh = await invoke<Lyrics>("fetch_lyrics", {
       ...keyArgs(),
-      duration: ctx.playhead().duration || null,
+      duration: trackDuration(),
     });
     ctx.lyrics = fresh;
     ctx.onApplied(fresh);
@@ -464,7 +473,7 @@ revertBtn.addEventListener("click", async () => {
 function publication() {
   if (!ctx) return null;
   const { lyrics, meta } = ctx;
-  const duration = lyrics.duration ?? ctx.playhead().duration;
+  const duration = lyrics.duration ?? trackDuration();
   const body = edited();
   if (!duration || (!body.synced && !body.plain)) return null;
   return {
@@ -507,7 +516,7 @@ async function settle(saved: Lyrics) {
     await invoke("clear_lyrics_override", keyArgs());
     const fresh = await invoke<Lyrics>("fetch_lyrics", {
       ...keyArgs(),
-      duration: ctx.playhead().duration || null,
+      duration: trackDuration(),
     });
     if (
       (fresh.synced ?? null) === (saved.synced ?? null) &&

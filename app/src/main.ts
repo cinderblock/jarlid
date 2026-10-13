@@ -409,6 +409,12 @@ async function onNowPlaying(np: NowPlaying) {
     // An editor left open is still editing the previous track — which is right — but
     // the playhead it was timing against now belongs to this one.
     lyricEditor.notePlaybackMoved();
+    // The lyrics on screen stay until the new track's arrive, but they are the last
+    // track's: an edit or a version pick started now would be timed against this track's
+    // playhead and filed under that one. `applyLyrics` brings the buttons back. The pencil
+    // stays while editing — it is how the open editor is closed.
+    if (!lyricEditor.isEditing()) lyricsEditBtn.hidden = true;
+    lyricsVersionsBtn.hidden = true;
     pushHistory(np);
     await loadLyrics(np);
   }
@@ -822,19 +828,32 @@ lyricsEditBtn.addEventListener("click", () => {
   lyricsVersionsBtn.hidden = true;
   // The editor shows each line as stored, both languages together; the chip means nothing there.
   lyricsDualBtn.hidden = true;
+  const key = currentKey;
   lyricEditor.begin({
     meta: lastMeta,
     lyrics: lastLyrics,
+    duration: lastLyrics.duration ?? (lastDuration || lastPlayhead.duration || null),
     playhead: () => lastPlayhead,
     transport: (c) => void cmd(c),
     seek: (position) => void invoke("player_seek", { position }).catch(() => {}),
     canTransport: !remoteMode,
-    onApplied: applyLyrics,
+    // Once playback has moved on, the pane belongs to the new track. The edit is already
+    // filed under its own track; adopting it here would show it on this one, and the next
+    // edit or version pick would be made against the wrong song's lyrics.
+    onApplied: (l) => {
+      if (key === currentKey) applyLyrics(l);
+    },
     // Repaint the pane the ordinary way and let the highlighter take over again.
     onExit: () => {
       lyricsEditBtn.classList.remove("on");
       activeLineIdx = NO_LINE;
       if (lastLyrics) applyLyrics(lastLyrics);
+      // Closed after a track change but before that track's lyrics arrived: what's
+      // painted is still the last track's, so keep the buttons off it until they land.
+      if (`${lastMeta.title}|${lastMeta.artist}` !== currentKey) {
+        lyricsEditBtn.hidden = true;
+        lyricsVersionsBtn.hidden = true;
+      }
     },
   });
 });
