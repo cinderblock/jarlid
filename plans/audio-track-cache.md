@@ -62,3 +62,8 @@ This is **off unless the user turns it on**, and the user picks the size.
 
 - Don't download the currently streaming track in parallel just to cache it (it doubles bandwidth).
 - Don't let a cache failure stop playback. Every cache error falls back to streaming the URL.
+
+## Shipped
+
+In v1.12.0 (2026-10-13). It was released before the open verification items above were
+checked, at the user's call. Those items still stand, now against the released build.

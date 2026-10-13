@@ -152,3 +152,8 @@ decode thread.
 - [ ] When it crackles, does other audio on the machine crackle at the same moment? If so, the
       cause is `audiodg`, a driver or DPC latency, and no change here can fix it. This question
       is still open with the user.
+
+## Shipped
+
+In v1.12.0 (2026-10-13). It was released before the open verification items above were
+checked, at the user's call. Those items still stand, now against the released build.
