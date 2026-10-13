@@ -6,6 +6,7 @@ import type { StationInfo } from "./stations-page";
 import * as settingsPage from "./settings-page";
 import * as lyricEditor from "./lyric-editor";
 import type { Lyrics } from "./lyric-editor";
+import * as lyricPicker from "./lyric-picker";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
 import * as stationStats from "./station-stats";
 
@@ -78,6 +79,7 @@ const thumbDownBtn = $("thumbDown");
 const lyricsEl = $("lyrics");
 const lyricsStatus = $("lyrics-status");
 const lyricsEditBtn = $("lyrics-edit");
+const lyricsVersionsBtn = $("lyrics-versions");
 
 const fmt = (s: number) => {
   if (!isFinite(s) || s < 0) s = 0;
@@ -93,6 +95,8 @@ let syncedLines: LyricLine[] | null = null;
 // both needed to edit, and to file the edit against the right track.
 let lastLyrics: Lyrics | null = null;
 let lastMeta = { title: "", artist: "", album: "" };
+// The track length the lookup was made with, for weighing other versions against it.
+let lastDuration: number | null = null;
 // A lookup that failed to reach LRCLIB is tried again while the song is still playing:
 // after these pauses, in order, and then no more. The backend already retries each
 // request a few times, so this covers an outage of a minute or so, not a long one —
@@ -564,6 +568,8 @@ function setThumbs(up: boolean, down: boolean) {
 
 async function loadLyrics(np: NowPlaying) {
   const key = `${np.title}|${np.artist}`;
+  // The versions on offer were the last track's.
+  lyricPicker.close();
   lyricsStatus.textContent = "Loading lyrics…";
   // Keep any existing lyrics on screen until replacements arrive (no blank flash).
   const duration = await waitForDuration(key);
@@ -582,6 +588,7 @@ async function loadLyricsFor(
     clearTimeout(lyricsRetryTimer);
     lyricsRetryTimer = null;
   }
+  lyricPicker.close();
   lyricsStatus.textContent = attempt ? "Loading lyrics… (retrying)" : "Loading lyrics…";
   try {
     const res = await invoke<Lyrics>("fetch_lyrics", {
@@ -594,6 +601,7 @@ async function loadLyricsFor(
     if (key !== currentKey) return;
 
     lastMeta = meta;
+    lastDuration = duration;
     applyLyrics(res);
     if (res.stale) void revalidateLyrics(meta, duration, key, res);
   } catch (e) {
@@ -605,6 +613,7 @@ async function loadLyricsFor(
     // updated, so editing now would file the edit against the wrong song.
     lastLyrics = null;
     lyricsEditBtn.hidden = true;
+    lyricsVersionsBtn.hidden = true;
     syncedLines = null;
     introEl = introBar = null;
     stopPlainFollow();
@@ -645,8 +654,10 @@ async function revalidateLyrics(
     return;
   }
   // The editor holds the record it would publish against; swapping it mid-edit would
-  // aim a correction at the wrong record. The refreshed copy is cached for next time.
-  if (key !== currentKey || lastLyrics !== shown || lyricEditor.isEditing()) return;
+  // aim a correction at the wrong record. The picker is comparing against what's shown.
+  // The refreshed copy is cached for next time either way.
+  if (key !== currentKey || lastLyrics !== shown) return;
+  if (lyricEditor.isEditing() || lyricPicker.isOpen()) return;
   if (res.id === shown.id && res.synced === shown.synced && res.plain === shown.plain) {
     lastLyrics = res;
     return;
@@ -659,28 +670,35 @@ async function revalidateLyrics(
 function applyLyrics(res: Lyrics) {
   lastLyrics = res;
   // Even "nothing found" is worth an edit button — that is exactly when contributing
-  // the words is most useful.
+  // the words is most useful. The same goes for other versions: the wider search the
+  // picker runs can turn up a record the automatic lookup missed.
   lyricsEditBtn.hidden = false;
-  const edited = res.overridden ? " · edited" : "";
+  lyricsVersionsBtn.hidden = lyricEditor.isEditing();
+  const note = res.overridden ? " · edited" : res.pinned ? " · your pick" : "";
 
   // Edit mode owns the pane's contents. Repainting under it would throw away the rows
   // and the caret mid-edit, so keep the state current and leave the DOM alone.
   if (lyricEditor.isEditing()) {
     syncedLines = res.synced ? parseLrc(res.synced) : null;
-    lyricsStatus.textContent = `${res.synced ? "Synced lyrics" : "Lyrics"}${edited}`;
+    lyricsStatus.textContent = `${res.synced ? "Synced lyrics" : "Lyrics"}${note}`;
     return;
   }
+  paintLyrics(res, note);
+}
 
+/// Draw a set of lyrics in the pane and drive the highlighter from them. Doesn't adopt
+/// them: the picker previews candidates through this without touching `lastLyrics`.
+function paintLyrics(res: Lyrics, note: string) {
   if (res.synced) {
     syncedLines = parseLrc(res.synced);
     renderSyncedLyrics(syncedLines);
-    lyricsStatus.textContent = `Synced lyrics${edited}`;
+    lyricsStatus.textContent = `Synced lyrics${note}`;
     activeLineIdx = NO_LINE;
     highlightLine(lastPlayhead.position);
   } else if (res.plain) {
     syncedLines = null;
     renderPlainLyrics(res.plain);
-    lyricsStatus.textContent = `Lyrics${edited}`;
+    lyricsStatus.textContent = `Lyrics${note}`;
   } else {
     syncedLines = null;
     introEl = introBar = null;
@@ -690,13 +708,48 @@ function applyLyrics(res: Lyrics) {
   }
 }
 
+lyricsVersionsBtn.addEventListener("click", () => {
+  if (lyricPicker.isOpen()) {
+    lyricPicker.close();
+    return;
+  }
+  if (!lastLyrics || lyricEditor.isEditing()) return;
+  const key = currentKey;
+  lyricsVersionsBtn.classList.add("on");
+  void lyricPicker.open({
+    meta: lastMeta,
+    duration: lastDuration,
+    current: lastLyrics,
+    preview: (l) => paintLyrics(l, " · trying a version"),
+    onChosen: applyLyrics,
+    // Back to automatic: the cached copy was the chosen record, so look again.
+    onReset: () => {
+      if (key === currentKey) void loadLyricsFor(lastMeta, lastDuration, key);
+    },
+    onExit: () => {
+      if (lastLyrics) applyLyrics(lastLyrics);
+    },
+    onClosed: () => lyricsVersionsBtn.classList.remove("on"),
+  });
+});
+attachTip(lyricsVersionsBtn, () =>
+  lyricPicker.isOpen()
+    ? "Close versions"
+    : lastLyrics?.pinned
+      ? "Other versions (showing the one you chose)"
+      : "Wrong lyrics? See the other versions LRCLIB has"
+);
+
 lyricsEditBtn.addEventListener("click", () => {
   if (lyricEditor.isEditing()) {
     lyricEditor.end();
     return;
   }
   if (!lastLyrics) return;
+  // Editing works on what the track shows, not on a version being tried.
+  lyricPicker.close();
   lyricsEditBtn.classList.add("on");
+  lyricsVersionsBtn.hidden = true;
   lyricEditor.begin({
     meta: lastMeta,
     lyrics: lastLyrics,

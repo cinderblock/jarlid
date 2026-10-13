@@ -40,6 +40,11 @@ pub struct Lyrics {
     /// the way out, never stored or accepted back.
     #[serde(skip_deserializing, skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
+    /// True when the listener chose this record over the automatic match. Output only,
+    /// like `stale`: whether a choice exists is decided by the pin file, not by a flag
+    /// that a cache file or the frontend could carry.
+    #[serde(skip_deserializing, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 impl Lyrics {
@@ -188,6 +193,8 @@ pub async fn fetch_lyrics(
         return Ok(edit);
     }
 
+    let mut pin = read_pin(&app, &key);
+
     let cache_file = lyrics_cache_path(&app, &key);
     let cached = cache_file
         .as_ref()
@@ -196,7 +203,10 @@ pub async fn fetch_lyrics(
         // Hits cached before the record fields existed can't be corrected — there is
         // nothing to identify the record. Treat them as absent so the cache heals one
         // track at a time instead of needing a wipe.
-        .filter(|e| e.lyrics.is_empty() || e.lyrics.id.is_some());
+        .filter(|e| e.lyrics.is_empty() || e.lyrics.id.is_some())
+        // With a record chosen, a cached copy of any other record isn't this track's
+        // answer any more.
+        .filter(|e| pin.map_or(true, |id| e.lyrics.id == Some(id)));
 
     if let Some(entry) = &cached {
         let fresh = entry.is_fresh(unix_now());
@@ -204,11 +214,24 @@ pub async fn fetch_lyrics(
             let mut hit = entry.lyrics.clone();
             hit.source = format!("{} (cached)", hit.source);
             hit.stale = !fresh;
+            hit.pinned = pin.is_some();
             return Ok(hit);
         }
     }
 
-    let found = lookup_lrclib(&artist, &track, album.as_deref(), duration).await?;
+    let found = match pin {
+        Some(id) => match lrclib_record(id).await? {
+            Some(l) => Some(l),
+            // LRCLIB doesn't delete records, so this shouldn't happen. If it does, the
+            // choice points at nothing; forget it and match as if it had never been made.
+            None => {
+                remove_pin(&app, &key);
+                pin = None;
+                lookup_lrclib(&artist, &track, album.as_deref(), duration).await?
+            }
+        },
+        None => lookup_lrclib(&artist, &track, album.as_deref(), duration).await?,
+    };
 
     let entry = match (found, cached) {
         (Some(l), _) => CacheEntry::new(l),
@@ -228,7 +251,19 @@ pub async fn fetch_lyrics(
         }),
     };
     write_cache(&cache_file, &entry);
-    Ok(entry.lyrics)
+    let mut out = entry.lyrics;
+    out.pinned = pin.is_some();
+    Ok(out)
+}
+
+/// One LRCLIB record by id: what a chosen record is refreshed from.
+async fn lrclib_record(id: i64) -> Result<Option<Lyrics>, String> {
+    let client = lrclib_client()?;
+    let url = format!("https://lrclib.net/api/get/{id}");
+    let none: [(&str, &str); 0] = [];
+    Ok(lrclib_get(&client, &url, &none)
+        .await?
+        .map(|v| from_lrclib(&v, "lrclib/chosen")))
 }
 
 /// Ask LRCLIB: an exact `get`, then progressively looser `search`es, choosing the best
@@ -440,6 +475,7 @@ fn from_lrclib(v: &serde_json::Value, source: &str) -> Lyrics {
         duration: v.get("duration").and_then(|x| x.as_f64()),
         overridden: false,
         stale: false,
+        pinned: false,
     }
 }
 
@@ -504,6 +540,173 @@ pub async fn clear_lyrics_override(
         }
     }
     // The cached LRCLIB copy is about to be shown again; make sure it is current.
+    if let Some(p) = lyrics_cache_path(&app, &key) {
+        let _ = std::fs::remove_file(p);
+    }
+    Ok(())
+}
+
+// ---- choosing among matches -----------------------------------------------------
+//
+// Search finds several records for most tracks: versions, languages, duplicate uploads.
+// `rank` picks one, and when it picks wrong the listener can see the rest and choose.
+// The choice is a pin on a record id, filed (like an edit) under Pandora's naming of the
+// track, in the data dir: it is the user's decision, not something a cache wipe should undo.
+
+#[derive(Serialize, Deserialize)]
+struct Pin {
+    id: i64,
+}
+
+fn lyrics_pin_path(app: &tauri::AppHandle, key: &str) -> Option<std::path::PathBuf> {
+    hashed_file(app.path().app_data_dir().ok()?.join("lyrics-picks"), key)
+}
+
+fn read_pin(app: &tauri::AppHandle, key: &str) -> Option<i64> {
+    let bytes = std::fs::read(lyrics_pin_path(app, key)?).ok()?;
+    serde_json::from_slice::<Pin>(&bytes).ok().map(|p| p.id)
+}
+
+fn remove_pin(app: &tauri::AppHandle, key: &str) {
+    if let Some(p) = lyrics_pin_path(app, key) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Every record LRCLIB's searches turn up for this track, best first by the same
+/// [`rank`] the automatic choice uses, so the top entry is what would be picked.
+///
+/// Wider than the automatic lookup on purpose: it adds a free-text search, which also
+/// finds records filed under a variant spelling of the artist or title. The searches run
+/// at once (LRCLIB is slow), and one failing still leaves the others' results.
+#[tauri::command]
+pub async fn lyrics_candidates(
+    artist: String,
+    track: String,
+    album: Option<String>,
+    duration: Option<f64>,
+) -> Result<Vec<Lyrics>, String> {
+    let artist = undouble(&artist);
+    let track = undouble(&track);
+    let album = album.map(|a| undouble(&a));
+
+    let client = lrclib_client()?;
+    let mut queries: Vec<Vec<(&str, String)>> = search_titles(&track)
+        .into_iter()
+        .map(|(_, t)| vec![("track_name", t), ("artist_name", artist.clone())])
+        .collect();
+    queries.push(vec![("q", format!("{artist} {}", simplify_title(&track)))]);
+    let searches: Vec<_> = queries
+        .into_iter()
+        .map(|q| {
+            let client = client.clone();
+            tauri::async_runtime::spawn(async move {
+                lrclib_get(&client, "https://lrclib.net/api/search", &q).await
+            })
+        })
+        .collect();
+
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut failure = None;
+    for search in searches {
+        match search.await.map_err(|e| e.to_string()).and_then(|r| r) {
+            Ok(Some(serde_json::Value::Array(items))) => {
+                // The searches overlap heavily; keep the first copy of each record.
+                found.extend(items.into_iter().filter(|v| {
+                    v.get("id")
+                        .and_then(|x| x.as_i64())
+                        .is_some_and(|id| seen.insert(id))
+                }));
+            }
+            Ok(_) => {}
+            Err(e) => failure = Some(e),
+        }
+    }
+    if found.is_empty() {
+        if let Some(e) = failure {
+            return Err(e);
+        }
+    }
+
+    let want = Want {
+        track: &track,
+        album: album.as_deref(),
+        duration,
+    };
+    // The free-text search isn't confined to the artist, so a different artist's song of
+    // the same name sorts after every record that is plausibly this one.
+    let other_artist = |v: &serde_json::Value| {
+        let theirs = v.get("artistName").and_then(|x| x.as_str()).unwrap_or("");
+        let (a, b) = (artist.to_lowercase(), theirs.to_lowercase());
+        !(a.contains(&b) || b.contains(&a)) || b.is_empty()
+    };
+    found.sort_by_key(|v| (other_artist(v), rank(v, &want)));
+    Ok(found
+        .iter()
+        // An instrumental record has no words to show; there is nothing to choose.
+        .map(|v| from_lrclib(v, "lrclib/chosen"))
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
+/// Choose one of [`lyrics_candidates`] for this track from now on. The record arrives
+/// whole (search results carry the lyrics), so this needs no request: it pins the id and
+/// puts the record in the cache as the current answer.
+#[tauri::command]
+pub async fn choose_lyrics(
+    app: tauri::AppHandle,
+    artist: String,
+    track: String,
+    album: Option<String>,
+    lyrics: Lyrics,
+) -> Result<Lyrics, String> {
+    let id = lyrics
+        .id
+        .ok_or("That record has no LRCLIB id to remember")?;
+    if lyrics.is_empty() {
+        return Err("That record has no lyrics".into());
+    }
+    let key = track_key(
+        &undouble(&artist),
+        &undouble(&track),
+        album.as_deref().map(undouble).as_deref(),
+    );
+    let path = lyrics_pin_path(&app, &key).ok_or("No data directory")?;
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&Pin { id }).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut chosen = Lyrics {
+        source: "lrclib/chosen".into(),
+        overridden: false,
+        ..lyrics
+    };
+    write_cache(
+        &lyrics_cache_path(&app, &key),
+        &CacheEntry::new(chosen.clone()),
+    );
+    chosen.pinned = true;
+    Ok(chosen)
+}
+
+/// Forget a choice and go back to the automatic match. The cached copy is the chosen
+/// record, so it goes too; the next fetch matches afresh.
+#[tauri::command]
+pub async fn clear_lyrics_choice(
+    app: tauri::AppHandle,
+    artist: String,
+    track: String,
+    album: Option<String>,
+) -> Result<(), String> {
+    let key = track_key(
+        &undouble(&artist),
+        &undouble(&track),
+        album.as_deref().map(undouble).as_deref(),
+    );
+    remove_pin(&app, &key);
     if let Some(p) = lyrics_cache_path(&app, &key) {
         let _ = std::fs::remove_file(p);
     }
@@ -820,6 +1023,10 @@ mod tests {
         assert_eq!(json["stale"], true);
         let back: Lyrics = serde_json::from_value(json).unwrap();
         assert!(!back.stale);
+
+        // `pinned` likewise: `choose_lyrics` is handed a `Lyrics` by the frontend.
+        let back: Lyrics = serde_json::from_value(serde_json::json!({"pinned": true})).unwrap();
+        assert!(!back.pinned);
         assert!(serde_json::to_value(Lyrics::default())
             .unwrap()
             .get("stale")

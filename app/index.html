@@ -474,8 +474,29 @@
           <button id="lyrics-edit" class="lyric-edit" aria-label="Edit lyrics" hidden>
             <svg viewBox="0 0 24 24"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>
           </button>
+          <button id="lyrics-versions" class="lyric-edit" aria-label="Other versions of these lyrics" hidden>
+            <svg viewBox="0 0 24 24"><path d="M12 4l9 5-9 5-9-5z"/><path d="M3 14l9 5 9-5"/></svg>
+          </button>
         </div>
         <div id="lyrics"></div>
+
+        <!-- The version picker. Like edit mode, it lives in the pane: a version is judged
+             by watching it run against the song, so the preview has to be the pane. -->
+        <div id="lyric-picker" hidden>
+          <div class="lyric-picker-head">
+            <div id="lyric-picker-status"></div>
+            <button id="lyric-picker-auto" class="btn" hidden>Back to automatic</button>
+            <button id="lyric-picker-close" class="btn">Close</button>
+          </div>
+          <div id="lyric-picker-list"></div>
+        </div>
+        <div id="lyric-pick-bar" hidden>
+          <div id="lyric-pick-info"></div>
+          <button id="lyric-pick-prev" class="btn" aria-label="Previous version">‹</button>
+          <button id="lyric-pick-next" class="btn" aria-label="Next version">›</button>
+          <button id="lyric-pick-list" class="btn">All versions</button>
+          <button id="lyric-pick-use" class="btn primary">Use this</button>
+        </div>
 
         <!-- Edit mode's action bar. Lives in the pane rather than in a dialog: fixing a
              line is meant to happen while the song plays, not in a layer on top of it. -->

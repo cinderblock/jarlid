@@ -35,6 +35,8 @@ export interface Lyrics {
   overridden: boolean;
   /// Set when this is a cached copy old enough to be worth checking again.
   stale?: boolean;
+  /// Set when the listener chose this record over the automatic match.
+  pinned?: boolean;
 }
 
 export interface EditorContext {
