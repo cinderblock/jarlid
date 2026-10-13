@@ -430,6 +430,35 @@ transient but persists for hours.
   is blank for the few seconds SSDP takes to rediscover the device, and that is the entire
   cost.
 
+## 2026-10-12 — "updating to v1.11.5 after this song", for many songs (fixed in v1.11.6)
+
+**Reported:** v1.11.4 showed `updating to v1.11.5 after this song` and never installed,
+across many songs.
+
+**Cause: the last-moment check contradicted `decide()`.** `try_install` stood down when
+`paused_now() != (resume == Resume::Paused)`. That compares the engine to the *decision*,
+not to what was observed. The two agree except in the remote case: a speaker owning
+playback resolves to `Resume::Paused` even with local audio running (the "don't come back
+over the speaker" rule). Then the check sees local audio playing, reads it as "the listener
+just hit play", and stands down. That repeats at every boundary and at the `MAX_WAIT`
+backstop, so the update never lands while music plays. Only a 30 s pause would get it
+through.
+
+The 2026-08-15 section called this combination "barely reachable". In v1.11.4 it was the
+normal state: `REMOTE_ACTIVE` went stale whenever a paused WiiM was followed by local
+playback (see `plans/source-focus.md`). It is still reachable in v1.11.5+ by setting focus
+to the speaker while local audio is playing.
+
+**Fix:** `changed_since(seen, paused_now)` compares against the playback that was observed
+when deciding. `Unknown` → an engine appearing counts as a change. A test runs every
+`decide`-allowed combination through the check and requires that nothing stands down when
+nothing changed.
+
+**As always, the fix ships in the successor.** A stuck v1.11.4 still livelocks. Clicking
+the badge doesn't help, because a forced install goes through the same check and stands
+down too. What gets it out: pause for about a minute (the paused path compares paused
+against paused and goes through), or install v1.11.6 by hand.
+
 ## The waiting policy (user's rule)
 
 > *"If we have to, interrupting and resuming a running song is OK. But always prefer

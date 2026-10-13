@@ -512,7 +512,7 @@ fn try_install(
     // restart the app into the state they just left, which is precisely the interruption
     // all of this exists to avoid. Standing down costs nothing: the next tick or boundary
     // picks it up again, with the state re-read.
-    if paused_now(app).is_some_and(|p| p != (resume == Resume::Paused)) {
+    if changed_since(c.playback, paused_now(app)) {
         eprintln!("[updater] stood down ({why}): playback changed while arming");
         disarm_resume_paused(app);
         *ctl.staged.lock().unwrap() = Some(staged);
@@ -593,6 +593,28 @@ pub fn take_resume_paused(app: &tauri::AppHandle) -> bool {
         eprintln!("[updater] ignoring a stale paused-restart marker");
     }
     ours && fresh
+}
+
+/// Has local playback moved since the decision was made? `now` is [`paused_now`].
+///
+/// Compared against what was *observed*, never against the [`Resume`] that came out of
+/// [`decide`]. The two usually agree, but not while a network player owns playback: that
+/// resolves to `Resume::Paused` even with local audio running, so the speaker isn't joined
+/// by a second source after the restart. Checking `Resume` there read local audio that had
+/// been playing all along as "the listener just hit play", and stood down. That happened at
+/// every track boundary and at the backstop, so the update never landed while music played.
+/// In v1.11.4 a stale speaker flag made that the normal state, and the badge said "after this
+/// song" for an entire evening.
+///
+/// Not being able to tell (`None`) is no reason to change course. An engine that has
+/// *appeared* since we saw none is: there is now something a restart would interrupt.
+fn changed_since(seen: Playback, now: Option<bool>) -> bool {
+    match (seen, now) {
+        (_, None) => false,
+        (Playback::Playing, Some(paused)) => paused,
+        (Playback::Paused, Some(paused)) => !paused,
+        (Playback::Unknown, Some(_)) => true,
+    }
 }
 
 /// Local paused state without awaiting, for the last look before an irreversible step.
@@ -1275,5 +1297,62 @@ mod tests {
             Duration::ZERO,
             "and it is certainly not being played"
         );
+    }
+
+    /// An install that `decide` allows must not then be called off by the last-moment check
+    /// when nothing has changed. The two disagreeing is a livelock: "installing…", stand
+    /// down, repeat at every boundary, forever. v1.11.4 did exactly that whenever a speaker
+    /// was thought to own playback while local audio ran, because remote resolves to
+    /// `Resume::Paused` and the check compared against that instead of what it had seen.
+    #[test]
+    fn an_allowed_install_is_not_stood_down_when_nothing_changed() {
+        for remote in [false, true] {
+            for playback in [Playback::Playing, Playback::Paused] {
+                for may_interrupt in [true, false] {
+                    let c = Conditions {
+                        remote,
+                        playback,
+                        may_interrupt,
+                        ..ready()
+                    };
+                    if decide(c).is_err() {
+                        continue;
+                    }
+                    let unchanged = Some(playback == Playback::Paused);
+                    assert!(
+                        !changed_since(playback, unchanged),
+                        "stood down with nothing changed: {c:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The stuck case itself: a track boundary while a speaker is thought to own playback and
+    /// local audio is running. It installs, comes back paused, and is not stood down.
+    #[test]
+    fn a_boundary_with_a_speaker_flag_and_local_audio_installs() {
+        let c = Conditions {
+            remote: true,
+            ..ready()
+        };
+        assert_eq!(decide(c), Ok(Resume::Paused));
+        assert!(!changed_since(Playback::Playing, Some(false)));
+    }
+
+    /// What the check is for: the listener pressing play or pause in the moment between the
+    /// notice and the install.
+    #[test]
+    fn stands_down_when_playback_really_changed() {
+        assert!(changed_since(Playback::Playing, Some(true)));
+        assert!(changed_since(Playback::Paused, Some(false)));
+        // An engine that appeared after we decided on a blind spot: there is now something a
+        // restart would interrupt.
+        assert!(changed_since(Playback::Unknown, Some(false)));
+        assert!(changed_since(Playback::Unknown, Some(true)));
+        // Can't tell: carry on.
+        for seen in [Playback::Playing, Playback::Paused, Playback::Unknown] {
+            assert!(!changed_since(seen, None));
+        }
     }
 }
