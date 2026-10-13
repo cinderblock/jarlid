@@ -214,6 +214,8 @@ pub struct Settings {
     pub output_device: Option<String>,
     /// Keep downloaded songs on disk so a repeat doesn't download them again.
     pub audio_cache: AudioCache,
+    /// Write everything the app logs to a file. Off unless asked for; see `debug_log`.
+    pub debug_log: bool,
 }
 
 /// Songs kept on disk. See `engine::cache`.
@@ -406,6 +408,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Setting
     // which reads as a broken setting rather than a deferred one.
     crate::native::apply_blend(&app, &settings.blend);
     crate::native::apply_audio_cache(&app, &settings.audio_cache);
+    crate::debug_log::apply(&app, settings.debug_log);
     Ok(settings)
 }
 
@@ -521,6 +524,13 @@ mod tests {
         );
     }
 
+    /// A settings file from before the debug log existed must not start writing one.
+    #[test]
+    fn older_settings_files_do_not_log() {
+        let s: Settings = serde_json::from_str(r#"{"volume": 80}"#).unwrap();
+        assert!(!s.debug_log);
+    }
+
     /// A settings file from before the cache existed must not start keeping songs: it was
     /// never asked for.
     #[test]
@@ -619,7 +629,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024}}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false}"#
         );
 
         let daily = Settings {
@@ -641,6 +651,7 @@ mod tests {
                 enabled: true,
                 max_mb: 2048,
             },
+            debug_log: true,
         };
         let text = serde_json::to_string(&daily).unwrap();
         assert!(text.contains(r#""updatePolicy":"notifyOnly""#), "{text}");

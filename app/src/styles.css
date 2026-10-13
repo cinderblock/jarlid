@@ -2173,6 +2173,10 @@ body.remote #remote-vol-wrap {
 .set-item-status:empty {
   display: none;
 }
+/* A path deep in AppData, with no spaces to break at. */
+#set-debug-log-path {
+  overflow-wrap: anywhere;
+}
 
 @media (min-width: 760px) {
   /* The control sits in the title's row, so its centre lands on the title's

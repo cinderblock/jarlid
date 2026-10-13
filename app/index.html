@@ -372,6 +372,34 @@
               </label>
             </div>
           </section>
+
+          <!-- Last, because nobody needs it until something has gone wrong. -->
+          <section class="set-section">
+            <h3>Troubleshooting</h3>
+            <div class="set-item">
+              <b class="set-item-title">Keep a debug log</b>
+              <div class="set-item-text">
+                <p>Writes what Jarlid notices while it plays to a file: each song starting and
+                  ending, the audio device it opened, any glitch the sound card reported and
+                  whether the audio buffer grew because of it, and any error. Useful for working
+                  out what happened after a skip or a crackle. It stays on, across restarts and
+                  updates, until you turn it off. It stops growing at 16&nbsp;MB.</p>
+              </div>
+              <div class="set-item-ctl">
+                <input id="set-debug-log" type="checkbox" aria-label="Keep a debug log" />
+              </div>
+            </div>
+
+            <div class="set-item">
+              <b class="set-item-title">Log file</b>
+              <div class="set-item-text">
+                <p id="set-debug-log-path" class="set-item-status"></p>
+              </div>
+              <div class="set-item-ctl">
+                <button id="set-debug-log-show" class="btn">Show log</button>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </div>

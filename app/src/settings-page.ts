@@ -35,6 +35,9 @@ const cacheSizeItem = $("set-cache-size-item");
 const cacheUsageItem = $("set-cache-usage-item");
 const cacheUsage = $("set-cache-usage");
 const cacheClearBtn = $<HTMLButtonElement>("set-cache-clear");
+const debugLog = $<HTMLInputElement>("set-debug-log");
+const debugLogPath = $("set-debug-log-path");
+const debugLogShow = $<HTMLButtonElement>("set-debug-log-show");
 
 type Policy = "instant" | "afterSong" | "manualInstall" | "notifyOnly";
 type CheckSchedule =
@@ -71,6 +74,8 @@ interface Settings {
   /** `null` means follow the Windows default, and keep following it. */
   outputDevice: string | null;
   audioCache: AudioCache;
+  /** Write everything the app logs to a file; see `debug_log.rs`. */
+  debugLog: boolean;
 }
 
 /** The value used for "follow the Windows default", which is `null` on the wire. */
@@ -222,6 +227,7 @@ async function refreshSettings() {
     await refreshOutputDevices();
     await refreshOutputNow();
     await refreshCacheStats();
+    await refreshDebugLogPath();
   } catch {
     // Can't read them — don't show controls whose state would be a guess.
     setEnabled(false);
@@ -242,6 +248,7 @@ function setEnabled(on: boolean) {
   blendRestore.disabled = !on;
   cacheEnabled.disabled = !on;
   cacheSizeSel.setDisabled(!on);
+  debugLog.disabled = !on;
 }
 
 /** Defaults for a settings file written before blending existed. */
@@ -385,6 +392,7 @@ function render(s: Settings) {
   reflectBlend();
   cacheEnabled.checked = (s.audioCache ?? NO_CACHE).enabled;
   reflectCache();
+  debugLog.checked = s.debugLog ?? false;
   const sched = s.checkSchedule;
   scheduleSel.setOptions(scheduleOptions(sched));
   scheduleSel.value =
@@ -471,6 +479,7 @@ async function persist() {
     blend: readBlend(),
     outputDevice: readOutput(),
     audioCache: readCache(),
+    debugLog: debugLog.checked,
   };
   timeInput.hidden = next.checkSchedule.kind !== "dailyAt";
   // Disabling a control takes focus with it, so a keyboard user would be dropped
@@ -558,6 +567,23 @@ $("set-recents-order").addEventListener("change", () => {
 cacheEnabled.addEventListener("change", () => {
   cacheSizeItem.hidden = !cacheEnabled.checked;
   void persist();
+});
+
+debugLog.addEventListener("change", () => void persist());
+
+/** Say where the log is, in full: the folder is three levels deep in AppData. */
+async function refreshDebugLogPath() {
+  try {
+    debugLogPath.textContent = (await invoke<string | null>("debug_log_path")) ?? "";
+  } catch {
+    debugLogPath.textContent = "";
+  }
+}
+
+debugLogShow.addEventListener("click", () => {
+  invoke("debug_log_reveal").catch((err) => {
+    debugLogPath.textContent = `Could not open the log folder: ${err}`;
+  });
 });
 
 cacheClearBtn.addEventListener("click", async () => {

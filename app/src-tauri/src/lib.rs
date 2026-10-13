@@ -1,4 +1,5 @@
 mod build_info;
+mod debug_log;
 mod diagnostics;
 mod export;
 mod focus;
@@ -605,6 +606,8 @@ pub fn run() {
             native::audio_cache_clear,
             native::native_set_output,
             native::native_output_device,
+            debug_log::debug_log_path,
+            debug_log::debug_log_reveal,
             player_cmd,
             remote_cmd,
             remote_presets,
@@ -613,6 +616,13 @@ pub fn run() {
             remote_play_station
         ])
         .setup(|app| {
+            // First, so the log has everything after it: the engine's start, the device it
+            // opens, the first track. Off unless turned on in Settings.
+            debug_log::apply(
+                app.handle(),
+                settings::get(app.handle()).debug_log,
+            );
+
             // The native engine: speaks Pandora's protocol directly and plays audio itself.
             // It emits the same `engine://` events the webview bridge did, so the UI, SMTC
             // session, thumb toolbar and lyrics sync need no changes.

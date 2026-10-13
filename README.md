@@ -136,6 +136,14 @@ anywhere in it.
   Credential Manager); and how updates should arrive. Every control on the page is drawn by
   the app rather than by the platform, so the dropdowns, radios and sliders belong to the
   same UI as everything else.
+- **Debug log (opt-in)**: a switch under Troubleshooting in Settings writes everything Jarlid
+  logs to `%LOCALAPPDATA%\com.camer.pandora-desktop\logs\jarlid.log`, stamped with the local
+  time to the millisecond. That covers each song starting and ending, the audio device and buffer
+  size opened, every device underrun and starved stretch with where in the song it happened, the
+  buffer growing, stalls being recovered, errors and panics. Off by default; once on it stays on
+  across restarts and updates. A release build has no console, so without it all of that is
+  thrown away. It captures stderr itself, so nothing that logs needs to know about it. Capped at
+  two 8 MB files.
 - **Updates that never interrupt anything**: the installer is downloaded and
   signature-verified in the background, then installed at a moment that costs you nothing.
   If the music is paused it goes in immediately and silently, and Jarlid comes back *still
