@@ -74,3 +74,20 @@ express).
 
 - Don't store pins in the cache dir. A cache wipe would silently undo the user's choice.
 - Don't let a preview overwrite `lastLyrics`. `revalidateLyrics` and the editor both key off it.
+
+## Follow-up under discussion — dual-lyric (two-language) records (2026-10-13)
+
+Not started; waiting on Cameron's go-ahead.
+
+- "Split Brain Version" seems specific to Madelline's "Dopamine" (`q=split brain` finds nothing else
+  of the kind). Dual-language *lines* are a general pattern, though.
+- LRCLIB's Lyricsfile 1.0 (`server/src/lyricsfile.rs` in tranxuanthang/lrclib) has `lines[]` with
+  `text`, `start_ms`, `end_ms` and `words`, and nothing for a second voice or translation. So any
+  detection has to come from the text.
+- Encodings seen in the Dopamine records: `FR - EN` (35090140), `EN (FR)` (11043109),
+  `FR (EN)` (33421579). Translated LRC files elsewhere also use two lines with the same timestamp.
+- The trap: parentheses usually mean backing vocals (`(ooh)`, echoes), not a second language.
+  Treat it as dual only when the split is consistent across most lines of the file.
+- Proposed display: two lines per row. The main voice is shown as usual, the second smaller and dimmer
+  beneath it, and both light up together. The status line says "· 2 languages" with a swap/hide toggle,
+  remembered per track.
