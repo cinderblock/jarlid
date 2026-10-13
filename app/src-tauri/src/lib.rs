@@ -601,6 +601,8 @@ pub fn run() {
             native::native_set_mode,
             native::native_volume,
             native::native_output_devices,
+            native::audio_cache_stats,
+            native::audio_cache_clear,
             native::native_set_output,
             native::native_output_device,
             player_cmd,

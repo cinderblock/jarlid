@@ -265,6 +265,45 @@
           </section>
 
           <section class="set-section">
+            <h3>Saved songs</h3>
+            <div class="set-item">
+              <b class="set-item-title">Keep songs on this computer</b>
+              <div class="set-item-text">
+                <p>Pandora repeats songs, and each repeat downloads the whole song again. With
+                  this on, each song is saved as it is downloaded, and a repeat plays from disk.
+                  The next song is fetched in full while the current one plays, which uses no
+                  more data than streaming it would.</p>
+                <p>Off unless you turn it on: Pandora's terms don't generally allow keeping
+                  their music outside their own offline feature.</p>
+              </div>
+              <div class="set-item-ctl">
+                <input id="set-cache-enabled" type="checkbox"
+                  aria-label="Keep songs on this computer" />
+              </div>
+            </div>
+
+            <div class="set-item" id="set-cache-size-item" hidden>
+              <b class="set-item-title">Space to use</b>
+              <div class="set-item-text">
+                <p>When it is full, the songs played longest ago make room for new ones.</p>
+              </div>
+              <div class="set-item-ctl">
+                <div class="select" id="set-cache-size"></div>
+              </div>
+            </div>
+
+            <div class="set-item" id="set-cache-usage-item" hidden>
+              <b class="set-item-title">On disk now</b>
+              <div class="set-item-text">
+                <p id="set-cache-usage" class="set-item-status"></p>
+              </div>
+              <div class="set-item-ctl">
+                <button id="set-cache-clear" class="btn">Delete saved songs</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="set-section">
             <h3>Account</h3>
             <div class="set-item">
               <b id="set-account" class="set-item-title">Checking…</b>

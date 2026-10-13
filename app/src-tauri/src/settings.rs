@@ -212,6 +212,36 @@ pub struct Settings {
     /// moves with it. A name that is not present right now is kept rather than rewritten, so
     /// plugging the device back in restores the choice.
     pub output_device: Option<String>,
+    /// Keep downloaded songs on disk so a repeat doesn't download them again.
+    pub audio_cache: AudioCache,
+}
+
+/// Songs kept on disk. See `engine::cache`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AudioCache {
+    /// Off unless asked for: Pandora's terms generally don't allow keeping their audio, so
+    /// this is the user's decision to make, not ours.
+    pub enabled: bool,
+    /// The most disk it may use, in MiB (the unit the size picker offers).
+    pub max_mb: u32,
+}
+
+impl Default for AudioCache {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_mb: 1024,
+        }
+    }
+}
+
+impl AudioCache {
+    /// The cap in bytes. At least one song's worth, so a hand-edited zero doesn't turn every
+    /// download into an immediate delete.
+    pub fn max_bytes(&self) -> u64 {
+        u64::from(self.max_mb.max(16)) * 1024 * 1024
+    }
 }
 
 /// How one song gives way to the next.
@@ -375,6 +405,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Setting
     // apply live from the UI; blending would otherwise appear to do nothing until a restart,
     // which reads as a broken setting rather than a deferred one.
     crate::native::apply_blend(&app, &settings.blend);
+    crate::native::apply_audio_cache(&app, &settings.audio_cache);
     Ok(settings)
 }
 
@@ -490,6 +521,29 @@ mod tests {
         );
     }
 
+    /// A settings file from before the cache existed must not start keeping songs: it was
+    /// never asked for.
+    #[test]
+    fn older_settings_files_do_not_cache_audio() {
+        let s: Settings = serde_json::from_str(r#"{"volume": 80}"#).unwrap();
+        assert!(!s.audio_cache.enabled);
+        assert_eq!(s.audio_cache, AudioCache::default());
+    }
+
+    #[test]
+    fn the_cache_size_is_never_zero() {
+        let tiny = AudioCache {
+            enabled: true,
+            max_mb: 0,
+        };
+        assert!(tiny.max_bytes() >= 16 * 1024 * 1024);
+        let gig = AudioCache {
+            enabled: true,
+            max_mb: 1024,
+        };
+        assert_eq!(gig.max_bytes(), 1 << 30);
+    }
+
     /// Updating in the gap after a song is the default: it keeps itself current without
     /// ever interrupting a track.
     #[test]
@@ -565,7 +619,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024}}"#
         );
 
         let daily = Settings {
@@ -583,6 +637,10 @@ mod tests {
                 restore_tempo: false,
             },
             output_device: Some("Speakers (USB DAC)".into()),
+            audio_cache: AudioCache {
+                enabled: true,
+                max_mb: 2048,
+            },
         };
         let text = serde_json::to_string(&daily).unwrap();
         assert!(text.contains(r#""updatePolicy":"notifyOnly""#), "{text}");

@@ -30,6 +30,11 @@ const blendRestore = $<HTMLInputElement>("set-blend-restore");
 const blendLengthItem = $("set-blend-length-item");
 const blendPullItem = $("set-blend-pull-item");
 const blendRestoreItem = $("set-blend-restore-item");
+const cacheEnabled = $<HTMLInputElement>("set-cache-enabled");
+const cacheSizeItem = $("set-cache-size-item");
+const cacheUsageItem = $("set-cache-usage-item");
+const cacheUsage = $("set-cache-usage");
+const cacheClearBtn = $<HTMLButtonElement>("set-cache-clear");
 
 type Policy = "instant" | "afterSong" | "manualInstall" | "notifyOnly";
 type CheckSchedule =
@@ -44,6 +49,16 @@ interface Blend {
   maxPullPercent: number;
   restoreTempo: boolean;
 }
+interface AudioCache {
+  enabled: boolean;
+  /** MiB. */
+  maxMb: number;
+}
+/** What the song cache holds right now; see `engine::cache::CacheStats`. */
+interface CacheStats {
+  bytes: number;
+  songs: number;
+}
 interface Settings {
   updatePolicy: Policy;
   checkSchedule: CheckSchedule;
@@ -55,6 +70,7 @@ interface Settings {
   volume: number;
   /** `null` means follow the Windows default, and keep following it. */
   outputDevice: string | null;
+  audioCache: AudioCache;
 }
 
 /** The value used for "follow the Windows default", which is `null` on the wire. */
@@ -88,6 +104,28 @@ const outputSel = createSelect($("set-output-device"), [{ value: FOLLOW_DEFAULT,
     // The engine takes about a second to move the stream; ask again once it has.
     setTimeout(() => void refreshOutputNow(), 1400);
   },
+});
+
+/** Sizes offered for the song cache, in MiB. */
+const CACHE_SIZES_MB = [256, 512, 1024, 2048, 5120, 10240];
+
+/** For a settings file written before the cache existed. Matches `AudioCache::default`. */
+const NO_CACHE: AudioCache = { enabled: false, maxMb: 1024 };
+
+/**
+ * What one song takes on disk, until the cache holds enough of them to say for itself:
+ * four minutes at 128 kbit/s, which is the stream Pandora usually grants.
+ */
+const NOMINAL_SONG_BYTES = 4 * 60 * (128_000 / 8);
+
+/** Songs averaged before the real figure replaces the nominal one. */
+const MEASURED_AFTER = 5;
+
+let cacheStats: CacheStats = { bytes: 0, songs: 0 };
+
+const cacheSizeSel = createSelect($("set-cache-size"), [], {
+  label: "Space to use for saved songs",
+  onChange: () => void persist(),
 });
 
 let current: Settings | null = null;
@@ -183,6 +221,7 @@ async function refreshSettings() {
     // Both depend on `current`, so they follow the render rather than racing it.
     await refreshOutputDevices();
     await refreshOutputNow();
+    await refreshCacheStats();
   } catch {
     // Can't read them — don't show controls whose state would be a guess.
     setEnabled(false);
@@ -201,6 +240,8 @@ function setEnabled(on: boolean) {
   blendSeconds.disabled = !on;
   blendPull.disabled = !on;
   blendRestore.disabled = !on;
+  cacheEnabled.disabled = !on;
+  cacheSizeSel.setDisabled(!on);
 }
 
 /** Defaults for a settings file written before blending existed. */
@@ -247,6 +288,88 @@ function reflectBlend() {
       : `±${blend.maxPullPercent}% · ±${atOneTwentyEight.toFixed(1)} BPM at 128`;
 }
 
+function formatMb(mb: number): string {
+  if (mb < 1024) return `${mb} MB`;
+  const gb = mb / 1024;
+  return `${Number.isInteger(gb) ? gb : gb.toFixed(1)} GB`;
+}
+
+function formatBytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1) return "under 1 MB";
+  if (mb < 1024) return `${Math.round(mb)} MB`;
+  return `${(mb / 1024).toFixed(1)} GB`;
+}
+
+/**
+ * Roughly how many songs `mb` holds, from the songs actually saved once there are enough to
+ * average. Rounded so it reads as the estimate it is: "about 260", not "about 263".
+ */
+function songsIn(mb: number): string {
+  const perSong =
+    cacheStats.songs >= MEASURED_AFTER ? cacheStats.bytes / cacheStats.songs : NOMINAL_SONG_BYTES;
+  const n = (mb * 1024 * 1024) / perSong;
+  const step = n < 100 ? 5 : n < 1000 ? 10 : 100;
+  return (Math.round(n / step) * step).toLocaleString();
+}
+
+/**
+ * The size list for a stored cap. A cap this build doesn't offer (hand-edited, or from a
+ * newer version) gets its own entry rather than being snapped to a neighbour, for the same
+ * reason as `scheduleOptions`.
+ */
+function cacheSizeOptions(stored: number): Option[] {
+  const sizes = CACHE_SIZES_MB.includes(stored)
+    ? CACHE_SIZES_MB
+    : [...CACHE_SIZES_MB, stored].sort((a, b) => a - b);
+  return sizes.map((mb) => ({
+    value: String(mb),
+    label: `${formatMb(mb)} · about ${songsIn(mb)} songs`,
+  }));
+}
+
+function readCache(): AudioCache {
+  return {
+    enabled: cacheEnabled.checked,
+    maxMb: Number(cacheSizeSel.value) || NO_CACHE.maxMb,
+  };
+}
+
+/**
+ * Show the size only while the cache is on, and the usage whenever there is anything to
+ * report. Songs saved before the cache was turned off are still on disk, and saying so
+ * (with the button to delete them) is the honest answer to turning it off.
+ */
+function reflectCache() {
+  const cache = current?.audioCache ?? NO_CACHE;
+  const enabled = cacheEnabled.checked;
+  cacheSizeItem.hidden = !enabled;
+  cacheSizeSel.setOptions(cacheSizeOptions(cache.maxMb));
+  cacheSizeSel.value = String(cache.maxMb);
+
+  const { bytes, songs } = cacheStats;
+  cacheUsageItem.hidden = !enabled && songs === 0;
+  cacheClearBtn.disabled = songs === 0;
+  if (songs === 0) {
+    // The song playing when it is switched on was streamed, so saving starts with the next.
+    cacheUsage.textContent = "Nothing saved yet. Saving starts with the next song.";
+  } else {
+    const what = `${formatBytes(bytes)} for ${songs.toLocaleString()} song${songs === 1 ? "" : "s"}`;
+    cacheUsage.textContent = enabled
+      ? `${what}, of ${formatMb(cache.maxMb)}.`
+      : `${what}, still on disk from before saving was turned off.`;
+  }
+}
+
+async function refreshCacheStats() {
+  try {
+    cacheStats = await invoke<CacheStats>("audio_cache_stats");
+  } catch {
+    cacheStats = { bytes: 0, songs: 0 };
+  }
+  reflectCache();
+}
+
 function render(s: Settings) {
   policyRadios().forEach((r) => (r.checked = r.value === s.updatePolicy));
   themeRadios().forEach((r) => (r.checked = r.value === (s.theme ?? "system")));
@@ -260,6 +383,8 @@ function render(s: Settings) {
   blendPull.value = String(blend.maxPullPercent);
   blendRestore.checked = blend.restoreTempo;
   reflectBlend();
+  cacheEnabled.checked = (s.audioCache ?? NO_CACHE).enabled;
+  reflectCache();
   const sched = s.checkSchedule;
   scheduleSel.setOptions(scheduleOptions(sched));
   scheduleSel.value =
@@ -345,6 +470,7 @@ async function persist() {
     volume: readVolume(),
     blend: readBlend(),
     outputDevice: readOutput(),
+    audioCache: readCache(),
   };
   timeInput.hidden = next.checkSchedule.kind !== "dailyAt";
   // Disabling a control takes focus with it, so a keyboard user would be dropped
@@ -354,6 +480,8 @@ async function persist() {
   try {
     current = await invoke<Settings>("set_settings", { settings: next });
     render(current);
+    // A smaller cap evicts at once, so the usage line may have changed.
+    void refreshCacheStats();
   } catch {
     // Roll back to what is actually stored rather than leaving the UI asserting
     // something that was never saved — including the theme and the volume, both of
@@ -424,6 +552,34 @@ $("set-theme").addEventListener("change", () => {
 $("set-recents-order").addEventListener("change", () => {
   setRecentsOrder(readRecentsOrder());
   void persist();
+});
+
+// The size item appears with the switch, so the layout moves on the click.
+cacheEnabled.addEventListener("change", () => {
+  cacheSizeItem.hidden = !cacheEnabled.checked;
+  void persist();
+});
+
+cacheClearBtn.addEventListener("click", async () => {
+  // Two-step, like signing out: a stray click would cost every saved song a download.
+  if (cacheClearBtn.dataset.armed !== "1") {
+    cacheClearBtn.dataset.armed = "1";
+    cacheClearBtn.textContent = "Really delete them?";
+    setTimeout(() => {
+      cacheClearBtn.dataset.armed = "";
+      cacheClearBtn.textContent = "Delete saved songs";
+    }, 4000);
+    return;
+  }
+  cacheClearBtn.dataset.armed = "";
+  cacheClearBtn.textContent = "Delete saved songs";
+  try {
+    cacheStats = await invoke<CacheStats>("audio_cache_clear");
+  } catch {
+    await refreshCacheStats();
+    return;
+  }
+  reflectCache();
 });
 
 function close() {

@@ -48,6 +48,19 @@ anywhere in it.
   the output device's rate, streamed with a lock-free ring buffer. Playback position is measured
   from frames actually delivered to the device, which is what keeps synced lyrics honest — decoding
   runs several seconds ahead of what you hear.
+- **Holds up on a busy machine**: the decoder registers with Windows' multimedia scheduler, and
+  the device buffer adapts. It starts at 30 ms, too short to notice on a pause, and when the
+  machine is busy enough for the sound card to run dry twice in a minute, it doubles, up to
+  240 ms. After ten quiet minutes it shrinks back. The playhead accounts for audio still waiting
+  in that buffer, so synced lyrics stay on time at any size. Both kinds of dropout are counted in
+  the issue report: silence from decoding falling behind, and underruns from the output being
+  late.
+- **Saved songs (opt-in)**: Pandora repeats songs, and each repeat would otherwise be downloaded
+  again. Turn this on and pick a size in Settings (each size shows roughly how many songs it
+  holds). The next song is fetched whole while the current one plays and saved, so a first play
+  uses no more data than streaming would, and a repeat plays from disk. The songs played longest
+  ago make room when it fills. Adverts are never saved. Off by default, because Pandora's terms
+  don't generally allow keeping their audio outside their own offline feature.
 - **Playback that survives being left alone**: a long pause releases the stream and the audio
   device rather than sitting on a connection that the far end will quietly drop, and pressing play
   re-opens the track and seeks back to the second you paused on. The same watchdog covers a stream
@@ -175,6 +188,7 @@ A Tauri app whose only webview is our own UI. Three library crates do the real w
   order and is allowed to think, unlike the output callback, where a lock once caused continuous
   scratchiness.
 - **`crates/engine`** — the radio. Queue refill, auto-advance, transport, thumbs, station Modes,
+  the adaptive device-buffer policy, the opt-in song cache (`cache.rs`, keyed by `pandora_id`),
   and credentials in the Windows Credential Manager.
 
 `app/src-tauri/src/native.rs` drives the engine and emits the same `engine://` events the old

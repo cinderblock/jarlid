@@ -50,6 +50,49 @@ pub fn apply_blend(app: &AppHandle, blend: &crate::settings::Blend) {
     engine.set_blend(blend_of(blend));
 }
 
+/// Where cached songs live. The cache dir rather than the data dir: everything in it can be
+/// downloaded again, and Windows' disk cleanup is entitled to throw it away.
+fn audio_cache_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    Some(app.path().app_cache_dir().ok()?.join("audio"))
+}
+
+/// The engine's view of the cache setting: `None` when it is off.
+fn cache_of(app: &AppHandle, cache: &crate::settings::AudioCache) -> Option<engine::CacheConfig> {
+    if !cache.enabled {
+        return None;
+    }
+    Some(engine::CacheConfig {
+        dir: audio_cache_dir(app)?,
+        max_bytes: cache.max_bytes(),
+    })
+}
+
+/// Push the cache setting at a running engine, if there is one. Same shape as [`apply_blend`].
+pub fn apply_audio_cache(app: &AppHandle, cache: &crate::settings::AudioCache) {
+    let Some(engine) = app.state::<NativeEngine>().try_engine() else {
+        return;
+    };
+    engine.set_audio_cache(cache_of(app, cache));
+}
+
+/// How much the song cache holds, for the Settings page. Works signed out, and with the cache
+/// turned off, since songs kept before it was turned off are still on disk.
+#[tauri::command]
+pub fn audio_cache_stats(app: AppHandle) -> engine::CacheStats {
+    audio_cache_dir(&app)
+        .map(|dir| engine::cache::stats(&dir))
+        .unwrap_or_default()
+}
+
+/// Delete every cached song. Returns what is left, which is only ever the song playing now:
+/// Windows won't delete a file that is open.
+#[tauri::command]
+pub fn audio_cache_clear(app: AppHandle) -> engine::CacheStats {
+    audio_cache_dir(&app)
+        .map(|dir| engine::cache::clear(&dir))
+        .unwrap_or_default()
+}
+
 /// Where the last-played station is remembered, so launching resumes what you were listening to
 /// rather than whatever happens to sort first.
 fn last_station_path(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -209,6 +252,7 @@ async fn attach(
     engine.set_volume(saved.volume.amplitude());
     engine.set_output(output_of(saved.output_device.as_deref()));
     engine.set_blend(blend_of(&saved.blend));
+    engine.set_audio_cache(cache_of(app, &saved.audio_cache));
 
     // Station list for the picker and the Stations page. Tokens go with it (switching
     // station and exporting one both need the token), and so do Pandora's special-station

@@ -16,6 +16,7 @@ serde_json = "1"
 # Windows Credential Manager, so the password is encrypted per-user by the OS rather than
 # sitting in a dotfile next to the binary.
 keyring = { version = "3", features = ["windows-native"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

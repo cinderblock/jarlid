@@ -7,12 +7,14 @@
 //! is not `Send` on Windows. Everything here is async and talks to it by message.
 
 mod audio_thread;
+pub mod cache;
 pub mod credentials;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use audio_thread::{AudioThread, Start};
+pub use cache::{CacheConfig, CacheStats};
 use pandora::Track;
 use tokio::sync::{mpsc, Mutex};
 
@@ -165,6 +167,11 @@ pub struct Engine {
     events: mpsc::UnboundedSender<Event>,
     /// How to end a song. Read every tick of `run`, so a plain lock rather than the async one.
     blend: std::sync::Mutex<BlendConfig>,
+    /// Where songs are kept on disk, or `None` when the user has not turned the cache on.
+    cache: std::sync::Mutex<Option<CacheConfig>>,
+    /// For cache downloads. Separate from the Pandora client, which sits behind the state lock
+    /// and would hold up every other call for the seconds a download takes.
+    http: reqwest::Client,
 }
 
 impl Engine {
@@ -189,6 +196,8 @@ impl Engine {
             audio: Arc::new(AudioThread::spawn()),
             events,
             blend: std::sync::Mutex::new(BlendConfig::default()),
+            cache: std::sync::Mutex::new(None),
+            http: reqwest::Client::new(),
         };
 
         Ok((engine, receiver))
@@ -423,7 +432,7 @@ impl Engine {
             next.track
         };
 
-        self.audio.play(&track.audio_url, start);
+        self.audio.play(&self.source_of(&track), start);
         let _ = self.events.send(Event::TrackStarted(Box::new(track)));
 
         // A `TrackStarted` that did not start anything would otherwise leave the event stream
@@ -495,6 +504,71 @@ impl Engine {
         self.blend.lock().map(|b| *b).unwrap_or_default()
     }
 
+    /// Keep songs on disk, or stop (`None`). Takes effect from the next track; a smaller size is
+    /// enforced at once.
+    ///
+    /// Turning the cache off stops it being read or written, but does not delete it. That is
+    /// [`cache::clear`]'s job, and the Settings page offers it next to the switch.
+    pub fn set_audio_cache(&self, config: Option<CacheConfig>) {
+        if let Ok(mut slot) = self.cache.lock() {
+            *slot = config.clone();
+        }
+        if let Some(config) = config {
+            // Without the queue there is no knowing what is about to play, and evicting that
+            // would cost a download. A busy lock just means the next download does the evicting.
+            if let Ok(state) = self.state.try_lock() {
+                let keep = cache_pins(&state);
+                let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
+                cache::evict(&config.dir, config.max_bytes, &keep);
+            }
+        }
+    }
+
+    fn cache_config(&self) -> Option<CacheConfig> {
+        self.cache.lock().ok()?.clone()
+    }
+
+    /// What to hand the audio thread for `track`: its file in the cache when there is one,
+    /// otherwise its stream URL.
+    fn source_of(&self, track: &Track) -> String {
+        self.cache_config()
+            .filter(|_| cacheable(track))
+            .and_then(|config| cache::take(&config.dir, &track.pandora_id))
+            .and_then(|path| path.to_str().map(str::to_string))
+            .unwrap_or_else(|| track.audio_url.clone())
+    }
+
+    /// Download the next track whole, if it is not cached already, so it plays from disk.
+    ///
+    /// Spawned rather than awaited: a song takes seconds to download, and this loop is what
+    /// notices tracks ending. Returns the id it started on (or found already cached), so the
+    /// caller tries each track once rather than retrying a failure every tick.
+    async fn cache_next(&self, config: &CacheConfig) -> Option<String> {
+        let (next, keep) = {
+            let state = self.state.lock().await;
+            let next = state.queue.first()?.track.clone();
+            (next, cache_pins(&state))
+        };
+        if !cacheable(&next) || cache::find(&config.dir, &next.pandora_id).is_some() {
+            return Some(next.pandora_id);
+        }
+
+        let http = self.http.clone();
+        let config = config.clone();
+        let id = next.pandora_id.clone();
+        tokio::spawn(async move {
+            match cache::store(&http, &config.dir, &next.pandora_id, &next.audio_url).await {
+                Ok(_) => {
+                    let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
+                    cache::evict(&config.dir, config.max_bytes, &keep);
+                }
+                // Nothing is lost: the track streams as it always did.
+                Err(e) => eprintln!("[cache] {}: {e}", next.song_title),
+            }
+        });
+        Some(id)
+    }
+
     /// Pull the start of the next track into memory and decide whether it can be blended into.
     ///
     /// Decoding is far faster than playback when nothing throttles it — measured at ~120x — so
@@ -506,7 +580,7 @@ impl Engine {
         let outgoing = self.audio.tempo().map(|t| t.bpm);
         let url = {
             let state = self.state.lock().await;
-            state.queue.first()?.track.audio_url.clone()
+            self.source_of(&state.queue.first()?.track)
         };
 
         let fetch_url = url.clone();
@@ -559,9 +633,25 @@ impl Engine {
         // pointless downloads of the next song per transition, against an account Pandora only
         // permits one stream on.
         let mut prepared_for: Option<String> = None;
+        // The track whose download has been started (or found unnecessary), so each one is
+        // fetched once. A failure is not retried: the track streams instead, as it always did.
+        let mut cached_for: Option<String> = None;
 
         loop {
             tokio::time::sleep(Duration::from_millis(200)).await;
+
+            if let Some(config) = self.cache_config() {
+                let next = self
+                    .state
+                    .lock()
+                    .await
+                    .queue
+                    .first()
+                    .map(|f| f.track.pandora_id.clone());
+                if next.is_some() && next != cached_for {
+                    cached_for = self.cache_next(&config).await;
+                }
+            }
 
             // A blend that has handed over is a track change that never went through `advance`:
             // the audio thread swapped the stream underneath us, so the queue has to catch up.
@@ -694,7 +784,7 @@ impl Engine {
             return Err(Error::NoStation);
         };
         self.audio.stop();
-        self.audio.play(&track.audio_url, Start::Playing);
+        self.audio.play(&self.source_of(&track), Start::Playing);
         // Re-announce so the UI resets its progress bar and re-syncs lyrics to zero.
         let _ = self.events.send(Event::TrackStarted(Box::new(track)));
         Ok(())
@@ -829,6 +919,25 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// Whether `track` may be kept on disk.
+///
+/// Music only. An advert is fetched to be counted, and quietly replaying one from disk would
+/// cheat whoever paid for it. A track with a `key` would need un-masking first, and none has
+/// ever been seen.
+fn cacheable(track: &Track) -> bool {
+    track.kind().is_music() && track.key.is_none() && !track.pandora_id.is_empty()
+}
+
+/// The songs eviction must leave alone: the one playing, and the one about to.
+fn cache_pins(state: &State) -> Vec<String> {
+    state
+        .current
+        .iter()
+        .chain(state.queue.first())
+        .map(|f| f.track.pandora_id.clone())
+        .collect()
 }
 
 /// Drop every queued track fetched at or before `at`, keeping anything fetched later.
