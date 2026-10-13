@@ -210,10 +210,8 @@ body {
   --row-mode: 0px;
   --row-source-station: 0px;
   --row-mini: 0px;
-  --row-remote: 0px;
   --rows-extra: calc(
-    var(--row-source-toggle) + var(--row-mode) + var(--row-source-station) +
-      var(--row-mini) + var(--row-remote)
+    var(--row-source-toggle) + var(--row-mode) + var(--row-source-station) + var(--row-mini)
   );
 }
 
@@ -226,9 +224,13 @@ body {
 
    Each number is the height the row adds, measured (it is fixed-size text, so it
    does not move with the viewport): the source pill 29 + its 12 margin, the mode
-   pill 24 + 4, the QuickMix "from …" line 16 + 2, the mini player 52 + 18. Remote
-   mode drops the history strip (96) for the volume slider (34). The art gives up
-   exactly that room while the row is there and gets it back when it goes. */
+   pill 24 + 4, the QuickMix "from …" line 16 + 2, the mini player 52 + 18. The art
+   gives up exactly that room while the row is there and gets it back when it goes.
+
+   Remote mode is deliberately *not* one of them, though its stack is 62px shorter
+   (the volume slider's 34 in place of the history strip's 96). Giving the art that
+   room made it jump in size every time the source toggle was pressed, and the art
+   staying put across a switch matters more than 62px of it (user, 2026-10-13). */
 #player:has(#source-toggle:not([hidden])) {
   --row-source-toggle: 41px;
 }
@@ -240,9 +242,6 @@ body {
 }
 #player:has(#mini:not([hidden])) {
   --row-mini: 70px;
-}
-body.remote #player {
-  --row-remote: -61px;
 }
 
 /* The stage is the whole column, so the text under the art gets every pixel the
@@ -1388,8 +1387,8 @@ body.remote #remote-vol-wrap {
        with the title and artist they measured, and so are the optional rows that
        live in the meta (the source pill, the mode pill, the QuickMix line) — the
        meta sits beside the art now, so they make it taller rather than the stack.
-       The mini player and remote mode still change the stack under the art. */
-    --stage-reserve: calc(246px + var(--row-mini) + var(--row-remote));
+       The mini player still changes the stack under the art. */
+    --stage-reserve: calc(246px + var(--row-mini));
     --stage-w: min(
       46vw,
       calc(89vw - 420px - var(--meta-w) - var(--stage-gap)),
