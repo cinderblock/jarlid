@@ -320,14 +320,36 @@ function markAt(i: number) {
   if (!ctx || stale || isBlank(lines[i])) return;
   lines[i].t = Math.max(0, ctx.playhead().position - TAP_LATENCY);
   dirty = true;
+  dropMisplacedGaps(i);
   const next = nextLyric(i + 1);
   if (next < 0) {
+    // Last line with words: a gap after it (the outro) has to start after it, too.
+    for (let j = i + 1; j < lines.length; j++) {
+      const t = lines[j].t;
+      if (t !== null && t < lines[i].t!) lines[j].t = null;
+    }
     stopStamping();
     return;
   }
   cursor = next;
   render();
   showCursor();
+}
+
+/// A timed blank line clears the display through an instrumental gap, which is worth
+/// keeping, but only while it still falls between the lines around it. Retiming those
+/// lines moves the gap's real position; a stamp left behind would sort into the middle of
+/// a verse and blank it. So once line `i` is marked, a blank line between it and the
+/// lyric before it keeps its time only if it still sits between theirs.
+function dropMisplacedGaps(i: number) {
+  let prev = i - 1;
+  while (prev >= 0 && isBlank(lines[prev])) prev--;
+  const lo = prev >= 0 ? (lines[prev].t ?? -Infinity) : -Infinity;
+  const hi = lines[i].t!;
+  for (let j = prev + 1; j < i; j++) {
+    const t = lines[j].t;
+    if (t !== null && (t < lo || t > hi)) lines[j].t = null;
+  }
 }
 
 /// Centre the cursor row, so the next click lands where the last one did. Instant, not

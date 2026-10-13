@@ -276,6 +276,10 @@ Cameron's feedback after timing a song by clicking:
   It seeks back 5s and moves the cursor to the first line marked after that point, so the
   next press redoes that line. A backward seek rebuffers (see "Seek had to be built");
   that's fine for an occasional correction.
+- **Old timestamps on blank lines.** A pass skips blank lines, but a timed blank line clears
+  the display through a gap, so they aren't wiped. When a line is marked, any timed blank
+  line between it and the line before it keeps its time only if it still falls between
+  their times (`dropMisplacedGaps`). Blank lines after the last line must start after it.
 
 ## Things not to do
 
