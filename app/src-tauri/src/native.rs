@@ -401,6 +401,16 @@ async fn attach(
                         "buffered": engine.buffered().as_secs_f64(),
                         "drift": engine.drift().as_secs_f64(),
                         "starved": engine.starved().as_secs_f64(),
+                        // The other buffer: audio Windows holds between the output callback and
+                        // the speaker. Small by default and grown when the machine is too busy
+                        // for it; `underruns` is the crackle that grows it. Milliseconds, and
+                        // zero before anything has opened. `pending` is a new size the next
+                        // player will get, null when there is none.
+                        "deviceBufferMs": engine.device_buffer().as_secs_f64() * 1000.0,
+                        "pendingDeviceBufferMs": engine
+                            .pending_device_buffer()
+                            .map(|d| d.as_secs_f64() * 1000.0),
+                        "underruns": engine.device_underruns(),
                     }),
                 );
             }

@@ -856,6 +856,12 @@ impl Engine {
         self.audio.device_buffer()
     }
 
+    /// A different device buffer the next player will get: set between a change of size (a grow
+    /// under load, or a shrink after a quiet spell) and the rebuild that applies it.
+    pub fn pending_device_buffer(&self) -> Option<Duration> {
+        self.audio.pending_device_buffer()
+    }
+
     /// The tempo of the current track, measured from its audio.
     ///
     /// Pandora sends no BPM — nor key, nor anything else musicological — so this is computed

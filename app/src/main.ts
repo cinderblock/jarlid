@@ -949,6 +949,13 @@ interface Technical {
   buffered: number;
   drift: number;
   starved: number;
+  /// Audio Windows holds between the output callback and the speaker. 0 before anything opens.
+  deviceBufferMs: number;
+  /// A new size the next player gets, after a grow (or shrink) and until the rebuild that
+  /// applies it. Null otherwise.
+  pendingDeviceBufferMs: number | null;
+  /// Times this session the device buffer ran out: the crackle that makes it grow.
+  underruns: number;
 }
 const techEl = $("tech");
 
@@ -992,11 +999,21 @@ function renderTechnical(t: Technical) {
 
   parts.push(`buf ${t.buffered.toFixed(1)} s`);
 
+  // The device buffer, which is the one a busy machine actually breaks. It sits at 30 ms and
+  // doubles while underruns recur, so its size is itself the load signal; the arrow is a grow
+  // (or a shrink) that the next player will pick up.
+  if (t.deviceBufferMs > 0) {
+    const now = Math.round(t.deviceBufferMs);
+    const next = t.pendingDeviceBufferMs === null ? null : Math.round(t.pendingDeviceBufferMs);
+    parts.push(next === null ? `out ${now} ms` : `out ${now} → ${next} ms`);
+  }
+
   // Faults are absent rather than zero. A permanent "drift 0.00 s" trains you to stop reading
   // the line, which defeats the point of having it.
   const faults: string[] = [];
   if (t.drift >= 0.05) faults.push(`drift ${t.drift.toFixed(2)} s`);
   if (t.starved >= 0.05) faults.push(`starved ${t.starved.toFixed(2)} s`);
+  if (t.underruns > 0) faults.push(`underrun${t.underruns === 1 ? "" : "s"} ${t.underruns}`);
 
   techEl.textContent = parts.join(" · ");
   if (faults.length) {

@@ -220,6 +220,14 @@ struct Published {
     /// The live player's device buffer, in microseconds. Grows when underruns recur; see
     /// [`DeviceBuffer`].
     device_buffer_us: AtomicU64,
+    /// A different size the next player will be built with, in microseconds; zero when it gets
+    /// the same as the live one. Set between a change of size and the rebuild that applies it,
+    /// which after a grow is the moment worth seeing: proof the buffer responded.
+    ///
+    /// Compared against what the live player *asked* for, not `device_buffer_us`. A device may
+    /// round the size or refuse it, and judging by the measured size would report a change
+    /// that is never coming.
+    device_buffer_pending_us: AtomicU64,
     /// Set when a track reaches its natural end, so the engine can advance. Cleared when the
     /// engine reads it and on the next `Play`; deliberately *not* set by `Stop`, which is a
     /// deliberate act rather than an ending.
@@ -644,6 +652,14 @@ impl AudioThread {
                     thread_state
                         .device_buffer_us
                         .store(active.device_buffer().as_micros() as u64, Ordering::Relaxed);
+                    let pending = if device_buffer.size() != built_with {
+                        device_buffer.size()
+                    } else {
+                        Duration::ZERO
+                    };
+                    thread_state
+                        .device_buffer_pending_us
+                        .store(pending.as_micros() as u64, Ordering::Relaxed);
                     // Rebuild mid-song only if the crackle carries on *after* the buffer was
                     // grown. A rebuild re-opens the stream and costs a short gap, which is worth
                     // paying to end continuous crackle but not for a pair of clicks that may be
@@ -984,6 +1000,16 @@ impl AudioThread {
     /// underruns recur.
     pub fn device_buffer(&self) -> Duration {
         Duration::from_micros(self.published.device_buffer_us.load(Ordering::Relaxed))
+    }
+
+    /// The device buffer the next player will ask for, when that differs from what the live one
+    /// asked for: between a change of size and the rebuild that applies it.
+    pub fn pending_device_buffer(&self) -> Option<Duration> {
+        let us = self
+            .published
+            .device_buffer_pending_us
+            .load(Ordering::Relaxed);
+        (us > 0).then(|| Duration::from_micros(us))
     }
 
     /// The measured tempo of the current track, or `None` before enough of it has been heard.

@@ -52,9 +52,10 @@ anywhere in it.
   the device buffer adapts. It starts at 30 ms, too short to notice on a pause, and when the
   machine is busy enough for the sound card to run dry twice in a minute, it doubles, up to
   240 ms. After ten quiet minutes it shrinks back. The playhead accounts for audio still waiting
-  in that buffer, so synced lyrics stay on time at any size. Both kinds of dropout are counted in
-  the issue report: silence from decoding falling behind, and underruns from the output being
-  late.
+  in that buffer, so synced lyrics stay on time at any size, and the end of a song plays out of
+  it before the next one starts rather than being cut off with it. The current size is in the
+  technical readout. Both kinds of dropout are counted there and in the issue report: silence
+  from decoding falling behind, and underruns from the output being late.
 - **Saved songs (opt-in)**: Pandora repeats songs, and each repeat would otherwise be downloaded
   again. Turn this on and pick a size in Settings (each size shows roughly how many songs it
   holds). The next song is fetched whole while the current one plays and saved, so a first play
@@ -107,8 +108,10 @@ anywhere in it.
   piano — gets no number rather than an invented one. The codec and bitrate beside it are read
   from the container rather than from Pandora's `audioEncoding` label, which describes the
   stream we *didn't* ask for; where the source and device rates differ, both are shown, because
-  that gap is the resampling that keeps pitch honest. Buffer depth sits at the end, and the two
-  fault counters — audio lost, and audio that arrived too late to play — appear only when they
+  that gap is the resampling that keeps pitch honest. Then the two buffers: decoded audio in
+  hand (`buf 4.9 s`) and the device buffer (`out 30 ms`), which shows `out 30 → 60 ms` when it
+  has just grown under load and the next rebuild will pick that up. The three fault counters —
+  audio lost, audio that arrived too late to play, and device underruns — appear only when they
   are non-zero, so a line that stays quiet means what it says.
 - **Blending between songs** *(experimental, off by default)*: overlap the end of one track with
   the start of the next, and — in Beat-matched mode — pull the incoming song's tempo onto the
