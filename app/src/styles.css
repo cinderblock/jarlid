@@ -178,20 +178,71 @@ body {
   /* Everything below the art, measured rather than guessed: .meta's top margin
      and its lines, then the progress row, the transport and the history strip
      with their own margins. The two clamps are #title's and #artist's font sizes,
-     which are the only parts that move with the viewport.
+     which are the only parts that move with the viewport: the title's line box is
+     1.15 of its size (its own line-height), the byline's is the font's `normal`,
+     measured at 1.333-1.346 of the artist's size, so 1.35.
 
-     272px = meta's 26 top margin + progress 42 + transport 100 + history 96,
-     plus 8 of slop. Two things that used to be in it are not any more: the
-     station name lives in the top-right controls and occupies no row here, and
-     the album shares the artist's line rather than taking one below it.
+     273px = meta's 26 top margin + the byline's 8 + progress 43 + transport 100
+     + history 96. Two things that used to be in it are not any more: the station
+     name lives in the top-right controls and occupies no row here, and the album
+     shares the artist's line rather than taking one below it.
 
-     An over-estimate costs a few pixels of art; an under-estimate is caught by
-     the `min()` on `.art-wrap`, so this never clips the transport. Keep it in
-     step when anything is added to or removed from the stage. */
-  --stage-reserve: calc(
-    272px + 1.15 * clamp(1.5rem, 3.2vw, 2.6rem) + 1.3 * clamp(1rem, 1.8vw, 1.3rem)
+     There is no slop to absorb a mistake here, because an under-estimate is not
+     caught by anything: nothing in the stage can shrink, so the stage simply
+     comes out taller than 92vh, and being centred it spills past the padding at
+     both ends — the art's top off the window, and the history strip down onto
+     #tech in the bottom-left corner. The previous 272 + 1.3 × artist was 1.5px
+     short (its "8 of slop" was the byline's margin, which it had left out), so
+     the stage already sat at 571.8px of 570.4 at 1000×620. Keep it in step when
+     anything is added to or removed from the stage, and don't let it be short.
+
+     `--stage-base` is the stack every session has; `--stage-reserve` adds the
+     optional rows below. The narrow layout needs the two apart. */
+  --stage-base: calc(
+    273px + 1.15 * clamp(1.5rem, 3.2vw, 2.6rem) + 1.35 * clamp(1rem, 1.8vw, 1.3rem)
   );
+  --stage-reserve: calc(var(--stage-base) + var(--rows-extra));
   --stage-w: min(46vw, calc(89vw - 420px), calc(92vh - var(--stage-reserve)));
+
+  /* The rows that come and go, each the height it adds to the stack, margin and
+     all. Zero unless a rule below this block turns it on. */
+  --row-source-toggle: 0px;
+  --row-mode: 0px;
+  --row-source-station: 0px;
+  --row-mini: 0px;
+  --row-remote: 0px;
+  --rows-extra: calc(
+    var(--row-source-toggle) + var(--row-mode) + var(--row-source-station) +
+      var(--row-mini) + var(--row-remote)
+  );
+}
+
+/* Rows that only some sessions have, put into the reserve while they are on screen.
+   Leaving them out was the "past albums' art over the text" bug: with a network
+   player on the LAN the source pill is shown permanently, and that alone made the
+   stage 41px taller than its budget, so at 1000×620 it ran from -10px to 630px and
+   the recently-played covers sat on top of the #tech readout. A station with modes
+   added another 28px.
+
+   Each number is the height the row adds, measured (it is fixed-size text, so it
+   does not move with the viewport): the source pill 29 + its 12 margin, the mode
+   pill 24 + 4, the QuickMix "from …" line 16 + 2, the mini player 52 + 18. Remote
+   mode drops the history strip (96) for the volume slider (34). The art gives up
+   exactly that room while the row is there and gets it back when it goes. */
+#player:has(#source-toggle:not([hidden])) {
+  --row-source-toggle: 41px;
+}
+#player:has(#mode-wrap:not([hidden])) {
+  --row-mode: 28px;
+}
+#player:has(#source-station:not([hidden])) {
+  --row-source-station: 18px;
+}
+#player:has(#mini:not([hidden])) {
+  --row-mini: 70px;
+}
+body.remote #player {
+  --row-remote: -61px;
 }
 
 /* The stage is the whole column, so the text under the art gets every pixel the
@@ -1254,14 +1305,32 @@ body.remote #remote-vol-wrap {
     gap: 1.5vh;
     padding: 3vh 6vw;
     overflow: hidden;
+    /* Height left over here goes to the lyrics, not to the art, so the optional
+       rows must not narrow the progress bar and the history strip: counted in
+       this width they shrank both to a stub at 800×620 with every row on (a 90px
+       strip with one cover in it). They are paid for by the art's own cap below
+       instead. */
+    --stage-w: min(46vw, calc(89vw - 420px), calc(92vh - var(--stage-base)));
   }
   .stage {
     justify-content: flex-start;
   }
   /* 70% of the art's own width budget rather than of the column — here the column
-     is the whole window and the art is a compact header above the lyrics. */
+     is the whole window and the art is a compact header above the lyrics.
+
+     The third term keeps the stage inside its grid row. That row is `auto` and
+     the stage has `min-height: 0`, so a stage taller than the window does not
+     push the lyrics down: it overlaps them, and the history strip was drawn
+     across "LYRICS" and the first lines at 800×620 with the source pill, mode
+     pill, QuickMix line and mini player all showing. 92.5vh is the window less
+     this layout's 3vh padding and 1.5vh gap; the stack under the art is the
+     reserve less 32px, the 10 + 10 + 12 its tighter margins save. */
   .art-wrap {
-    width: min(34vh, calc(0.7 * var(--stage-w)));
+    width: min(
+      34vh,
+      calc(0.7 * var(--stage-w)),
+      calc(92.5vh + 32px - var(--stage-reserve))
+    );
   }
   .meta {
     margin-top: 16px;
@@ -1315,9 +1384,12 @@ body.remote #remote-vol-wrap {
     --meta-w: 300px;
     --stage-gap: 24px;
     /* No .meta in the stack any more: the progress row, the transport and the
-       history strip with their margins, plus the same 8 of slop. The two clamps
-       are gone with the title and artist they measured. */
-    --stage-reserve: 246px;
+       history strip with their margins, plus 8 of slop. The two clamps are gone
+       with the title and artist they measured, and so are the optional rows that
+       live in the meta (the source pill, the mode pill, the QuickMix line) — the
+       meta sits beside the art now, so they make it taller rather than the stack.
+       The mini player and remote mode still change the stack under the art. */
+    --stage-reserve: calc(246px + var(--row-mini) + var(--row-remote));
     --stage-w: min(
       46vw,
       calc(89vw - 420px - var(--meta-w) - var(--stage-gap)),
