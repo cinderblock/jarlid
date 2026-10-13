@@ -100,15 +100,56 @@ when the 50 ms poll noticed the drain was discarded.
 - **Fragility to remember:** the per-row heights are hand-measured constants, like the rest of the
   reserve. Adding a row to the stage without a `--row-*` entry brings this bug back.
 
+## Round 2 (user answers, 2026-10-13)
+
+### Decisions (don't re-ask)
+
+- **Logging:** a debug flag that turns logging on; otherwise off. Built as a persisted Settings
+  switch (Troubleshooting → Keep a debug log), because a glitch can't be predicted, so the log
+  has to survive restarts and auto-updates. A launch flag would not.
+- **Art size must not change with the mode** (local vs speaker). `ad0b817` removed the remote-mode
+  reserve rule.
+- **Pills on one line:** the user asked to see a comparison before deciding. Mockups are in
+  `plans/mockups/`.
+
+### Debug log design
+
+- `app/src-tauri/src/debug_log.rs`. Rust's stderr calls `GetStdHandle` on every write (verified
+  in `library/std/src/sys/stdio/windows.rs`), so `SetStdHandle(STD_ERROR_HANDLE, pipe)` captures
+  every `eprintln!` in every crate, panics included, with no changes at the call sites. A reader
+  thread stamps each line with local time to the ms and appends it to
+  `%LOCALAPPDATA%\com.camer.pandora-desktop\logs\jarlid.log`. At 8 MB the file is moved to
+  `jarlid.old.log`. In a dev build the reader also copies each line to the original console.
+- The pipe is never closed. Closing it under a concurrent writer fails the write, and
+  `eprintln!` panics on a failed write. Off means restoring the original handle (null in a
+  release build, which std treats as a quiet sink).
+- The reader never stops reading, because a full pipe would block every thread that logs,
+  including the audio thread.
+- The engine now logs track start, player open (device, offset, buffer), each underrun batch,
+  each starved stretch, and track end (`dda9230`).
+- Tested: `stderr_lands_in_the_file` (a plain stderr write lands in the file with a timestamp)
+  and `a_full_file_is_moved_aside_rather_than_grown`.
+
+### Pills on one line: what the mockups showed
+
+The source pill (309px with "Living Room · Idle") + 8 + the mode pill (90) needs 407px. The stage
+column is 340px at 1000×620 and 300px at 1600×900, so the row wraps and nothing changes. It only
+fits from about 1440×900 up, and there it gives the art +28px. Reserving 0 for the mode row when
+it *might* wrap brings the overlap bug back, and CSS can't tell whether it wrapped. A no-wrap
+variant clips "THIS COMPUT" / "LIVING ROOM", and the mode dropdown overhangs the lyrics.
+
+### Gotcha
+
+- A Python edit turned a Rust `\`-newline string continuation into a run of spaces inside the
+  string, which is the same defect `9998bce` fixed. Caught in review and rewritten as one line.
+  After scripted edits, grep for long runs of spaces inside string literals.
+
 ## Open questions for the user
 
-1. Write a rolling log file (e.g. `%LOCALAPPDATA%\com.camer.pandora-desktop\logs\jarlid.log`) so
-   "see it in logs?" has an answer next time? Recommended. Not started.
-2. Remote mode now gives the art the history strip's room back, so the art grows by about 61px
-   when you switch to the speaker (1000×620: 238 → 297). Keep that, or keep the art one size
-   across the switch? Kept for now, since it's consistent with the rest of the layout.
-3. With a WiiM on the network, the source pill and mode pill cost the art ~70px at 1000×620.
-   Putting them on one line would win back 28px. Not done; it's a design change.
+1. ~~Rolling log file?~~ Answered: an opt-in flag. Built.
+2. ~~Art size in remote mode?~~ Answered: don't change it. Done in `ad0b817`.
+3. Pills on one line: comparison shown. Recommendation: don't, because at ordinary window sizes
+   it either does nothing or clips the speaker's name.
 
 ## Things not to do
 
