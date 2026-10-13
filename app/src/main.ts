@@ -7,6 +7,8 @@ import * as settingsPage from "./settings-page";
 import * as lyricEditor from "./lyric-editor";
 import type { Lyrics } from "./lyric-editor";
 import * as lyricPicker from "./lyric-picker";
+import { parseLrc, type LyricLine } from "./lrc";
+import { detectDual, type Dual } from "./dual-lyrics";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
 import * as stationStats from "./station-stats";
 
@@ -28,10 +30,6 @@ interface Playhead {
   duration: number;
   paused: boolean;
   volume: number;
-}
-interface LyricLine {
-  t: number;
-  text: string;
 }
 interface RemoteState {
   device: string;
@@ -116,27 +114,6 @@ const NO_LINE = -2;
 let activeLineIdx = NO_LINE;
 let lastPlayhead: Playhead = { position: 0, duration: 0, paused: true, volume: 1 };
 
-// ---- LRC parsing -------------------------------------------------------
-function parseLrc(lrc: string): LyricLine[] {
-  const out: LyricLine[] = [];
-  const re = /\[(\d+):(\d+)(?:[.:](\d+))?\]/g;
-  for (const raw of lrc.split(/\r?\n/)) {
-    const stamps: number[] = [];
-    let m: RegExpExecArray | null;
-    re.lastIndex = 0;
-    while ((m = re.exec(raw)) !== null) {
-      const min = parseInt(m[1], 10);
-      const sec = parseInt(m[2], 10);
-      const frac = m[3] ? parseInt(m[3].padEnd(3, "0").slice(0, 3), 10) / 1000 : 0;
-      stamps.push(min * 60 + sec + frac);
-    }
-    const text = raw.replace(re, "").trim();
-    for (const t of stamps) out.push({ t, text });
-  }
-  out.sort((a, b) => a.t - b.t);
-  return out;
-}
-
 // Songs rarely start singing at 0:00, and until the first timestamp there is no line to
 // highlight — so the pane had nothing to scroll to, sat at the top, and then jumped when
 // the first line finally landed. This synthetic row is the scroll target for that gap,
@@ -160,29 +137,113 @@ function renderSyncedLyrics(lines: LyricLine[]) {
     lyricsEl.appendChild(introEl);
   }
 
+  paneLines = lines;
   lines.forEach((ln, i) => {
     const div = document.createElement("div");
     div.className = "line";
     div.dataset.idx = String(i);
-    div.textContent = ln.text || " ";
+    fillLine(div, ln);
     lyricsEl.appendChild(div);
   });
 }
 
-function renderPlainLyrics(text: string) {
+function renderPlainLyrics(lines: PaneLine[]) {
   lyricsEl.classList.remove("synced");
   lyricsEl.innerHTML = "";
   introEl = introBar = null;
-  for (const raw of text.split(/\r?\n/)) {
+  paneLines = lines;
+  for (const ln of lines) {
     const div = document.createElement("div");
     div.className = "line plain";
-    div.textContent = raw || " ";
+    fillLine(div, ln);
     lyricsEl.appendChild(div);
   }
   // A new song starts at its first verse, wherever the last one's pane was left.
   stopPlainFollow();
   lyricsEl.scrollTo({ top: 0, behavior: "instant" });
 }
+
+// ---- two languages in one file ----------------------------------------------
+// Some records carry every line in two languages (see dual-lyrics.ts). Each row then shows
+// both, the second smaller and dimmer beneath the first, and a chip in the pane's head names
+// the two and cycles: both, swapped, the first alone, the second alone. The choice is per
+// track, like the sync offset.
+type PaneLine = { text: string; alt?: string };
+type DualMode = "both" | "swap" | "first" | "second";
+const DUAL_MODES: DualMode[] = ["both", "swap", "first", "second"];
+const lyricsDualBtn = $<HTMLButtonElement>("lyrics-dual");
+/// The languages of what's in the pane, when it holds two.
+let dualLabels: Dual["labels"] | null = null;
+let dualMode: DualMode = "both";
+/// The rows in the pane, so a mode change can redraw them in place.
+let paneLines: PaneLine[] = [];
+
+function fillLine(div: HTMLElement, ln: PaneLine) {
+  div.classList.toggle("dual", false);
+  if (!ln.alt || dualMode === "first") {
+    div.textContent = ln.text || " ";
+  } else if (dualMode === "second") {
+    div.textContent = ln.alt;
+  } else {
+    const [main, sub] = dualMode === "swap" ? [ln.alt, ln.text] : [ln.text, ln.alt];
+    const a = document.createElement("span");
+    a.className = "l-main";
+    a.textContent = main;
+    const b = document.createElement("span");
+    b.className = "l-alt";
+    b.textContent = sub;
+    div.replaceChildren(a, b);
+    div.classList.add("dual");
+  }
+}
+
+/// Run detection on lyrics about to be painted, and set the chip up for the result.
+function noteDual(dual: Dual | null) {
+  dualLabels = dual?.labels ?? null;
+  const saved = localStorage.getItem(`dual:${currentKey}`) as DualMode | null;
+  dualMode = saved && DUAL_MODES.includes(saved) ? saved : "both";
+  lyricsDualBtn.hidden = !dual || lyricEditor.isEditing();
+  refreshDualChip();
+}
+
+const langName = (i: 0 | 1) => dualLabels?.[i] ?? (i ? "2nd language" : "1st language");
+
+function refreshDualChip() {
+  if (!dualLabels) return;
+  const [a, b] = [langName(0), langName(1)];
+  const both = dualLabels[0] && dualLabels[1];
+  lyricsDualBtn.textContent = {
+    both: both ? `${a} + ${b}` : "2 languages",
+    swap: both ? `${b} + ${a}` : "2 languages, swapped",
+    first: `${a} only`,
+    second: `${b} only`,
+  }[dualMode];
+  lyricsDualBtn.classList.toggle("on", dualMode !== "both");
+}
+
+lyricsDualBtn.addEventListener("click", () => {
+  dualMode = DUAL_MODES[(DUAL_MODES.indexOf(dualMode) + 1) % DUAL_MODES.length];
+  if (dualMode === "both") localStorage.removeItem(`dual:${currentKey}`);
+  else localStorage.setItem(`dual:${currentKey}`, dualMode);
+  refreshDualChip();
+  // Redraw in place: the rows, their indexes and the highlight all stay put.
+  lyricsEl.querySelectorAll<HTMLElement>(".line").forEach((div, i) => {
+    const ln = paneLines[i];
+    if (ln) fillLine(div, ln);
+  });
+  // Rows change height; keep the playing one centred.
+  lyricsEl.querySelector<HTMLElement>(".line.active")?.scrollIntoView({ block: "center", behavior: "smooth" });
+});
+attachTip(lyricsDualBtn, () => {
+  const [a, b] = [langName(0), langName(1)];
+  const next = {
+    both: `Click to put ${b} on top`,
+    swap: `Click to show only ${a}`,
+    first: `Click to show only ${b}`,
+    second: "Click to show both languages",
+  }[dualMode];
+  return `These lyrics have every line in two languages. ${next}.`;
+});
 
 // ---- unsynced lyrics: follow the song by elapsed fraction -----------------
 // Plain lyrics carry no timestamps, so no line can be lit — but the song still moves,
@@ -614,6 +675,7 @@ async function loadLyricsFor(
     lastLyrics = null;
     lyricsEditBtn.hidden = true;
     lyricsVersionsBtn.hidden = true;
+    noteDual(null);
     syncedLines = null;
     introEl = introBar = null;
     stopPlainFollow();
@@ -679,7 +741,8 @@ function applyLyrics(res: Lyrics) {
   // Edit mode owns the pane's contents. Repainting under it would throw away the rows
   // and the caret mid-edit, so keep the state current and leave the DOM alone.
   if (lyricEditor.isEditing()) {
-    syncedLines = res.synced ? parseLrc(res.synced) : null;
+    const parsed = res.synced ? parseLrc(res.synced) : null;
+    syncedLines = parsed && (detectDual(parsed)?.lines ?? parsed);
     lyricsStatus.textContent = `${res.synced ? "Synced lyrics" : "Lyrics"}${note}`;
     return;
   }
@@ -690,19 +753,26 @@ function applyLyrics(res: Lyrics) {
 /// them: the picker previews candidates through this without touching `lastLyrics`.
 function paintLyrics(res: Lyrics, note: string) {
   if (res.synced) {
-    syncedLines = parseLrc(res.synced);
+    const parsed = parseLrc(res.synced);
+    const dual = detectDual(parsed);
+    noteDual(dual);
+    syncedLines = dual?.lines ?? parsed;
     renderSyncedLyrics(syncedLines);
     lyricsStatus.textContent = `Synced lyrics${note}`;
     activeLineIdx = NO_LINE;
     highlightLine(lastPlayhead.position);
   } else if (res.plain) {
     syncedLines = null;
-    renderPlainLyrics(res.plain);
+    const lines = res.plain.split(/\r?\n/).map((text) => ({ t: null, text }));
+    const dual = detectDual(lines);
+    noteDual(dual);
+    renderPlainLyrics(dual?.lines ?? lines);
     lyricsStatus.textContent = `Lyrics${note}`;
   } else {
     syncedLines = null;
     introEl = introBar = null;
     stopPlainFollow();
+    noteDual(null);
     lyricsEl.innerHTML = `<div class="line empty">No lyrics found</div>`;
     lyricsStatus.textContent = "Lyrics";
   }
@@ -750,6 +820,8 @@ lyricsEditBtn.addEventListener("click", () => {
   lyricPicker.close();
   lyricsEditBtn.classList.add("on");
   lyricsVersionsBtn.hidden = true;
+  // The editor shows each line as stored, both languages together; the chip means nothing there.
+  lyricsDualBtn.hidden = true;
   lyricEditor.begin({
     meta: lastMeta,
     lyrics: lastLyrics,

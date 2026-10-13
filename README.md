@@ -12,7 +12,9 @@ anywhere in it.
 - **Synced (karaoke-style) lyrics** from [LRCLIB](https://lrclib.net), with version matching by
   title, album and duration. When it picks the wrong version, the versions button lists every
   record LRCLIB found and lets you try each one live against the song, then keep the right one
-  for that track. Also an on-disk cache (lyrics are rechecked daily in the background, and a miss
+  for that track. Records that carry every line in two languages (a translation, or a bilingual
+  version) show both, the second as a subtitle, with a chip to swap them or show one.
+  Also an on-disk cache (lyrics are rechecked daily in the background, and a miss
   is remembered for two hours), and per-track sync nudging (`[` / `]`, ±0.25 s).
   A lookup that cannot reach LRCLIB is retried while the song plays, and is never reported as
   "no lyrics found".
@@ -200,6 +202,8 @@ cd app
 bun install
 bun run tauri dev
 ```
+
+Frontend unit tests: `bun run test` in `app/`. Rust: `cargo test` in `app/src-tauri/`.
 
 Requirements: Rust, Bun, and the WebView2 runtime (WebView2 renders Jarlid's own UI; it no longer
 loads pandora.com). First launch: sign in with your Pandora account — the password goes to the

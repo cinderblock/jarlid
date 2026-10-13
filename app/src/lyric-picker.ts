@@ -15,6 +15,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { Lyrics } from "./lyric-editor";
+import { dualOf } from "./lrc";
 
 export interface PickerContext {
   /// Pandora's naming for the track. Also the key a choice is filed under.
@@ -163,6 +164,11 @@ function renderList() {
       const meta = document.createElement("div");
       meta.className = "pick-meta";
       const bits = [lengthLabel(l), l.synced ? "Synced" : "Words only"];
+      const dual = dualOf(l);
+      if (dual) {
+        const [a, b] = dual.labels;
+        bits.push(a && b ? `${a} + ${b}` : "2 languages");
+      }
       if (showing) bits.push(cur.pinned ? "Your choice" : "Showing now");
       else if (i === 0 && !cur.pinned) bits.push("Best match");
       meta.textContent = bits.join(" · ");

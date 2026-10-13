@@ -2827,3 +2827,44 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
 #lyric-pick-use {
   margin-left: auto;
 }
+
+/* ---- two languages in one file ---- */
+/* The second language sits under the first as a subtitle: present, readable, and plainly
+   not the line being sung louder. Both are one row, so they light up together. */
+.line.dual .l-main,
+.line.dual .l-alt {
+  display: block;
+}
+.line.dual .l-alt {
+  margin-top: 2px;
+  font-size: 0.66em;
+  font-weight: 500;
+  opacity: 0.7;
+}
+.line.dual.active .l-alt {
+  opacity: 0.85;
+}
+/* Names the languages and cycles how they show. Quiet like the status beside it. */
+.lyric-dual {
+  font: inherit;
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  background: rgba(var(--wash), 0.06);
+  border: 1px solid rgba(var(--wash), 0.1);
+  border-radius: 999px;
+  padding: 2px 9px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.lyric-dual:hover,
+.lyric-dual:focus-visible {
+  color: var(--fg);
+  background: rgba(var(--wash), 0.12);
+}
+/* Anything but both-at-once is a choice someone made; show that it's in effect. */
+.lyric-dual.on {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+}

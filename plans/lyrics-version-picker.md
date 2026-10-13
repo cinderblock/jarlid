@@ -75,19 +75,48 @@ express).
 - Don't store pins in the cache dir. A cache wipe would silently undo the user's choice.
 - Don't let a preview overwrite `lastLyrics`. `revalidateLyrics` and the editor both key off it.
 
-## Follow-up under discussion — dual-lyric (two-language) records (2026-10-13)
+## Two-language records (2026-10-13, built after Cameron's go-ahead)
 
-Not started; waiting on Cameron's go-ahead.
+Decided: tag them in the picker **and** show them as two languages anywhere detection is confident.
 
 - "Split Brain Version" seems specific to Madelline's "Dopamine" (`q=split brain` finds nothing else
-  of the kind). Dual-language *lines* are a general pattern, though.
-- LRCLIB's Lyricsfile 1.0 (`server/src/lyricsfile.rs` in tranxuanthang/lrclib) has `lines[]` with
-  `text`, `start_ms`, `end_ms` and `words`, and nothing for a second voice or translation. So any
-  detection has to come from the text.
-- Encodings seen in the Dopamine records: `FR - EN` (35090140), `EN (FR)` (11043109),
-  `FR (EN)` (33421579). Translated LRC files elsewhere also use two lines with the same timestamp.
-- The trap: parentheses usually mean backing vocals (`(ooh)`, echoes), not a second language.
-  Treat it as dual only when the split is consistent across most lines of the file.
-- Proposed display: two lines per row. The main voice is shown as usual, the second smaller and dimmer
-  beneath it, and both light up together. The status line says "· 2 languages" with a swap/hide toggle,
-  remembered per track.
+  of the kind). Two-language *lines* are a general pattern, though.
+- LRCLIB's Lyricsfile 1.0 (`server/src/lyricsfile.rs` in tranxuanthang/lrclib) has `lines[]` with only
+  `text`, `start_ms`, `end_ms` and `words`, and nothing for a second voice or translation. So detection
+  has to come from the text.
+- Ways records carry it: `FR - EN` (35090140), `EN (FR)` (11043109), `FR (EN)` (33421579), and
+  elsewhere two lines on one timestamp. ` / ` and ` | ` splits are handled too.
+
+### Implementation
+
+- `app/src/dual-lyrics.ts`, with `detectDual` and `guessLanguage`. A file is dual only if at least 60% of
+  its lyric lines (and at least 4) split the same way into a translation-like pair. Translation-like
+  means neither half is vocables, the lengths are comparable (skipped across scripts, since Korean is a
+  third of the characters of the same English line), and the halves share at most a third of their
+  3+-letter words. Pairs whose halves share words ("alike") count neither for nor against a file, but are
+  still split in a dual file. If both sides guess as the same language, it's an echo and is rejected.
+- `app/src/lrc.ts` holds `parseLrc` (moved out of main.ts) and `dualOf`, which the picker uses.
+- Pane: `.line.dual` has `.l-main` plus a smaller, dimmer `.l-alt`. They stay one `.line`, so the
+  highlighter's indexes don't change. The `#lyrics-dual` chip ("FR + EN") cycles both, swapped, first
+  only and second only, saved per track in `localStorage` as `dual:<key>`. It is hidden in edit mode,
+  where the raw lines show.
+- Picker rows show "FR + EN" for dual versions.
+- Tests: `app/src/dual-lyrics.test.ts` (`bun run test`), 12 cases using invented lines in each real
+  record's shape, plus the backing-vocal traps. tsconfig excludes `*.test.ts`.
+
+### Findings
+
+- On 388 real LRCLIB records (two samples, including K-pop, J-pop and Latin), the synced and plain paths
+  each detect the 3 Split Brain records and nothing else.
+- The first cut missed 2 of 3: "Da-ra-da-da-da" wasn't treated as filler, and same-in-both-languages lines
+  ("ma D-O-P-A-M-I-N-E" / "my D-O-P-A-M-I-N-E") counted against the file. Both fixed as above.
+- LOVE PSYCHEDELICO "Place Of Love" is Japanese with English words mixed in, not a translation.
+  It is correctly not dual.
+- **Tooling trap:** editing TS through a bash heredoc into a Bun template literal turned a `\r?\n` regex
+  into a literal CR/LF. Use the Edit tool for anything containing backslashes or apostrophes.
+
+### Steps
+
+- [x] Detector, tests, pane display, chip, picker tag, README.
+- [ ] See it in the real app on Dopamine (Split Brain): readability of the subtitle line, chip cycling,
+      and the highlight staying centred when rows change height.
