@@ -258,6 +258,25 @@ Local data repair: moved the ORAL HEX pin and its `lrclib/chosen` cache entry to
 `%LOCALAPPDATA%\Temp\jarlid-lyrics-fix-2026-10-13\` so it goes back to the automatic
 match. Hoe Anthem's cache matches what LRCLIB serves and was left alone.
 
+## Findings — first real timing pass (2026-10-13)
+
+Cameron's feedback after timing a song by clicking:
+
+- **Good, keep it:** the cursor row re-centres after each mark, so its time button stays
+  under the mouse and the whole pass is just clicks.
+- **The re-centring stopped near the start and the end.** Edit mode drops the pane's
+  padding to 12px, so the first and last few rows can't scroll to the centre. A pass now
+  pads the pane by half its own height (`--stamp-pad`, measured when the pass starts) and
+  centres the cursor right away. When the pass stops the padding goes, and the row it
+  ended on is scrolled back into view.
+- **Blank lines took marks.** The cursor stepped onto the gaps between verses. It now
+  skips them (`nextLyric`), they can't be marked, and their time button is hidden during a
+  pass. The pass ends after the last line that has words.
+- **A wrong mark meant replaying the whole song.** A pass now has **Back 5s** (and `←`).
+  It seeks back 5s and moves the cursor to the first line marked after that point, so the
+  next press redoes that line. A backward seek rebuffers (see "Seek had to be built");
+  that's fine for an occasional correction.
+
 ## Things not to do
 
 - Don't read the track's duration from the playhead inside the editor; once playback moves

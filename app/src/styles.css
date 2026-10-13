@@ -2624,8 +2624,17 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
 /* A timing pass is a rhythm game: the only thing that matters is knowing which
    line the next press lands on, so the cursor is loud and everything else is
    quiet. */
+/* A pass keeps the cursor row centred so the next press lands where the last one
+   did. The first and last rows can only reach the centre with room above and below
+   them; `--stamp-pad` is half the pane's height, measured when the pass starts. */
+#lyrics.editing.stamping {
+  padding-block: var(--stamp-pad, 12px);
+}
 #lyrics.stamping .line {
   opacity: 0.5;
+}
+#lyrics.stamping .line.blank .ln-time {
+  visibility: hidden;
 }
 #lyrics.stamping .line.cursor {
   opacity: 1;

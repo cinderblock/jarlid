@@ -66,12 +66,17 @@ const TAP_LATENCY = 0.33;
 /// run-in, short enough not to sit through the previous line.
 const CHECK_LEAD = 2.5;
 
+/// How far "Back" goes during a timing pass: enough to hear the run-in to a line that was
+/// marked wrong, without replaying the whole verse.
+const REWIND = 5;
+
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const lyricsEl = $("lyrics");
 const bar = $("lyric-bar");
 const statusEl = $("lyric-bar-status");
 const timestampBtn = $<HTMLButtonElement>("lyric-timestamp");
+const rewindBtn = $<HTMLButtonElement>("lyric-rewind");
 const autoCheckWrap = $("lyric-autocheck-wrap");
 const autoCheckBox = $<HTMLInputElement>("lyric-autocheck");
 const saveBtn = $<HTMLButtonElement>("lyric-save");
@@ -126,6 +131,16 @@ const serialize = (ls: Line[]) =>
   ls.map((l) => (l.t === null ? l.text : `[${stampOf(l.t)}] ${l.text}`)).join("\n");
 
 const anyTimed = () => lines.some((l) => l.t !== null);
+
+/// Blank lines are the gaps between verses. They have no start of their own to hear, so
+/// a timing pass steps over them.
+const isBlank = (l: Line) => !l.text.trim();
+
+/// The first line at or after `from` that a timing pass should land on, or -1.
+const nextLyric = (from: number) => {
+  for (let i = Math.max(0, from); i < lines.length; i++) if (!isBlank(lines[i])) return i;
+  return -1;
+};
 
 // ---- entering / leaving ---------------------------------------------------
 
@@ -202,6 +217,7 @@ function render() {
     row.className = "line editable";
     row.dataset.idx = String(i);
     if (stamping && i === cursor) row.classList.add("cursor");
+    if (isBlank(line)) row.classList.add("blank");
     if (line.t !== null) row.classList.add("timed");
 
     const time = document.createElement("button");
@@ -301,18 +317,47 @@ function setNow(i: number) {
 /// not seek, verify, or re-render anything but the rows — the song is still playing and
 /// the next line is seconds away.
 function markAt(i: number) {
-  if (!ctx || stale) return;
+  if (!ctx || stale || isBlank(lines[i])) return;
   lines[i].t = Math.max(0, ctx.playhead().position - TAP_LATENCY);
-  cursor = Math.min(i + 1, lines.length - 1);
   dirty = true;
+  const next = nextLyric(i + 1);
+  if (next < 0) {
+    stopStamping();
+    return;
+  }
+  cursor = next;
   render();
-  // Instant, not smooth: during a pass the cursor moves every few seconds and a smooth
-  // scroll would still be gliding when the next line needs marking.
+  showCursor();
+}
+
+/// Centre the cursor row, so the next click lands where the last one did. Instant, not
+/// smooth: during a pass the cursor moves every few seconds and a smooth scroll would
+/// still be gliding when the next line needs marking.
+function showCursor() {
   lyricsEl
     .querySelector(`.line[data-idx="${cursor}"]`)
     ?.scrollIntoView({ block: "center", behavior: "auto" });
-  if (cursor === lines.length - 1 && lines[cursor].t !== null) stopStamping();
 }
+
+/// A mark that landed wrong is fixed by going back a few seconds and marking again, not
+/// by sitting through the whole song. The cursor steps back with the playhead to the
+/// first line marked after the new position, so the next press redoes it.
+function rewind() {
+  if (!ctx || stale || !ctx.canTransport) return;
+  const to = Math.max(0, ctx.playhead().position - REWIND);
+  ctx.seek(to);
+  const redo = lines.findIndex((l, i) => i < cursor && !isBlank(l) && l.t !== null && l.t > to);
+  if (redo >= 0) cursor = redo;
+  render();
+  showCursor();
+  setStatus(
+    redo >= 0
+      ? `Back to ${stampOf(to)}. Mark line ${cursor + 1} again when it starts.`
+      : `Back to ${stampOf(to)}.`
+  );
+}
+
+rewindBtn.addEventListener("click", rewind);
 
 function checkLine(i: number) {
   const t = lines[i].t;
@@ -325,12 +370,19 @@ function startStamping() {
   if (!ctx || stale || !ctx.canTransport) return;
   stamping = true;
   // Resume where there is work rather than restamping good lines from the top.
-  cursor = lines.findIndex((l) => l.t === null && l.text);
-  if (cursor < 0) cursor = 0;
+  cursor = lines.findIndex((l) => l.t === null && !isBlank(l));
+  if (cursor < 0) cursor = nextLyric(0);
+  if (cursor < 0) {
+    stamping = false;
+    setStatus("There are no lines to time yet.", "err");
+    return;
+  }
+  lyricsEl.style.setProperty("--stamp-pad", `${Math.round(lyricsEl.clientHeight / 2)}px`);
   lyricsEl.classList.add("stamping");
   render();
   refreshBar();
-  setStatus("Space or click a line's time as each line starts. Esc stops.");
+  showCursor();
+  setStatus(`Space or click a line's time as each line starts. ← goes back ${REWIND}s. Esc stops.`);
   if (ctx.playhead().paused) ctx.transport("play");
 }
 
@@ -339,6 +391,11 @@ function stopStamping() {
   lyricsEl.classList.remove("stamping");
   render();
   refreshBar();
+  // The pass's extra padding just went, so the list moved under the reader. Bring back
+  // the line the pass ended on.
+  lyricsEl
+    .querySelector(`.line[data-idx="${cursor}"]`)
+    ?.scrollIntoView({ block: "nearest", behavior: "auto" });
   setStatus(dirty ? "Timing pass done — save it." : "");
 }
 
@@ -358,6 +415,9 @@ window.addEventListener("keydown", (e) => {
   if (stamping && e.key === " ") {
     e.preventDefault();
     markAt(cursor);
+  } else if (stamping && e.key === "ArrowLeft") {
+    e.preventDefault();
+    rewind();
   }
 });
 
@@ -373,6 +433,7 @@ function refreshBar() {
   const timed = anyTimed();
   timestampBtn.textContent = stamping ? "Stop timing" : timed ? "Retime all…" : "Add timings…";
   timestampBtn.disabled = busy || stale || !ctx?.canTransport;
+  rewindBtn.hidden = !stamping;
   // Checking a line is only meaningful once something has a time, and auto-checking would
   // wreck a continuous pass, so it is offered only outside one.
   autoCheckWrap.hidden = stamping || !timed;
