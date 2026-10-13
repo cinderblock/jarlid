@@ -79,6 +79,85 @@ const DEFAULT_DEVICE_POLL: Duration = Duration::from_secs(1);
 /// land exactly where it was asked. Long enough for that, short enough not to be heard.
 const HANDOVER_CROSS: Duration = Duration::from_millis(50);
 
+/// The most device buffer the adaptive sizing will ask for. Pause and volume changes lag by up to
+/// this much, so it stays below the point where that gets noticeable: a quarter of a second is
+/// still a fair response to a button, and eight engine periods of slack.
+const DEVICE_BUFFER_MAX: Duration = Duration::from_millis(240);
+
+/// How many device underruns, within [`GROW_WINDOW`] of each other, it takes to double the buffer.
+///
+/// Two, not one. A single stall (a page fault storm, a driver hiccup) is one click and may never
+/// recur, so it isn't worth a bigger buffer. A second within the minute means the machine is busy
+/// and will stay busy.
+const GROW_AFTER: usize = 2;
+const GROW_WINDOW: Duration = Duration::from_secs(60);
+
+/// A buffer that has gone this long without an underrun halves, down to [`audio::DEVICE_BUFFER`].
+/// Load is usually temporary (a build finishes, a game closes), and the next player built after
+/// that should be as responsive as before. Never forces a rebuild: shrinking is for comfort, not
+/// for correctness, and it is not worth a gap in the music.
+const SHRINK_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// How big the next player's device buffer should be, learned from the underruns of the ones
+/// before it. See [`audio::DEVICE_BUFFER`] for what the buffer is.
+///
+/// Separate from the thread loop so the policy can be tested without a sound card.
+struct DeviceBuffer {
+    size: Duration,
+    /// Underruns within the last [`GROW_WINDOW`].
+    recent: std::collections::VecDeque<Instant>,
+    /// The last underrun, or the last change of size, whichever is later. The quiet period
+    /// [`SHRINK_AFTER`] is measured from here.
+    calm_since: Instant,
+}
+
+impl DeviceBuffer {
+    fn new(now: Instant) -> Self {
+        Self {
+            size: audio::DEVICE_BUFFER,
+            recent: std::collections::VecDeque::new(),
+            calm_since: now,
+        }
+    }
+
+    fn size(&self) -> Duration {
+        self.size
+    }
+
+    /// Record `count` fresh underruns. Returns true if this grew the buffer.
+    fn underran(&mut self, count: u64, now: Instant) -> bool {
+        self.calm_since = now;
+        for _ in 0..count.min(GROW_AFTER as u64) {
+            self.recent.push_back(now);
+        }
+        while let Some(&oldest) = self.recent.front() {
+            if now.duration_since(oldest) > GROW_WINDOW {
+                self.recent.pop_front();
+            } else {
+                break;
+            }
+        }
+        if self.recent.len() < GROW_AFTER || self.size >= DEVICE_BUFFER_MAX {
+            return false;
+        }
+        self.size = (self.size * 2).min(DEVICE_BUFFER_MAX);
+        // A fresh size starts with a fresh count: the underruns that justified it were
+        // measured against the old one.
+        self.recent.clear();
+        true
+    }
+
+    /// Shrink after a long enough quiet spell. Returns true if it did.
+    fn relax(&mut self, now: Instant) -> bool {
+        if self.size <= audio::DEVICE_BUFFER || now.duration_since(self.calm_since) < SHRINK_AFTER {
+            return false;
+        }
+        self.size = (self.size / 2).max(audio::DEVICE_BUFFER);
+        self.calm_since = now;
+        true
+    }
+}
+
 /// Whether a newly loaded track starts sounding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Start {
@@ -130,6 +209,12 @@ struct Published {
     /// Silence played because the decoder could not keep up. Accumulates across tracks, so it
     /// answers "is this machine dropping audio?" rather than "did this song".
     starved_ms: AtomicU64,
+    /// Device underruns this session: the output callback was late enough for Windows' own
+    /// buffer to run out. The crackle under load, counted. Accumulates like `starved_ms`.
+    device_underruns: AtomicU64,
+    /// The live player's device buffer, in microseconds. Grows when underruns recur; see
+    /// [`DeviceBuffer`].
+    device_buffer_us: AtomicU64,
     /// Set when a track reaches its natural end, so the engine can advance. Cleared when the
     /// engine reads it and on the next `Play`; deliberately *not* set by `Stop`, which is a
     /// deliberate act rather than an ending.
@@ -221,6 +306,13 @@ impl AudioThread {
             let mut last_decode = Instant::now();
             // Per-player, so it resets with each rebuild; the published total does not.
             let mut last_starved = Duration::ZERO;
+            let mut last_underruns = 0u64;
+            // Outlives every player, so what one player learned about this machine is used to
+            // build the next.
+            let mut device_buffer = DeviceBuffer::new(Instant::now());
+            // What the live player was asked for. Compared rather than its measured size, which
+            // Windows may round, so a rounding error can never look like an undersized buffer.
+            let mut built_with = Duration::ZERO;
             let mut recoveries = 0u32;
             // The incoming track's URL while a blend runs, so the handover can re-open it live.
             let mut blending: Option<String> = None;
@@ -410,7 +502,12 @@ impl AudioThread {
                     };
                 if device_due {
                     if let Some(track) = &current {
-                        match audio::Player::play_on(&track.url, track.resume_at, &output) {
+                        match audio::Player::play_on(
+                            &track.url,
+                            track.resume_at,
+                            &output,
+                            device_buffer.size(),
+                        ) {
                             Ok(new_player) => {
                                 new_player.set_volume(volume);
                                 // What was actually opened, which is not always what was asked
@@ -435,6 +532,8 @@ impl AudioThread {
                                 last_decoded = new_player.decoded();
                                 last_decode = Instant::now();
                                 last_starved = Duration::ZERO;
+                                last_underruns = 0;
+                                built_with = device_buffer.size();
                                 recovered_at = new_player.started_at();
                                 thread_state
                                     .position_ms
@@ -508,6 +607,40 @@ impl AudioThread {
                             .fetch_add(millis(fresh), Ordering::Relaxed);
                     }
                     last_starved = starved;
+
+                    // Same delta pattern for the device's own underruns, which also drive the
+                    // buffer size the next player is built with.
+                    let underruns = active.device_underruns();
+                    let fresh_underruns = underruns.saturating_sub(last_underruns);
+                    last_underruns = underruns;
+                    let mut grew = false;
+                    if fresh_underruns > 0 {
+                        thread_state
+                            .device_underruns
+                            .fetch_add(fresh_underruns, Ordering::Relaxed);
+                        grew = device_buffer.underran(fresh_underruns, Instant::now());
+                        if grew {
+                            eprintln!(
+                                "device underruns are recurring; the next player gets a {} ms \
+                                 buffer",
+                                device_buffer.size().as_millis()
+                            );
+                        }
+                    } else if device_buffer.relax(Instant::now()) {
+                        eprintln!(
+                            "no device underruns for a while; the next player gets a {} ms buffer",
+                            device_buffer.size().as_millis()
+                        );
+                    }
+                    thread_state
+                        .device_buffer_us
+                        .store(active.device_buffer().as_micros() as u64, Ordering::Relaxed);
+                    // Rebuild mid-song only if the crackle carries on *after* the buffer was
+                    // grown. A rebuild re-opens the stream and costs a short gap, which is worth
+                    // paying to end continuous crackle but not for a pair of clicks that may be
+                    // all there ever was. Otherwise the larger size waits for the next player.
+                    let undersized =
+                        !grew && fresh_underruns > 0 && built_with < device_buffer.size();
 
                     if position != last_position {
                         last_position = position;
@@ -652,6 +785,21 @@ impl AudioThread {
                             "default output moved to {:?}; following it at {:.1}s",
                             audio::default_output_name().unwrap_or_default(),
                             position.as_secs_f64()
+                        );
+                        if let Some(track) = &mut current {
+                            track.resume_at = position;
+                        }
+                        recoveries = 0;
+                        recovered_at = position;
+                        player = None;
+                    } else if undersized && !paused && blending.is_none() {
+                        // Not a fault either: the track is fine, the machine is busy. Same
+                        // rebuild, same zero cost to the recovery budget.
+                        eprintln!(
+                            "still underrunning a {} ms device buffer; rebuilding at {:.1}s with {} ms",
+                            built_with.as_millis(),
+                            position.as_secs_f64(),
+                            device_buffer.size().as_millis()
                         );
                         if let Some(track) = &mut current {
                             track.resume_at = position;
@@ -804,6 +952,19 @@ impl AudioThread {
         Duration::from_millis(self.published.starved_ms.load(Ordering::Relaxed))
     }
 
+    /// Times this session the device's own buffer ran out because the output callback was
+    /// late: the crackle a busy machine makes. Distinct from [`AudioThread::starved`], which
+    /// counts the *decoded* queue running dry and cannot see this.
+    pub fn device_underruns(&self) -> u64 {
+        self.published.device_underruns.load(Ordering::Relaxed)
+    }
+
+    /// The live player's device buffer. Starts at [`audio::DEVICE_BUFFER`] and grows while
+    /// underruns recur.
+    pub fn device_buffer(&self) -> Duration {
+        Duration::from_micros(self.published.device_buffer_us.load(Ordering::Relaxed))
+    }
+
     /// The measured tempo of the current track, or `None` before enough of it has been heard.
     ///
     /// Latched across player rebuilds, so a stall mid-song does not blank it; cleared when a new
@@ -875,5 +1036,83 @@ fn millis(d: Duration) -> u64 {
 impl Drop for AudioThread {
     fn drop(&mut self) {
         let _ = self.commands.send(Command::Shutdown);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_underrun_does_not_grow_the_buffer() {
+        let start = Instant::now();
+        let mut buffer = DeviceBuffer::new(start);
+        assert!(!buffer.underran(1, start + Duration::from_secs(5)));
+        assert_eq!(buffer.size(), audio::DEVICE_BUFFER);
+    }
+
+    #[test]
+    fn recurring_underruns_double_it_up_to_the_cap() {
+        let mut now = Instant::now();
+        let mut buffer = DeviceBuffer::new(now);
+        let mut sizes = vec![buffer.size()];
+        for _ in 0..10 {
+            now += Duration::from_secs(1);
+            buffer.underran(1, now);
+            sizes.push(buffer.size());
+        }
+        sizes.dedup();
+        assert_eq!(
+            sizes,
+            [30, 60, 120, 240].map(Duration::from_millis),
+            "should double from the default and stop at the cap"
+        );
+    }
+
+    /// A burst reported in one poll is one event's worth of evidence per underrun, and two of
+    /// them in one poll are as recurring as two a second apart.
+    #[test]
+    fn a_burst_in_one_poll_counts() {
+        let start = Instant::now();
+        let mut buffer = DeviceBuffer::new(start);
+        assert!(buffer.underran(5, start));
+        assert_eq!(buffer.size(), Duration::from_millis(60));
+    }
+
+    #[test]
+    fn underruns_far_apart_are_not_recurring() {
+        let mut now = Instant::now();
+        let mut buffer = DeviceBuffer::new(now);
+        for _ in 0..5 {
+            now += GROW_WINDOW + Duration::from_secs(1);
+            assert!(!buffer.underran(1, now));
+        }
+        assert_eq!(buffer.size(), audio::DEVICE_BUFFER);
+    }
+
+    #[test]
+    fn a_long_quiet_spell_shrinks_it_back() {
+        let mut now = Instant::now();
+        let mut buffer = DeviceBuffer::new(now);
+        buffer.underran(2, now);
+        buffer.underran(2, now);
+        assert_eq!(buffer.size(), Duration::from_millis(120));
+
+        now += SHRINK_AFTER - Duration::from_secs(1);
+        assert!(!buffer.relax(now), "shrank before the quiet spell was over");
+
+        now += Duration::from_secs(2);
+        assert!(buffer.relax(now));
+        assert_eq!(buffer.size(), Duration::from_millis(60));
+        // The clock restarts with the change, so it steps down one size at a time.
+        assert!(!buffer.relax(now + Duration::from_secs(1)));
+
+        now += SHRINK_AFTER + Duration::from_secs(1);
+        assert!(buffer.relax(now));
+        assert_eq!(buffer.size(), audio::DEVICE_BUFFER);
+        assert!(
+            !buffer.relax(now + SHRINK_AFTER * 2),
+            "shrank below the default"
+        );
     }
 }

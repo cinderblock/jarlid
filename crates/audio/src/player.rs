@@ -98,6 +98,20 @@ impl Drop for AudioPriority {
 /// pause and skip feel immediate.
 const TARGET_BUFFER: Duration = Duration::from_secs(5);
 
+/// The device buffer to ask for when nothing has proved it too small: the audio queued in Windows
+/// between the output callback and the speaker.
+///
+/// This is a different buffer from [`TARGET_BUFFER`], and the one a busy machine actually breaks.
+/// Five seconds of decoded audio is no help if the callback that hands it over is late. Left at
+/// cpal's default, WASAPI shared mode gives about one 10 ms engine period of slack, so any callback
+/// that runs 10 ms late glitches. Several of those a second is the crackle heard under load, and
+/// `starved` never sees it, because the queue was full the whole time.
+///
+/// 30 ms is three periods, and nobody can feel it on a pause or a volume drag. An owner that sees
+/// [`Player::device_underruns`] climb can build the next player with more; see the engine's
+/// audio thread.
+pub const DEVICE_BUFFER: Duration = Duration::from_millis(30);
+
 /// Which endpoint to play on.
 ///
 /// `Default` is not resolved once and remembered — the owner re-checks it while playing and
@@ -187,6 +201,18 @@ struct Shared {
     /// dropout, measured at the only place it is unambiguous — nowhere else can distinguish
     /// "audio was late" from "audio was quiet".
     starved: AtomicU64,
+    /// Callbacks that found the *device's* queue empty: the callback was so late that everything
+    /// handed to Windows had already played. That is a glitch, or the closest possible miss, and
+    /// it happens with a full ring. So it is the crackle that `starved` cannot see.
+    device_underruns: AtomicU64,
+    /// Size of the device buffer in frames, learned from the first callback, which is always
+    /// asked to fill the whole thing. Zero until then.
+    device_capacity: AtomicU64,
+    /// Frames of real audio (not padding silence) that have been handed to the device and have
+    /// not played yet. [`Player::position`] subtracts them: until they play, the listener has not
+    /// heard them, and once the device buffer can grow to a quarter of a second, ignoring them
+    /// would put synced lyrics visibly ahead of the singer.
+    device_audio: AtomicU64,
     /// Set once the callback has filled a whole buffer, i.e. playback reached steady state. Before
     /// that an empty queue is just the pipeline priming, not a dropout.
     delivered: AtomicBool,
@@ -296,8 +322,100 @@ pub struct Player {
     base_frames: u64,
     base_decoded: u64,
     track_start: Duration,
+    /// The position never reads earlier than this frame count, so subtracting audio still in
+    /// the device cannot put the playhead before the point this track (or handover) began.
+    heard_floor: u64,
+    /// The device buffer requested, in frames; zero for the system default. Reported until the
+    /// first callback measures the real size.
+    asked_buffer_frames: u64,
     // Dropping the stream stops the device, so it must outlive playback.
     _stream: cpal::Stream,
+}
+
+/// The device's buffer, as seen from the output callback.
+///
+/// cpal asks for `buffer - padding` frames each time, so the size of a request says how much was
+/// still queued in Windows when it was made. That is enough to spot a late callback, and to know
+/// how much audio has been handed over but not yet heard. Plain arithmetic, kept out of the
+/// callback so it can be tested without a sound card.
+#[derive(Default)]
+struct DeviceQueue {
+    /// The whole buffer, in frames. The first request, made before anything was queued, is
+    /// always the whole buffer.
+    capacity: usize,
+    /// The smallest request seen. Proof that the buffer is bigger than one engine period:
+    /// without it every request is the whole buffer, and an empty device queue is how that
+    /// device always looks, not a fault.
+    smallest: usize,
+    /// Frames in the device after the last fill, padding included.
+    handed: usize,
+    /// How many of those are real audio rather than padding silence.
+    audio: usize,
+}
+
+impl DeviceQueue {
+    /// A callback asking for `frames`. Returns true if the device had run dry: everything
+    /// handed to Windows had already played, so the callback was late enough to glitch, or
+    /// within one engine period of it.
+    fn requested(&mut self, frames: usize) -> bool {
+        let dry = if self.capacity == 0 || frames > self.capacity {
+            // The first request, or proof the first one was not the whole buffer. Learn it
+            // rather than accuse the callback of being late.
+            self.capacity = frames;
+            self.smallest = frames;
+            false
+        } else {
+            frames == self.capacity && self.smallest < self.capacity
+        };
+        self.smallest = self.smallest.min(frames);
+
+        // What the device has played since the last fill. It plays in order, so the oldest
+        // frames go first, and those are the real audio whenever padding was written after it
+        // (a pause, or a starved queue). The opposite order (silence first, then audio after an
+        // unpause) undercounts the audio for one buffer, so the playhead is briefly early by at
+        // most the buffer size.
+        let padding = self.capacity - frames;
+        let drained = self.handed.saturating_sub(padding);
+        self.audio = self.audio.saturating_sub(drained);
+        self.handed = padding + frames;
+        dry
+    }
+
+    /// The request was answered with `audio` frames of real audio, padded with silence to the
+    /// size asked for.
+    fn filled(&mut self, audio: usize) {
+        self.audio += audio;
+    }
+}
+
+/// What happens when the output stream fails.
+///
+/// A stream error means the callback stops being invoked — no more audio, and the queue stops
+/// draining, so `is_finished()` would never fire either. Record it so the owner can rebuild onto
+/// whatever device is current now; printing alone leaves playback dead.
+///
+/// A function rather than an inline closure so that a retry with another buffer size can build a
+/// second one of the same type.
+fn device_error_callback(shared: Arc<Shared>) -> impl FnMut(cpal::StreamError) + Send + 'static {
+    move |e| {
+        eprintln!("audio output error: {e}");
+        shared.device_error.store(true, Ordering::Relaxed);
+    }
+}
+
+/// `want` as a frame count this device will accept, or `None` for the system default.
+///
+/// Offloaded (hardware) audio paths publish limits and get clamped to them. A software path
+/// publishes none, and WASAPI there will take anything up to two seconds.
+fn fixed_buffer_frames(config: &cpal::SupportedStreamConfig, want: Duration) -> Option<u32> {
+    if want.is_zero() {
+        return None;
+    }
+    let frames = (want.as_secs_f64() * config.sample_rate().0 as f64).round() as u32;
+    Some(match *config.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => frames.clamp(min, max.max(min)),
+        cpal::SupportedBufferSize::Unknown => frames,
+    })
 }
 
 /// Spawn the thread that keeps the queue topped up for one track.
@@ -432,15 +550,23 @@ impl Player {
     /// must describe what is actually being heard, or synced lyrics run confidently wrong for the
     /// whole track. See [`Player::started_at`].
     pub fn play_at(url: &str, offset: Duration) -> Result<Self> {
-        Self::play_on(url, offset, &Output::Default)
+        Self::play_on(url, offset, &Output::Default, DEVICE_BUFFER)
     }
 
-    /// As [`Player::play_at`], but on a chosen endpoint.
+    /// As [`Player::play_at`], but on a chosen endpoint, with `device_buffer` of audio queued in
+    /// Windows ahead of the speaker (see [`DEVICE_BUFFER`]).
     ///
-    /// The choice is honoured once, here. A [`Player`] never migrates between devices — the
-    /// owner throws it away and builds another, which is the same disposable-player pattern
-    /// every other recovery path uses.
-    pub fn play_on(url: &str, offset: Duration, output: &Output) -> Result<Self> {
+    /// Both are honoured once, here. A [`Player`] never migrates between devices or resizes its
+    /// buffer. The owner throws it away and builds another, which is the same disposable-player
+    /// pattern every other recovery path uses. The buffer is clamped to what the device permits,
+    /// and if the device refuses it outright the player falls back to the system default rather
+    /// than failing to play.
+    pub fn play_on(
+        url: &str,
+        offset: Duration,
+        output: &Output,
+        device_buffer: Duration,
+    ) -> Result<Self> {
         let device = resolve_device(output)?;
         let device_name = device.name().unwrap_or_else(|_| "unknown".into());
         let config = device
@@ -482,7 +608,7 @@ impl Player {
         let capacity = format.sample_rate as usize
             * format.channels as usize
             * TARGET_BUFFER.as_secs() as usize;
-        let (producer, mut consumer) = rtrb::RingBuffer::<i16>::new(capacity);
+        let (mut producer, mut consumer) = rtrb::RingBuffer::<i16>::new(capacity);
 
         // Seed both counters, not just the position: `drift()` is `decoded - position - buffered`,
         // so seeding the position alone would leave it saturated at zero and silently retire the
@@ -497,6 +623,9 @@ impl Player {
             decoder_finished: AtomicBool::new(false),
             decode_error: AtomicBool::new(false),
             starved: AtomicU64::new(0),
+            device_underruns: AtomicU64::new(0),
+            device_capacity: AtomicU64::new(0),
+            device_audio: AtomicU64::new(0),
             delivered: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
@@ -509,35 +638,22 @@ impl Player {
             blend_done: AtomicBool::new(false),
         });
 
-        // Decode thread: keep the queue topped up, backing off when full so a track is streamed
-        // rather than pulled wholly into memory.
-        //
-        // CRITICAL: decoded samples are never discarded. An earlier version dropped whatever did
-        // not fit before fetching the next chunk, which both lost audio and — when the dropped
-        // count was odd — permanently shifted left/right interleaving, garbling everything after
-        // it. Anything that doesn't fit stays in `pending` until there is room.
-        spawn_decode(decoder, first_chunk, Arc::clone(&shared), producer, format);
-
-        let callback_shared = Arc::clone(&shared);
+        // Everything the callback takes ownership of is declared `mut`, so a refused buffer size
+        // can be retried with a fresh set. The closure moves them, and a closure that failed to
+        // become a stream is dropped along with them. See the loop below.
+        let mut callback_shared = Arc::clone(&shared);
         let channels = config.channels() as u64;
         let channel_count = config.channels() as usize;
 
         // One slot, because one blend at a time is all that means anything. `rtrb` carries any
         // type, so this moves a whole prepared voice across without the callback waiting on a
         // lock or building anything itself.
-        let (blend_tx, mut blend_rx) = rtrb::RingBuffer::<Handoff>::new(1);
+        let (mut blend_tx, mut blend_rx) = rtrb::RingBuffer::<Handoff>::new(1);
         // Spent queues travel back out. Two slots so a handover never blocks on the control
         // thread not having drained yet.
-        let (mut retire_tx, retire_rx) = rtrb::RingBuffer::<rtrb::Consumer<i16>>::new(2);
+        let (mut retire_tx, mut retire_rx) = rtrb::RingBuffer::<rtrb::Consumer<i16>>::new(2);
 
-        // A stream error means the callback stops being invoked — no more audio, and the queue
-        // stops draining, so `is_finished()` would never fire either. Record it so the owner can
-        // rebuild onto whatever device is current now; printing alone leaves playback dead.
-        let error_shared = Arc::clone(&shared);
-        let error_callback = move |e| {
-            eprintln!("audio output error: {e}");
-            error_shared.device_error.store(true, Ordering::Relaxed);
-        };
+        let mut error_callback = device_error_callback(Arc::clone(&shared));
 
         // A volume change arrives as a step: the callback reads a new target between one buffer
         // and the next, and moving a waveform's amplitude discontinuously is heard as a click.
@@ -570,9 +686,21 @@ impl Player {
                 // allocate. Whatever the device asks for is processed in frame-aligned passes of
                 // at most this size.
                 let mut scratch = [0.0f32; MIX_BLOCK];
+                let mut device = DeviceQueue::default();
                 move |output: &mut [$sample], _: &cpal::OutputCallbackInfo| {
                     let paused = callback_shared.paused.load(Ordering::Relaxed);
                     let target = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
+
+                    // Counted only while playing: a late callback during a pause glitches into
+                    // silence, which nobody hears.
+                    if device.requested(output.len() / channel_count) && !paused {
+                        callback_shared
+                            .device_underruns
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    callback_shared
+                        .device_capacity
+                        .store(device.capacity as u64, Ordering::Relaxed);
 
                     // A blend that has been handed over starts on this callback. Popping a queue
                     // is the whole cost here; the voice and the `Arc` were built by the sender.
@@ -687,6 +815,11 @@ impl Player {
                         *slot = $convert(0.0f32);
                     }
 
+                    device.filled(written / channel_count);
+                    callback_shared
+                        .device_audio
+                        .store(device.audio as u64, Ordering::Relaxed);
+
                     // Silence we were forced to invent because the queue ran dry: the dropout,
                     // counted. Two exclusions, both cases where an empty queue is expected rather
                     // than a fault — the end of a track, and the priming gap before the first
@@ -732,35 +865,78 @@ impl Player {
         // turning the volume down costs no resolution at all. Doing the multiply in the old
         // 16-bit fixed point instead threw away roughly a bit per halving, so a comfortable
         // listening level would have been played back as 11- or 12-bit audio.
-        let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => device.build_output_stream(
-                &config.config(),
-                callback!(f32, |s: f32| (s / 32768.0).clamp(-1.0, 1.0)),
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::I16 => device.build_output_stream(
-                &config.config(),
-                callback!(i16, |s: f32| s.round().clamp(-32768.0, 32767.0) as i16),
-                error_callback,
-                None,
-            ),
-            cpal::SampleFormat::U16 => device.build_output_stream(
-                &config.config(),
-                callback!(
-                    u16,
-                    |s: f32| (s.round().clamp(-32768.0, 32767.0) as i32 + 32768) as u16
+        //
+        // The buffer size asked for first, then the system default if the device refuses it.
+        // An unusual size is the one thing here that a working device might reject, and refusing
+        // to play over a tuning preference would turn a crackle into silence.
+        let asked = fixed_buffer_frames(&config, device_buffer);
+        let mut sizes = asked
+            .map(cpal::BufferSize::Fixed)
+            .into_iter()
+            .chain(std::iter::once(cpal::BufferSize::Default));
+        let mut stream_config = config.config();
+        let stream = loop {
+            stream_config.buffer_size = sizes.next().expect("Default is tried last, and once");
+            let built = match config.sample_format() {
+                cpal::SampleFormat::F32 => device.build_output_stream(
+                    &stream_config,
+                    callback!(f32, |s: f32| (s / 32768.0).clamp(-1.0, 1.0)),
+                    error_callback,
+                    None,
                 ),
-                error_callback,
-                None,
-            ),
-            other => {
-                return Err(Error::Device(format!(
-                    "unsupported output sample format {other:?}"
-                )))
+                cpal::SampleFormat::I16 => device.build_output_stream(
+                    &stream_config,
+                    callback!(i16, |s: f32| s.round().clamp(-32768.0, 32767.0) as i16),
+                    error_callback,
+                    None,
+                ),
+                cpal::SampleFormat::U16 => device.build_output_stream(
+                    &stream_config,
+                    callback!(
+                        u16,
+                        |s: f32| (s.round().clamp(-32768.0, 32767.0) as i32 + 32768) as u16
+                    ),
+                    error_callback,
+                    None,
+                ),
+                other => {
+                    return Err(Error::Device(format!(
+                        "unsupported output sample format {other:?}"
+                    )))
+                }
+            };
+            match built {
+                Ok(stream) => break stream,
+                Err(e) if stream_config.buffer_size != cpal::BufferSize::Default => {
+                    eprintln!(
+                        "device refused a {:?} buffer ({e}); using its default",
+                        stream_config.buffer_size
+                    );
+                    // The refused closure took these with it. Nothing has been decoded into the
+                    // queue yet, so a fresh one loses nothing.
+                    (producer, consumer) = rtrb::RingBuffer::<i16>::new(capacity);
+                    (blend_tx, blend_rx) = rtrb::RingBuffer::<Handoff>::new(1);
+                    (retire_tx, retire_rx) = rtrb::RingBuffer::<rtrb::Consumer<i16>>::new(2);
+                    callback_shared = Arc::clone(&shared);
+                    error_callback = device_error_callback(Arc::clone(&shared));
+                }
+                Err(e) => return Err(Error::Device(format!("could not open output stream: {e}"))),
             }
-        }
-        .map_err(|e| Error::Device(format!("could not open output stream: {e}")))?;
+        };
+        let asked = match stream_config.buffer_size {
+            cpal::BufferSize::Fixed(frames) => frames as u64,
+            cpal::BufferSize::Default => 0,
+        };
+
+        // Decode thread: keep the queue topped up, backing off when full so a track is streamed
+        // rather than pulled wholly into memory. Started only once the stream exists, because the
+        // queue it fills is not settled until then.
+        //
+        // CRITICAL: decoded samples are never discarded. An earlier version dropped whatever did
+        // not fit before fetching the next chunk, which both lost audio and — when the dropped
+        // count was odd — permanently shifted left/right interleaving, garbling everything after
+        // it. Anything that doesn't fit stays in `pending` until there is room.
+        spawn_decode(decoder, first_chunk, Arc::clone(&shared), producer, format);
 
         stream
             .play()
@@ -777,9 +953,30 @@ impl Player {
             base_frames: 0,
             base_decoded: 0,
             track_start: Duration::ZERO,
+            heard_floor: start_frames,
+            asked_buffer_frames: asked,
             device_name,
             _stream: stream,
         })
+    }
+
+    /// Callbacks that found the device's own queue empty: the crackle a busy machine makes,
+    /// counted. Should stay at zero. Distinct from [`Player::starved`], which counts the *decoded*
+    /// queue running dry; this one happens with a full queue, because the callback that hands it
+    /// over was late.
+    pub fn device_underruns(&self) -> u64 {
+        self.shared.device_underruns.load(Ordering::Relaxed)
+    }
+
+    /// How much audio Windows holds between the callback and the speaker: the size measured from
+    /// the device once it has asked for audio, or the size asked for until then. Zero only if
+    /// neither is known (the system default, before the first callback).
+    pub fn device_buffer(&self) -> Duration {
+        let frames = match self.shared.device_capacity.load(Ordering::Relaxed) {
+            0 => self.asked_buffer_frames,
+            learned => learned,
+        };
+        Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
     }
 
     /// Where in the track this player actually began, as reported by the source's own first
@@ -805,14 +1002,28 @@ impl Player {
 
     /// How far into the track the listener actually is.
     ///
-    /// Derived from frames delivered to the device, so it stays honest even though decoding runs
-    /// well ahead — which is exactly what synced lyrics need.
+    /// Derived from frames delivered to the device, less what is still waiting in the device's
+    /// own buffer, so it stays honest even though decoding runs well ahead. That is exactly what
+    /// synced lyrics need.
     pub fn position(&self) -> Duration {
-        let frames = self
+        let heard = self
             .shared
             .frames_played
             .load(Ordering::Relaxed)
-            .saturating_sub(self.base_frames);
+            .saturating_sub(self.shared.device_audio.load(Ordering::Relaxed))
+            .max(self.heard_floor);
+        self.since_track_start(heard)
+    }
+
+    /// How far into the track the audio handed to the device reaches. Ahead of
+    /// [`Player::position`] by the device buffer, and the right figure for bookkeeping that
+    /// counts samples rather than what the listener hears: see [`Player::drift`].
+    fn delivered(&self) -> Duration {
+        self.since_track_start(self.shared.frames_played.load(Ordering::Relaxed))
+    }
+
+    fn since_track_start(&self, frames_played: u64) -> Duration {
+        let frames = frames_played.saturating_sub(self.base_frames);
         self.track_start
             + Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
     }
@@ -906,9 +1117,13 @@ impl Player {
     /// How far `decoded()` has run ahead of what has been played plus what is still queued.
     ///
     /// Should stay at essentially zero. Anything that grows over time is lost audio.
+    ///
+    /// Measured against what was *delivered*, not [`Player::position`]: audio sitting in the
+    /// device buffer has left the queue without being lost, and counting it as missing would
+    /// report the buffer size as drift.
     pub fn drift(&self) -> Duration {
         self.decoded()
-            .saturating_sub(self.position() + self.buffered())
+            .saturating_sub(self.delivered() + self.buffered())
     }
 
     pub fn format(&self) -> Format {
@@ -1005,6 +1220,9 @@ impl Player {
         self.base_frames = self.shared.frames_played.load(Ordering::Relaxed);
         self.base_decoded = self.shared.total_decoded.load(Ordering::Relaxed);
         self.track_start = landed;
+        // The blend's tail is still in the device, but it is this same track just before
+        // `landed`, so holding the playhead at `landed` until it plays is the honest answer.
+        self.heard_floor = self.base_frames;
 
         // The old track's ending is not the new one's. Cleared before the thread that will set
         // them again for real.
@@ -1105,6 +1323,108 @@ mod tests {
         let (mut tx, _rx) = rtrb::RingBuffer::<u8>::new(1);
         assert!(tx.push(1).is_ok());
         assert!(tx.push(2).is_err(), "a one-slot queue accepted two blends");
+    }
+
+    /// A 30 ms buffer at 48 kHz on a 10 ms engine: 1440 frames, refilled 480 at a time.
+    const BUFFER: usize = 1440;
+    const PERIOD: usize = 480;
+
+    fn steady() -> DeviceQueue {
+        let mut device = DeviceQueue::default();
+        assert!(
+            !device.requested(BUFFER),
+            "the first fill is not a late one"
+        );
+        device.filled(BUFFER);
+        for _ in 0..10 {
+            assert!(
+                !device.requested(PERIOD),
+                "an on-time callback counted as late"
+            );
+            device.filled(PERIOD);
+        }
+        device
+    }
+
+    #[test]
+    fn a_callback_on_time_is_not_an_underrun() {
+        let device = steady();
+        assert_eq!(device.capacity, BUFFER);
+        assert_eq!(
+            device.audio, BUFFER,
+            "a full buffer of music is waiting to be heard"
+        );
+    }
+
+    #[test]
+    fn late_but_in_time_is_not_an_underrun() {
+        let mut device = steady();
+        // Two periods late: two thirds drained, but there was still audio queued.
+        assert!(!device.requested(BUFFER - PERIOD));
+    }
+
+    #[test]
+    fn a_callback_that_finds_the_device_empty_is_an_underrun() {
+        let mut device = steady();
+        assert!(device.requested(BUFFER));
+        device.filled(BUFFER);
+        // And recovers: the next on-time callback is fine again.
+        assert!(!device.requested(PERIOD));
+    }
+
+    /// A device whose buffer is a single period asks for the whole buffer every time. That is
+    /// how it always looks, so it must not count as a fault, or the adaptive sizing would grow
+    /// the buffer on a machine that is not struggling at all.
+    #[test]
+    fn a_one_period_buffer_is_never_accused() {
+        let mut device = DeviceQueue::default();
+        for _ in 0..10 {
+            assert!(!device.requested(PERIOD));
+            device.filled(PERIOD);
+        }
+    }
+
+    /// If the first request was somehow not the whole buffer, a later bigger one teaches the
+    /// real size instead of being reported as a glitch.
+    #[test]
+    fn a_bigger_request_teaches_the_size() {
+        let mut device = DeviceQueue::default();
+        assert!(!device.requested(PERIOD));
+        assert!(!device.requested(BUFFER));
+        assert_eq!(device.capacity, BUFFER);
+    }
+
+    /// Pausing writes silence behind the music. The music still plays out, so the playhead has
+    /// to keep moving until it has, and then stop, rather than run back by the buffer size.
+    #[test]
+    fn music_ahead_of_padding_drains_to_zero() {
+        let mut device = steady();
+        let mut last = device.audio;
+        for _ in 0..4 {
+            device.requested(PERIOD);
+            device.filled(0);
+            assert!(
+                device.audio <= last,
+                "audio in the device grew during a pause"
+            );
+            last = device.audio;
+        }
+        assert_eq!(device.audio, 0, "the music before the pause has all played");
+    }
+
+    #[test]
+    fn audio_in_the_device_never_exceeds_the_buffer() {
+        let mut device = steady();
+        for frames in [PERIOD, 2 * PERIOD, BUFFER, PERIOD] {
+            device.requested(frames);
+            device.filled(frames);
+            assert!(
+                device.audio <= device.capacity,
+                "{} > {}",
+                device.audio,
+                device.capacity
+            );
+        }
     }
 
     /// The registration has to actually succeed, and it fails silently: a wrong task name, a

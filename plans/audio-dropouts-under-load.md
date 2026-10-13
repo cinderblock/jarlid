@@ -104,10 +104,11 @@ User report: under CPU load the audio gets *scratchy*. That is a different sound
 multi-second hole a dry 5 s ring buffer makes, and it points at the **device buffer**, not the
 decode thread.
 
-- `Player::new` opens the stream with `default_output_config().config()`, i.e.
+- `Player::new` opened the stream with `default_output_config().config()`, i.e.
   `BufferSize::Default`. cpal 0.16 turns that into `buffer_duration = 0` in
   `IAudioClient::Initialize` (`src/host/wasapi/device.rs`), so WASAPI shared mode uses its
-  minimum: roughly one ~10 ms engine period of cushion between our callback and the speaker.
+  minimum. **Measured: 22 ms** (1056 frames at 48 kHz) on the Dell monitor's Intel Display Audio
+  endpoint, refilled one ~10 ms engine period at a time.
 - A callback that is late by more than that glitches, even at `TIME_CRITICAL`, and even with
   five seconds of decoded audio sitting in the ring. Short repeated glitches are heard as
   crackle.
@@ -115,14 +116,39 @@ decode thread.
   callback with a full ring counts zero. A clean `starved` reading would not clear the app.
 - cpal fills `buffer_frames - GetCurrentPadding()` each event, so a larger requested buffer
   is real cushion, not just a bigger allocation.
+- cpal's `OutputCallbackInfo::timestamp().playback` is **not** usable for latency: it is
+  `callback + frames_available`, which says nothing about what is already queued. The request
+  size is the useful signal, since `requested = buffer - padding`.
 
-Proposed (not started, awaiting the user's go-ahead):
+### Decisions (user, 2026-10-13; don't re-ask)
 
-- [ ] Request `BufferSize::Fixed(~100 ms)`, clamped to the device's `SupportedBufferSize`.
-      Costs: pause/volume react up to ~100 ms later; the playhead (lyrics) runs ahead by the
-      device latency unless corrected from `OutputCallbackInfo::timestamp()`.
-- [ ] Measure callback lateness (gap between callbacks vs. the buffer length) and report it
-      next to `starved` in diagnostics, so "scratchy" has a number too.
-- [ ] First check: when it crackles, does other audio on the machine (browser, etc.)
-      crackle at the same moment? If yes, it is `audiodg` / driver / DPC latency and no
-      change here can fix it.
+- **Start small and grow only when needed**, rather than a fixed 100 ms. The user asked for about
+  30 ms "so it still feels fast", growing if we are dropping frames.
+
+### What shipped
+
+- [x] `audio::DEVICE_BUFFER` = 30 ms, passed to `Player::play_on` as `BufferSize::Fixed`, clamped
+      to the device's `SupportedBufferSize`. If the device refuses the size, the player falls back
+      to `BufferSize::Default` rather than failing. The ring and channels are rebuilt for the
+      retry, and the decode thread is now spawned only after the stream exists.
+- [x] Underrun detection (`DeviceQueue` in `player.rs`, unit-tested): a callback that asks for
+      the *whole* buffer found the device queue empty. It is only counted once a smaller request
+      has proved the buffer is bigger than one period, and never while paused.
+- [x] Adaptive size (`DeviceBuffer` in `audio_thread.rs`, unit-tested): 2 underruns within 60 s
+      doubles the size, 30 → 60 → 120 → 240 ms (the cap). The next player gets the new size. If
+      underruns continue on the current, undersized player after a grow, it is rebuilt mid-song
+      without spending the recovery budget. 10 minutes without an underrun halves it again, but
+      only at the next natural build, never by forcing one.
+- [x] Position correction: `position()` subtracts the real audio still in the device buffer, so
+      lyrics stay synced at 240 ms. `drift()` uses the uncorrected delivered count, or it would
+      report the buffer as lost audio.
+- [x] Diagnostics report: `underruns N (device buffer X ms)` next to `starved`.
+- [x] `crates/audio/examples/device-buffer.rs`: plays a file muted at a given size and prints
+      the measured buffer, underruns and position. Verified: 30 ms and 240 ms are granted
+      exactly, and the position tracks wall-clock time at both (0.500 s at 0.5 s).
+- [ ] Confirm under real load: underruns should appear and the buffer should grow. This was not
+      reproducible here, because beating a `TIME_CRITICAL` thread needs a realtime-class
+      process. The detection logic is covered by unit tests on simulated request sequences.
+- [ ] When it crackles, does other audio on the machine crackle at the same moment? If so, the
+      cause is `audiodg`, a driver or DPC latency, and no change here can fix it. This question
+      is still open with the user.

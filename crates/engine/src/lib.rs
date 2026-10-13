@@ -754,6 +754,18 @@ impl Engine {
         self.audio.starved()
     }
 
+    /// Times this session the output callback was late enough for Windows' own buffer to run
+    /// out: the crackle under load. Should stay at zero, or near it.
+    pub fn device_underruns(&self) -> u64 {
+        self.audio.device_underruns()
+    }
+
+    /// How much audio Windows holds ahead of the speaker for the live player. Grows on its own
+    /// while underruns recur, and shrinks back once they stop.
+    pub fn device_buffer(&self) -> Duration {
+        self.audio.device_buffer()
+    }
+
     /// The tempo of the current track, measured from its audio.
     ///
     /// Pandora sends no BPM — nor key, nor anything else musicological — so this is computed
