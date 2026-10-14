@@ -56,23 +56,48 @@ fn audio_cache_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
     Some(app.path().app_cache_dir().ok()?.join("audio"))
 }
 
-/// The engine's view of the cache setting: `None` when it is off.
-fn cache_of(app: &AppHandle, cache: &crate::settings::AudioCache) -> Option<engine::CacheConfig> {
-    if !cache.enabled {
-        return None;
+/// Where the next song is downloaded for auto-sync when the song cache is off. Holds the song
+/// playing and the one after it at most, and nothing once auto-sync is off.
+fn transient_audio_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    Some(app.path().app_cache_dir().ok()?.join("audio-next"))
+}
+
+/// The engine's view of the cache: the song cache when it is on. When it is off but auto-sync is
+/// ready, a transient one instead, sized to nothing, so eviction keeps only the song playing and
+/// the one about to play. That way the next song is still downloaded whole, and the analysis
+/// reads the very file that will play rather than fetching the song a second time. Otherwise
+/// `None`.
+fn cache_of(app: &AppHandle, settings: &crate::settings::Settings) -> Option<engine::CacheConfig> {
+    if settings.audio_cache.enabled {
+        return Some(engine::CacheConfig {
+            dir: audio_cache_dir(app)?,
+            max_bytes: settings.audio_cache.max_bytes(),
+        });
     }
-    Some(engine::CacheConfig {
-        dir: audio_cache_dir(app)?,
-        max_bytes: cache.max_bytes(),
-    })
+    if crate::autosync::wants_next_file(app, &settings.auto_sync) {
+        return Some(engine::CacheConfig {
+            dir: transient_audio_dir(app)?,
+            max_bytes: 0,
+        });
+    }
+    None
 }
 
 /// Push the cache setting at a running engine, if there is one. Same shape as [`apply_blend`].
-pub fn apply_audio_cache(app: &AppHandle, cache: &crate::settings::AudioCache) {
+///
+/// Also empties the transient directory whenever it is not the one in use: songs kept only for
+/// auto-sync are not the listener's to keep.
+pub fn apply_audio_cache(app: &AppHandle, settings: &crate::settings::Settings) {
+    let config = cache_of(app, settings);
+    if let Some(dir) = transient_audio_dir(app) {
+        if config.as_ref().map(|c| &c.dir) != Some(&dir) {
+            engine::cache::clear(&dir);
+        }
+    }
     let Some(engine) = app.state::<NativeEngine>().try_engine() else {
         return;
     };
-    engine.set_audio_cache(cache_of(app, cache));
+    engine.set_audio_cache(config);
 }
 
 /// How much the song cache holds, for the Settings page. Works signed out, and with the cache
@@ -252,7 +277,7 @@ async fn attach(
     engine.set_volume(saved.volume.amplitude());
     engine.set_output(output_of(saved.output_device.as_deref()));
     engine.set_blend(blend_of(&saved.blend));
-    engine.set_audio_cache(cache_of(app, &saved.audio_cache));
+    engine.set_audio_cache(cache_of(app, &saved));
 
     // Station list for the picker and the Stations page. Tokens go with it (switching
     // station and exporting one both need the token), and so do Pandora's special-station
@@ -313,6 +338,10 @@ async fn attach(
                             "engine://thumbs",
                             json!({ "thumbUp": track.is_thumbed_up(), "thumbDown": false }),
                         );
+                        crate::autosync::on_track_started(&app, &track);
+                    }
+                    Event::NextDownloaded(track, path) => {
+                        crate::autosync::on_next_downloaded(&app, *track, path);
                     }
                     Event::StreamTaken => {
                         // Its own event, not a generic error: this one is recoverable and has an

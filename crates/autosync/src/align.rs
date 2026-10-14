@@ -71,9 +71,56 @@ pub struct Alignment {
     pub lines: Vec<LineTime>,
     pub lyric_words: usize,
     pub matched_words: usize,
+    /// Seconds per sung word, measured from consecutive matched words.
+    pub word_seconds: f64,
 }
 
+/// Pause assumed between lines when spacing out lines nothing anchors.
+const LINE_GAP: f64 = 0.5;
+
 impl Alignment {
+    /// Every non-blank line with a time, in order, for display.
+    ///
+    /// Lines between anchors already have one. Lines before the first anchor or after the last
+    /// have nothing to go on, so they are spaced out from it by their word counts, at the measured
+    /// singing rate, inside `0..=duration`. Without this they would vanish from the pane, which
+    /// shows only timed lines. Empty if nothing anchored at all.
+    pub fn timed(&self, lines: &[&str], duration: f64) -> Vec<crate::lrc::Line> {
+        let mut t: Vec<Option<f64>> = self.lines.iter().map(|l| l.t).collect();
+        let span = |i: usize| self.lines[i].words as f64 * self.word_seconds + LINE_GAP;
+        let Some(first) = t.iter().position(Option::is_some) else {
+            return Vec::new();
+        };
+        let last = t.iter().rposition(Option::is_some).unwrap_or(first);
+        for i in (0..first).rev() {
+            if self.lines[i].words > 0 {
+                let next = t[i + 1..].iter().flatten().next().copied().unwrap_or(0.0);
+                t[i] = Some((next - span(i)).max(0.0));
+            }
+        }
+        for i in last + 1..t.len() {
+            if self.lines[i].words > 0 {
+                let (k, prev) = (0..i)
+                    .rev()
+                    .find_map(|k| t[k].map(|p| (k, p)))
+                    .unwrap_or((i, 0.0));
+                t[i] = Some((prev + span(k)).min(duration.max(prev)));
+            }
+        }
+        lines
+            .iter()
+            .zip(&t)
+            .zip(&self.lines)
+            .filter(|(_, l)| l.words > 0)
+            .filter_map(|((text, t), _)| {
+                t.map(|t| crate::lrc::Line {
+                    t,
+                    text: text.trim().to_string(),
+                })
+            })
+            .collect()
+    }
+
     /// Share of lyric words found in what was heard.
     pub fn coverage(&self) -> f64 {
         self.matched_words as f64 / self.lyric_words.max(1) as f64
@@ -152,6 +199,7 @@ pub fn align_with(lines: &[&str], heard: &[Heard], params: &Params) -> Alignment
         lines: out,
         lyric_words: lyric.len(),
         matched_words,
+        word_seconds,
     }
 }
 
@@ -417,5 +465,34 @@ mod tests {
             ("sea", 8.2),
         ]);
         assert_eq!(exact(&lines, &h).lines[0].t, Some(5.0));
+    }
+
+    #[test]
+    fn timed_gives_every_line_a_time_in_order() {
+        let lines = [
+            "before one",
+            "",
+            "the anchor line",
+            "after one",
+            "after two",
+        ];
+        let h = heard(&[("the", 20.0), ("anchor", 20.4), ("line", 20.8)]);
+        let a = exact(&lines, &h);
+        let timed = a.timed(&lines, 30.0);
+        let texts: Vec<&str> = timed.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            ["before one", "the anchor line", "after one", "after two"]
+        );
+        assert!(timed.windows(2).all(|w| w[0].t <= w[1].t), "{timed:?}");
+        assert!(timed[0].t < 20.0 && timed[0].t >= 0.0);
+        assert_eq!(timed[1].t, 20.0);
+        assert!(timed[3].t <= 30.0);
+    }
+
+    #[test]
+    fn timed_is_empty_when_nothing_anchored() {
+        let lines = ["never heard"];
+        assert!(exact(&lines, &[]).timed(&lines, 30.0).is_empty());
     }
 }

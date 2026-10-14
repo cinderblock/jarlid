@@ -41,6 +41,10 @@ socket2 = "0.5"
 # The native Pandora client: protocol, audio and playback. Replaces the engine webview.
 engine = { path = "../../crates/engine" }
 pandora = { path = "../../crates/pandora" }
+# Auto-synced lyrics: decoding to 16 kHz for the speech sidecar (Media Foundation, as playback
+# uses), and aligning what it heard with the lyric text. See src/autosync.
+audio = { path = "../../crates/audio" }
+autosync = { path = "../../crates/autosync" }
 tauri-plugin-single-instance = "2.4.3"
 
 # The LRCLIB publish token costs ~2^24 SHA-256 hashes. Unoptimised that is minutes

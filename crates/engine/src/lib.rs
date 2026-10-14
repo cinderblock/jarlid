@@ -134,6 +134,13 @@ pub enum Event {
     /// Pandora permits one concurrent stream per account; another device has it.
     StreamTaken,
     Error(String),
+    /// The next track is on disk in full, at this path, and will play from there. Sent once per
+    /// track, whether it was just downloaded or was already in the cache.
+    ///
+    /// The file is complete and stays put until it has played: it is pinned against eviction as
+    /// "the one about to play". That is what lets the auto-sync analysis read the same bytes the
+    /// player will, rather than fetching the song a second time.
+    NextDownloaded(Box<Track>, std::path::PathBuf),
 }
 
 /// A track and when Pandora issued it.
@@ -532,6 +539,16 @@ impl Engine {
         self.cache.lock().ok()?.clone()
     }
 
+    /// The complete file for `pandora_id` in the current cache, if there is one.
+    pub fn cached_file(&self, pandora_id: &str) -> Option<std::path::PathBuf> {
+        cache::find(&self.cache_config()?.dir, pandora_id)
+    }
+
+    /// The track queued to play next, if the queue holds one.
+    pub async fn upcoming(&self) -> Option<Track> {
+        Some(self.state.lock().await.queue.first()?.track.clone())
+    }
+
     /// What to hand the audio thread for `track`: its file in the cache when there is one,
     /// otherwise its stream URL.
     fn source_of(&self, track: &Track) -> String {
@@ -553,18 +570,27 @@ impl Engine {
             let next = state.queue.first()?.track.clone();
             (next, cache_pins(&state))
         };
-        if !cacheable(&next) || cache::find(&config.dir, &next.pandora_id).is_some() {
+        if !cacheable(&next) {
             return Some(next.pandora_id);
+        }
+        if let Some(path) = cache::find(&config.dir, &next.pandora_id) {
+            let id = next.pandora_id.clone();
+            let _ = self
+                .events
+                .send(Event::NextDownloaded(Box::new(next), path));
+            return Some(id);
         }
 
         let http = self.http.clone();
         let config = config.clone();
+        let events = self.events.clone();
         let id = next.pandora_id.clone();
         tokio::spawn(async move {
             match cache::store(&http, &config.dir, &next.pandora_id, &next.audio_url).await {
-                Ok(_) => {
+                Ok(path) => {
                     let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
                     cache::evict(&config.dir, config.max_bytes, &keep);
+                    let _ = events.send(Event::NextDownloaded(Box::new(next), path));
                 }
                 // Nothing is lost: the track streams as it always did.
                 Err(e) => eprintln!("[cache] {}: {e}", next.song_title),

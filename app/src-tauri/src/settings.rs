@@ -216,6 +216,29 @@ pub struct Settings {
     pub audio_cache: AudioCache,
     /// Write everything the app logs to a file. Off unless asked for; see `debug_log`.
     pub debug_log: bool,
+    /// Generate synced lyrics on this machine when LRCLIB has only plain ones. See `autosync`.
+    pub auto_sync: AutoSync,
+}
+
+/// Auto-synced lyrics. See `autosync`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AutoSync {
+    /// Off unless asked for: turning it on downloads a speech engine of about 700 MB.
+    pub enabled: bool,
+    /// Let the engine use the graphics card. On an integrated GPU this is no faster than the
+    /// CPU, but it leaves the CPU to playback; off is the escape hatch for a GPU driver that
+    /// misbehaves.
+    pub gpu: bool,
+}
+
+impl Default for AutoSync {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            gpu: true,
+        }
+    }
 }
 
 /// Songs kept on disk. See `engine::cache`.
@@ -407,8 +430,9 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Setting
     // apply live from the UI; blending would otherwise appear to do nothing until a restart,
     // which reads as a broken setting rather than a deferred one.
     crate::native::apply_blend(&app, &settings.blend);
-    crate::native::apply_audio_cache(&app, &settings.audio_cache);
+    crate::native::apply_audio_cache(&app, &settings);
     crate::debug_log::apply(&app, settings.debug_log);
+    crate::autosync::apply(&app, &settings.auto_sync);
     Ok(settings)
 }
 
@@ -629,7 +653,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false,"autoSync":{"enabled":false,"gpu":true}}"#
         );
 
         let daily = Settings {
@@ -652,6 +676,10 @@ mod tests {
                 max_mb: 2048,
             },
             debug_log: true,
+            auto_sync: AutoSync {
+                enabled: true,
+                gpu: false,
+            },
         };
         let text = serde_json::to_string(&daily).unwrap();
         assert!(text.contains(r#""updatePolicy":"notifyOnly""#), "{text}");

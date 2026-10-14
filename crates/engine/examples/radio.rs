@@ -70,6 +70,9 @@ async fn main() {
                     eprintln!("\n!! Pandora is playing on another device — stop it and retry.");
                 }
                 engine::Event::Error(message) => eprintln!("   error: {message}"),
+                engine::Event::NextDownloaded(track, path) => {
+                    println!("   next on disk: {} ({})", track.song_title, path.display())
+                }
             }
         }
     });

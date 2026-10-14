@@ -1,3 +1,4 @@
+mod autosync;
 mod build_info;
 mod debug_log;
 mod diagnostics;
@@ -567,6 +568,7 @@ pub fn run() {
         .manage(updates::UpdateCtl::default())
         .manage(settings::SettingsCtl::default())
         .manage(diagnostics::Diagnostics::default())
+        .manage(autosync::AutoSyncCtl::default())
         // Remember main-window position/size across launches.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
@@ -608,6 +610,9 @@ pub fn run() {
             native::native_output_device,
             debug_log::debug_log_path,
             debug_log::debug_log_reveal,
+            autosync::autosync_status,
+            autosync::autosync_install,
+            autosync::autosync_remove,
             player_cmd,
             remote_cmd,
             remote_presets,
@@ -632,6 +637,10 @@ pub fn run() {
                     .record("panic", &panic);
             }
             native::init(&app.handle().clone());
+            // Auto-synced lyrics: tidy what a previous run left mid-job, and pick up a download
+            // that was interrupted when the app last closed.
+            autosync::init(app.handle());
+            autosync::apply(app.handle(), &settings::get(app.handle()).auto_sync);
 
             // The engine webview is gone. Pandora's site is no longer loaded, scraped or
             // driven — `native::init` above speaks the protocol directly and plays the audio

@@ -45,6 +45,12 @@ pub struct Lyrics {
     /// that a cache file or the frontend could carry.
     #[serde(skip_deserializing, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// True when `synced` was generated on this machine (see `autosync`) from LRCLIB's plain
+    /// lyrics, because LRCLIB had no synced ones. Output only, like `stale`: it is added on the
+    /// way out of [`fetch_lyrics`] and never stored in the LRCLIB cache, so a cached record can't
+    /// pass generated timings off as LRCLIB's.
+    #[serde(skip_deserializing, skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
 impl Lyrics {
@@ -114,7 +120,16 @@ fn track_key(artist: &str, track: &str, album: Option<&str>) -> String {
     )
 }
 
-fn hashed_file(dir: std::path::PathBuf, key: &str) -> Option<std::path::PathBuf> {
+/// The cache key for a track as Pandora names it, after the same clean-up every lookup applies.
+pub(crate) fn key_for(artist: &str, track: &str, album: Option<&str>) -> String {
+    track_key(
+        &undouble(artist),
+        &undouble(track),
+        album.map(undouble).as_deref(),
+    )
+}
+
+pub(crate) fn hashed_file(dir: std::path::PathBuf, key: &str) -> Option<std::path::PathBuf> {
     std::fs::create_dir_all(&dir).ok()?;
     let mut h: u64 = 0xcbf29ce484222325;
     for b in key.bytes() {
@@ -182,6 +197,32 @@ pub async fn fetch_lyrics(
     duration: Option<f64>,
     refresh: Option<bool>,
 ) -> Result<Lyrics, String> {
+    let key = key_for(&artist, &track, album.as_deref());
+    let mut found = lookup(&app, artist, track, album, duration, refresh).await?;
+    // Generated timings fill in only where LRCLIB has words but no timings, and never over
+    // the listener's own edit.
+    if found.synced.is_none() && !found.overridden {
+        if let Some(plain) = found.plain.as_deref() {
+            if let Some(lrc) = crate::autosync::stored_lrc(&app, &key, plain) {
+                found.synced = Some(lrc);
+                found.auto = true;
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// [`fetch_lyrics`] without the generated timings: what the listener's edit, their chosen
+/// record, the cache and LRCLIB say. Auto-sync asks this to decide whether a track needs it.
+pub(crate) async fn lookup(
+    app: &tauri::AppHandle,
+    artist: String,
+    track: String,
+    album: Option<String>,
+    duration: Option<f64>,
+    refresh: Option<bool>,
+) -> Result<Lyrics, String> {
+    let app = app.clone();
     let artist = undouble(&artist);
     let track = undouble(&track);
     let album = album.map(|a| undouble(&a));
@@ -476,6 +517,7 @@ fn from_lrclib(v: &serde_json::Value, source: &str) -> Lyrics {
         overridden: false,
         stale: false,
         pinned: false,
+        auto: false,
     }
 }
 
