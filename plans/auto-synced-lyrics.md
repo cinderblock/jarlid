@@ -50,6 +50,10 @@ Answered 2026-10-13:
   complete download replaces the stream, the way `engine::cache_next` already works. With
   the song cache off, the file is transient: it is deleted once played (or skipped).
   With the cache on, it is simply the cache entry.
+- **"Whisper" in the original ask meant Whistle** (Cactus Compute,
+  <https://cactuscompute.com/blog/whistle>), clarified 2026-10-13 mid-spike. So Whistle is
+  benchmarked alongside Parakeet and Whisper, on the same corpus and harness, and the engine
+  is picked on the numbers.
 - Benchmark harness first (§4), sidecar with hash-pinned on-demand download (§5),
   "Review & publish" through the timing editor, never auto-publish (§6): all approved.
 
@@ -261,6 +265,59 @@ pause analysis if the device-buffer readout shows underruns climbing.
   - **`--vad` broke timing**: with Silero VAD the token times were relative to the
     speech-only audio (errors of −80 to −160 s), and VAD discarded most of the singing
     (small ran in 29 s instead of 133 s). Don't use whisper.cpp's VAD on music as-is.
+- **Full corpus, windowed Parakeet q8_0 on CPU, 4 threads** (56 tracks, 2,895 scored lines,
+  13,288 s of audio in 4,674 s, **2.84× realtime**), aligner as of `441220c`:
+
+  | Pool | Tracks | Median | p90 | ≤0.3 s | ≤0.5 s | ≤1 s |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | All | 56 | 0.26 | 3.42 | 52% | 68% | 79% |
+  | All, each track's LRCLIB offset removed | 56 | 0.15 | 2.53 | 67% | 74% | 81% |
+  | Coverage ≥ 60% | 43 | 0.23 | 1.51 | 58% | 74% | 85% |
+  | Coverage ≥ 60%, offset removed | 43 | 0.13 | 0.94 | 74% | 82% | 89% |
+
+  - **Rap is the best case**, not the worst: Eminem *Guilty Conscience 2* 87% within 0.3 s,
+    J. Cole 90%, Kendrick *Not Like Us* 84%. Dense, dry, centred vocals.
+  - **Constant per-track offsets are LRCLIB's, not ours.** Bruno Mars *Talking to the Moon*
+    is −6.46 s on every line, Pink Floyd *Breathe* +3.66 s, Journey −1.30 s: synced against
+    another master. That's why "offset removed" is reported separately.
+  - **Hard failures are ASR silence.** Radiohead *Let Down*: 12 of 13 windows gave
+    "Segments (0)", with quiet, reverb-soaked vocals under a dense mix, so coverage was 2%.
+    Metallica *Wherever I May Roam* got 30%, Stevie Nicks *Stand Back* 23%. The coverage
+    gate catches these; vocal isolation is the candidate fix.
+- **Aligner tuning (on the q8_0 corpus results):**
+  - **One stray match anchored a whole line.** Mr. Brightside: "But it's just the price I
+    pay" matched 1 of 7 words (an "it's" from the line before) and pinned itself 20 s
+    early, dragging five interpolated lines with it. Rule: a line needs ≥2 matched words,
+    or all of its words if shorter (`min_anchor_words = 2`). Overall p90 went from 3.42 s
+    to 2.77 s.
+  - **Lead:** Parakeet's word starts run +0.15 s behind LRCLIB on the corpus. With
+    `lead = 0.15`, the median went from 0.26 to 0.19 s and ≤0.3 s from 52% to 59%. Larger
+    leads were worse. Now the default (`ca6aaf3`).
+  - `gap` −0.2/−0.6 and `match_sim` 0.5–0.8 made no meaningful difference. Left at −0.4
+    and 0.6.
+- **Whistle** (Cactus Compute, released 2026-10-02): Apache-2.0, a single 16.9 MB
+  `whistle.cact` plus a 1.5 MB `needle.exe` with a prebuilt `windows-x86_64` folder at
+  `Cactus-Compute/needle3`. CPU only, no GPU path. English, German, French, Spanish,
+  Italian, Dutch, Polish. Word timestamps come from decoder attention. It has
+  `--audio-keywords` biasing and windows long audio itself. On `coldplay-yellow` at 1 thread
+  (338 s for 266 s of audio):
+
+  | Config | Coverage | Median | p90 | ≤0.3 s | ≤1 s |
+  | --- | --- | --- | --- | --- | --- |
+  | whistle, no keywords | 46% | 1.37 | 5.45 | 32% | 46% |
+  | **whistle, lyric words as keywords** | 70% | 0.81 | 3.38 | 38% | 62% |
+  | whistle, lyric lines as keywords | 68% | 1.38 | 5.94 | 24% | 49% |
+  | parakeet q8_0 windowed (same aligner) | 72% | 0.13 | 1.11 | 70% | 84% |
+
+  - **Keyword biasing is a big lever for alignment.** We know the words, so feeding them
+    in lifts coverage from 46% to 70%. Whole lines did worse: the decoder echoes phrases
+    back (quote marks and all) at times they weren't sung.
+  - **Timing precision is the gap**, not recognition. Attention-derived word times are
+    about 6× less precise than Parakeet's TDT frame times, the same weakness Whisper
+    showed.
+  - **Download size is its big advantage:** 18 MB against 356 MB (Parakeet q4_0) or
+    669 MB (q8_0).
+  - Full-corpus run in progress (1 thread, so slow; it may need resuming).
 - **Engine choice so far:** Parakeet v3 is the primary candidate. It covers English and 24
   European languages, including Spanish, French, German, Italian and Portuguese. Whisper
   stays the candidate fallback for anything else (Japanese, Korean, Hindi …), pending a
@@ -285,9 +342,14 @@ pause analysis if the device-buffer readout shows underruns climbing.
   - [x] Speed sweep, 8 configs on one track (`coldplay-yellow`, 266 s). Results in
         Findings → "Sweep results".
   - [x] Fixes found by the sweep: Parakeet in 30 s windows; Whisper `-mc 0 -nfa`.
-  - [ ] Accuracy over the full corpus: windowed Parakeet q8 on CPU ← running
-  - [ ] Same, Vulkan f16, and q4_0 (smaller download)
-  - [ ] Aligner improvements, judged on the corpus numbers
+  - [x] Accuracy over the full corpus: windowed Parakeet q8_0 on CPU.
+  - [ ] Same, q4_0 CPU and f16 Vulkan, at 3 threads ← running (3 slots)
+  - [x] Aligner improvements round 1: anchor rule, lead, Params + bench sweeps (`ca6aaf3`).
+  - [x] Whistle on the test track: plain, word keywords, line keywords.
+  - [ ] Whistle (word keywords) over the full corpus ← running (1 slot, 1 thread)
+  - [ ] Vocal isolation trial on the failing tracks (Radiohead, Metallica, Stevie Nicks)
+  - [ ] Keyword biasing for Parakeet? It has no flag; check whether `parakeet.dll` exposes
+        any context biasing.
 
 Spike layout: `%LOCALAPPDATA%\jarlid-autosync-spike\` — `dl/` (official binaries),
 `src/whisper.cpp/build-vulkan/` (Vulkan build), `models/`, `corpus/<track>/`,

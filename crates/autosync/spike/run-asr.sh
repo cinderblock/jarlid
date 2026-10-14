@@ -18,6 +18,7 @@ out="$SPIKE/results/$config"; mkdir -p "$out"
 case "$config" in
   whisper-cpu-*|parakeet-cpu-*) bin="$CPU" ;;
   whisper-vk-*|parakeet-vk-*) bin="$GPU" ;;
+  whistle-*) bin="" ;;
   *) echo "unknown config $config" >&2; exit 2 ;;
 esac
 
@@ -43,6 +44,10 @@ for dir in "$@"; do
       chunks="$SPIKE/chunks/$track"; python -I "$(dirname "$0")/chunk.py" "$wav" "$chunks" 30 6
       quant="${config##*-}"; quant="${quant%w}"
       "$bin/parakeet-cli.exe" -t "$THREADS" -m "$M/ggml-parakeet-tdt-0.6b-v3-$quant.bin" -ps "$chunks"/*.wav > "$out/$track.txt" 2>&1 ;;
+    # Whistle (Cactus Compute), CPU only; the lyric's own words as keyword bias.
+    whistle-cpu-kwwords)
+      python -I "$(dirname "$0")/keywords.py" "$dir/plain.txt" > "$out/$track.kw"
+      "$SPIKE/dl/needle-win64/needle.exe" --model "$M/whistle.cact" --audio "$wav" --audio-language en         --audio-word-timestamps --audio-keywords "$out/$track.kw" --threads "$THREADS" > "$out/$track.json" 2> "$out/$track.err" ;;
     *) echo "unknown config $config" >&2; exit 2 ;;
   esac
   wall=$(awk "BEGIN{printf \"%.1f\", ($(date +%s%N) - $start) / 1e9}")
