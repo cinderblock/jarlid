@@ -295,6 +295,23 @@ pause analysis if the device-buffer readout shows underruns climbing.
     leads were worse. Now the default (`ca6aaf3`).
   - `gap` −0.2/−0.6 and `match_sim` 0.5–0.8 made no meaningful difference. Left at −0.4
     and 0.6.
+- **Quantisation and backend** (corpus, aligner as of `ca6aaf3`):
+
+  | Config | Tracks | × realtime | Median | p90 | ≤0.3 s | ≤1 s | Pass 60% gate |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | q8_0 CPU, 4 threads | 56 | 2.84 | 0.19 | 2.75 | 59% | 78% | 43/56 |
+  | q4_0 CPU, 3 threads | 56 | 3.05 | 0.22 | 5.47 | 54% | 72% | **34/56** |
+  | f16 Vulkan (iGPU), 3 threads | 33 of 56* | 2.74 | 0.17 | 2.98 | 61% | 78% | 26/33 |
+
+  On the same 31 tracks, q8_0 CPU and f16 Vulkan are **indistinguishable** (0.16 vs 0.17
+  median, 65% vs 65% ≤0.3 s, 83% vs 83% ≤1 s). q4_0 matches them where it passes the gate,
+  but fails it far more often. **Default: q8_0 (669 MB).** q4_0 isn't worth its
+  ~300 MB saving.
+
+  \* The 3-thread q4+Vulkan job hit the 2-hour background-task limit after 32 Vulkan tracks
+  and was stopped, not restarted. Its orphaned `parakeet-cli` had to be killed by hand:
+  `taskkill /T` on the broker's node process doesn't reach a grandchild started through
+  `bash -c`.
 - **Whistle** (Cactus Compute, released 2026-10-02): Apache-2.0, a single 16.9 MB
   `whistle.cact` plus a 1.5 MB `needle.exe` with a prebuilt `windows-x86_64` folder at
   `Cactus-Compute/needle3`. CPU only, no GPU path. English, German, French, Spanish,
@@ -343,7 +360,8 @@ pause analysis if the device-buffer readout shows underruns climbing.
         Findings → "Sweep results".
   - [x] Fixes found by the sweep: Parakeet in 30 s windows; Whisper `-mc 0 -nfa`.
   - [x] Accuracy over the full corpus: windowed Parakeet q8_0 on CPU.
-  - [ ] Same, q4_0 CPU and f16 Vulkan, at 3 threads ← running (3 slots)
+  - [x] Same, q4_0 CPU (56/56) and f16 Vulkan (32/56, stopped at the time limit), at 3
+        threads. q8_0 stays the default; Vulkan matches it in quality.
   - [x] Aligner improvements round 1: anchor rule, lead, Params + bench sweeps (`ca6aaf3`).
   - [x] Whistle on the test track: plain, word keywords, line keywords.
   - [ ] Whistle (word keywords) over the full corpus ← running (1 slot, 1 thread)
