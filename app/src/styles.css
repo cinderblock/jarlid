@@ -206,37 +206,26 @@ body {
 
   /* The rows that come and go, each the height it adds to the stack, margin and
      all. Zero unless a rule below this block turns it on. */
-  --row-source-toggle: 0px;
-  --row-mode: 0px;
   --row-source-station: 0px;
   --row-mini: 0px;
-  --rows-extra: calc(
-    var(--row-source-toggle) + var(--row-mode) + var(--row-source-station) + var(--row-mini)
-  );
+  --rows-extra: calc(var(--row-source-station) + var(--row-mini));
 }
 
 /* Rows that only some sessions have, put into the reserve while they are on screen.
-   Leaving them out was the "past albums' art over the text" bug: with a network
-   player on the LAN the source pill is shown permanently, and that alone made the
-   stage 41px taller than its budget, so at 1000×620 it ran from -10px to 630px and
-   the recently-played covers sat on top of the #tech readout. A station with modes
-   added another 28px.
+   Leaving them out was the "past albums' art over the text" bug: an unbudgeted row
+   made the stage taller than 92vh, and being centred it ran off both ends, the
+   recently-played covers landing on the #tech readout. (The source pill, 41px, and
+   the mode pill, 28px, were the rows that did it; both live in the top bar now.)
 
    Each number is the height the row adds, measured (it is fixed-size text, so it
-   does not move with the viewport): the source pill 29 + its 12 margin, the mode
-   pill 24 + 4, the QuickMix "from …" line 16 + 2, the mini player 52 + 18. The art
-   gives up exactly that room while the row is there and gets it back when it goes.
+   does not move with the viewport): the QuickMix "from …" line 16 + 2, the mini
+   player 52 + 18. The art gives up exactly that room while the row is there and gets
+   it back when it goes.
 
    Remote mode is deliberately *not* one of them, though its stack is 62px shorter
    (the volume slider's 34 in place of the history strip's 96). Giving the art that
    room made it jump in size every time the source toggle was pressed, and the art
    staying put across a switch matters more than 62px of it (user, 2026-10-13). */
-#player:has(#source-toggle:not([hidden])) {
-  --row-source-toggle: 41px;
-}
-#player:has(#mode-wrap:not([hidden])) {
-  --row-mode: 28px;
-}
 #player:has(#source-station:not([hidden])) {
   --row-source-station: 18px;
 }
@@ -294,47 +283,85 @@ body {
   margin-top: 26px;
   max-width: 100%;
 }
-/* Which source the screen and controls drive. Two segments in one pill; the chosen one takes
-   the accent. Shown whenever a network player has been found. */
-#source-toggle {
-  display: inline-flex;
-  max-width: 100%;
+/* Where the music plays — this computer or a network player — as the first control in the
+   top bar. Two segments in one 34px pill, the same height and wash as the round buttons
+   beside it, with the station name's uppercase type; the chosen one takes the accent.
+   Shown whenever a network player has been found.
+
+   It used to sit in .meta above the title, where it cost the album art 41px of height (and
+   the mode pill under it another 28) on every window with a speaker on the LAN. */
+#topbar #source-toggle {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 34px;
   padding: 3px;
-  margin-bottom: 12px;
-  border-radius: 999px;
+  border-radius: 17px;
   background: rgba(var(--wash), 0.07);
 }
-#source-toggle button {
-  display: inline-flex;
+#topbar #source-toggle button {
+  display: flex;
   align-items: center;
   gap: 7px;
+  width: auto;
+  height: 28px;
   min-width: 0;
-  border: none;
-  outline: none;
-  border-radius: 999px;
-  padding: 4px 12px;
+  padding: 0 11px;
+  border-radius: 14px;
   background: transparent;
   color: var(--faint);
   font-family: inherit;
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.14em;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
 }
-#source-toggle button:hover:not(:disabled) {
+#topbar #source-toggle button:hover:not(:disabled) {
   color: var(--fg);
+  background: transparent;
 }
-#source-toggle button.on {
+#topbar #source-toggle button.on {
   background: var(--accent-soft);
   color: var(--accent);
 }
-#source-toggle button:disabled {
+#topbar #source-toggle button:disabled {
   cursor: default;
   opacity: 0.6;
+}
+/* The speaker's name is the one label here that can be long ("Living Room Ceiling
+   Speakers" is 217px in this type), so it is the one that gives way, with an ellipsis.
+   It has to be its own box for that: `text-overflow` does nothing to text that is a
+   direct child of a flex container, which is why the old pill clipped mid-letter. */
+#source-remote-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.src-label {
+  white-space: pre;
+}
+/* " · idle" carries its own space; the segment's 7px gap on top of it read as a gap. */
+#source-remote-idle {
+  margin-left: -7px;
+}
+/* The compact form, for a bar with no room for the words even after both names have given
+   up what they can: an icon per segment, still with its dot. The words come back in a
+   tooltip (main.ts). */
+#topbar .src-icon {
+  display: none;
+  width: 15px;
+  height: 15px;
+}
+#topbar.compact .src-icon {
+  display: block;
+}
+#topbar.compact #source-toggle .src-label,
+#topbar.terse #source-remote-idle {
+  display: none;
+}
+#topbar.compact #source-toggle button {
+  gap: 6px;
+  padding: 0 10px;
 }
 /* Lit and breathing while that source is audibly playing; a hollow ring otherwise. */
 .src-dot {
@@ -369,19 +396,89 @@ body.remote #history {
    did the same thing, so they are one. It shows "Stations" before anything plays, so it is
    never a blank pill. */
 #topbar #station {
+  display: flex;
+  align-items: center;
   width: auto;
-  max-width: min(40vw, 320px);
+  min-width: 0;
   padding: 0 14px;
   border-radius: 17px;
   font-family: inherit;
 }
+/* The cap is on the name rather than the button: on the button (as `min(40vw, 320px)`)
+   the grid inside it let a long name run out past its own pill instead of ellipsizing —
+   246px of name in a 200px button at 500 wide. main.ts narrows it further when the bar
+   is short of room, never wider than this. */
 #station-name {
+  display: block;
+  max-width: min(calc(40vw - 28px), 292px);
+  min-width: 0;
   text-transform: uppercase;
   letter-spacing: 0.14em;
   font-size: 0.72rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The station's mode (My Station / Crowd Faves / Discovery / Deep Cuts …) is a modifier on
+   the station, so it is the right half of the station's own pill rather than a pill of its
+   own: [ STATION NAME | Crowd Faves ▾ ]. Sentence case and fainter than the name, behind a
+   hairline, so it reads as qualifying the name rather than as a second destination. A
+   station with fewer than two modes hides it, which leaves exactly the plain pill.
+
+   Hidden in remote mode too: modes are a setting on this computer's Pandora session, and
+   beside the speaker's station they would claim to change something they don't. */
+#mode-wrap {
+  position: relative;
+  flex: none;
+  /* Joined to the station: cancel the bar's gap between the two halves. */
+  margin-left: -8px;
+}
+body.remote #mode-wrap {
+  display: none;
+}
+body:not(.remote) #topbar:has(#mode-wrap:not([hidden])) #station {
+  border-radius: 17px 0 0 17px;
+  color: var(--dim);
+}
+#topbar #mode-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: auto;
+  padding: 0 13px 0 12px;
+  border-radius: 0 17px 17px 0;
+  color: var(--faint);
+  font-family: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+#topbar #mode-btn:hover {
+  color: var(--fg);
+}
+/* The hairline between the halves, inset so it reads as a divider within one pill. */
+#mode-btn::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 1px;
+  background: rgba(var(--wash), 0.14);
+}
+/* A small chevron: this half opens a list. Drawn in CSS because main.ts sets the button's
+   text, which would wipe a child element. */
+#mode-btn::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-top: -3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  opacity: 0.8;
 }
 /* The station name in flight between the spine and its row in the Stations page. A copy,
    living on top of everything, with the spine's type so the quarter turn is the only thing
@@ -406,33 +503,18 @@ body.remote #history {
   margin-top: 2px;
 }
 
-/* station modes (My Station / Crowd Faves / Discovery / Deep Cuts …) */
-#mode-wrap {
-  position: relative;
-  margin-top: 4px;
-}
-#mode-btn {
-  background: rgba(var(--wash), 0.08);
-  border: none;
-  outline: none;
-  border-radius: 999px;
-  padding: 3px 12px;
-  color: var(--dim);
-  font-family: inherit;
-  font-size: 0.72rem;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-}
-#mode-btn:hover {
-  background: rgba(var(--wash), 0.14);
-  color: var(--fg);
-}
+/* The list of modes drops from the top bar. Right-aligned to the pill's right end rather
+   than centred under the mode, because the bar is pinned to the window's right edge: the
+   mode's centre is as little as ~110px from it (cast and settings buttons after it), so a
+   centred 300px panel would hang ~40px off the window. Right-aligned, its right edge is the
+   pill's. The pill ends at most 98px from the window's right edge (the bar's 14px inset,
+   then cast and settings at 34 + 8 each), so capping the width at 100vw - 112px keeps the
+   left edge 14px inside the window too, however narrow it gets. */
 #mode-panel {
   position: absolute;
   top: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  width: 300px;
+  right: 0;
+  width: min(300px, calc(100vw - 112px));
   max-height: 340px;
   overflow-y: auto;
   scrollbar-width: thin;
@@ -555,15 +637,28 @@ body.remote #tech {
   display: none;
 }
 
-/* Top-right control cluster. Flex, so the station pill can grow and shrink with its name
-   without anything else moving. */
+/* Top-right control cluster, left to right: where the music plays, the station and its
+   mode, cast, settings. Flex, so the station pill can grow and shrink with its name
+   without anything else moving.
+
+   With a speaker on the LAN and a station with modes it is ~650px of controls, so it no
+   longer fits in the corner by itself. It is kept off everything else two ways: the lyrics
+   header starts below it (`.lyrics-pane` below), and main.ts caps its width at the lyrics
+   column — or the window, in the stacked layout, where it has a strip of its own — and
+   decides how it gives way when that is too narrow (fitTopbar). It is right-aligned, so
+   what overflows is the left end, which is why it is never allowed to. */
 #topbar {
   position: fixed;
   top: 14px;
   right: 14px;
   z-index: 6;
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+}
+#topbar > * {
+  flex: none;
 }
 #topbar button {
   width: 34px;
@@ -1006,7 +1101,11 @@ body.remote #remote-vol-wrap {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 2vh 0;
+  /* The header ("SYNCED LYRICS", the edit and version buttons) starts below the top bar,
+     which now spans much of this column's top: the bar ends 48px down (14 + 34), so the
+     header starts at 56 at the least. That only moves it on a window shorter than ~930px,
+     where 4vh + 2vh is less than 56 — by 19px at 620 tall. */
+  padding: max(2vh, calc(56px - 4vh)) 0 2vh;
 }
 .lyrics-head {
   display: flex;
@@ -1302,7 +1401,13 @@ body.remote #remote-vol-wrap {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
     gap: 1.5vh;
-    padding: 3vh 6vw;
+    /* The top bar gets a strip of its own here rather than a share of a column: the art
+       is centred at the top, so a bar beside it would have only the ~265px between the
+       art and the window's right edge (700×1000) and be in its compact form whenever a
+       speaker is on the LAN. 56px = the bar's 14 inset + 34 height + 8 of air. It costs
+       the lyrics 26px at 1000 tall, and nothing on a window over 1867px tall. */
+    --stack-top: max(3vh, 56px);
+    padding: var(--stack-top) 6vw 3vh;
     overflow: hidden;
     /* Height left over here goes to the lyrics, not to the art, so the optional
        rows must not narrow the progress bar and the history strip: counted in
@@ -1320,15 +1425,15 @@ body.remote #remote-vol-wrap {
      The third term keeps the stage inside its grid row. That row is `auto` and
      the stage has `min-height: 0`, so a stage taller than the window does not
      push the lyrics down: it overlaps them, and the history strip was drawn
-     across "LYRICS" and the first lines at 800×620 with the source pill, mode
-     pill, QuickMix line and mini player all showing. 92.5vh is the window less
-     this layout's 3vh padding and 1.5vh gap; the stack under the art is the
-     reserve less 32px, the 10 + 10 + 12 its tighter margins save. */
+     across "LYRICS" and the first lines at 800×620 with every optional row
+     showing. 95.5vh less the top strip is the window less this layout's padding
+     and its 1.5vh gap; the stack under the art is the reserve less 32px, the
+     10 + 10 + 12 its tighter margins save. */
   .art-wrap {
     width: min(
       34vh,
       calc(0.7 * var(--stage-w)),
-      calc(92.5vh + 32px - var(--stage-reserve))
+      calc(95.5vh - var(--stack-top) + 32px - var(--stage-reserve))
     );
   }
   .meta {
@@ -1384,9 +1489,9 @@ body.remote #remote-vol-wrap {
     --stage-gap: 24px;
     /* No .meta in the stack any more: the progress row, the transport and the
        history strip with their margins, plus 8 of slop. The two clamps are gone
-       with the title and artist they measured, and so are the optional rows that
-       live in the meta (the source pill, the mode pill, the QuickMix line) — the
-       meta sits beside the art now, so they make it taller rather than the stack.
+       with the title and artist they measured, and so is the optional row that
+       lives in the meta (the QuickMix line) — the meta sits beside the art now, so
+       it makes the meta taller rather than the stack.
        The mini player still changes the stack under the art. */
     --stage-reserve: calc(246px + var(--row-mini));
     --stage-w: min(

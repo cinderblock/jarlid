@@ -548,6 +548,8 @@ function showNewestEnd() {
 function showPlayer() {
   player.hidden = false;
   showNewestEnd();
+  // The top bar's room is the lyrics column, which has only just got a box.
+  fitTopbar();
 }
 
 // Cover-Flow-style perspective: items tilt away from the strip's center as
@@ -1447,7 +1449,13 @@ $("settings-btn").addEventListener("click", (e) => {
 // index.html paints from a cached preference before the first frame; this is the
 // authoritative answer arriving a moment later.
 void settingsPage.applyStoredAppearance();
-attachTip(stationBtn, () => "Stations — browse, cast, export");
+// The name gives way first when the top bar runs out of room (fitTopbar), so a cut name
+// is spelled out here.
+attachTip(stationBtn, () =>
+  isClipped(stationNameEl)
+    ? `${stationNameEl.textContent} — browse, cast, export`
+    : "Stations — browse, cast, export"
+);
 attachTip(speakersBtn, () => "Cast a station to the speakers");
 attachTip($("settings-btn"), () => "Settings");
 
@@ -1891,6 +1899,131 @@ function reflectRemoteStation() {
     if (activeToken) stationsPage.setActiveStation(activeStation, activeToken);
   }
 }
+
+// ---- top bar: fitting it beside the player ---------------------------------
+// The bar holds where the music plays, the station and its mode, cast and settings — ~650px
+// with a speaker on the LAN and a station with modes, more than a 1000px window has to the
+// right of the album art. It is capped at the lyrics column (it must not reach over the
+// art), or at the window less its insets in the stacked layout, where it has its own strip.
+//
+// When it doesn't fit, it gives way in a fixed order, least informative first:
+//   1. the station name ellipsizes, down to STATION_NAME_MIN;
+//   2. then " · idle" goes — an idle speaker's segment is already greyed out (disabled),
+//      and the station name gets back whatever that frees;
+//   3. then the speaker's name ellipsizes, down to SPEAKER_NAME_MIN;
+//   4. then the location toggle drops its words for an icon per segment (dots kept), and
+//      the station name gets back whatever that frees;
+//   5. and only then does the station name go below its floor.
+// Every cut name, and the dropped "idle", is in a tooltip. Step 2 is what keeps the words
+// at 1000×620 with an idle "Living Room", a station with modes and the cast button: 36px
+// short after step 1, and dropping " · idle" frees 43px.
+//
+// Measured rather than left to flex-shrink because the order is the point: flex shares a
+// shortfall out in proportion, so the speaker's name would be cut while the station name
+// still had room to give, and nothing in CSS can say "switch to icons once the names are as
+// short as they go" — that depends on how long the names are. A container query would have
+// to guess a width. Measuring reads the bar's own natural width, which nothing else depends
+// on, so there is no layout feedback loop: the lyrics column it is capped by does not move
+// when the bar changes.
+const topbar = $("topbar");
+const lyricsPane = document.querySelector<HTMLElement>(".lyrics-pane")!;
+const TOPBAR_INSET = 14; // #topbar's top/right in styles.css
+const STATION_NAME_MIN = 72; // "TODAY'S…" in the bar's type
+const SPEAKER_NAME_MIN = 64; // "LIVING…"
+const stackedLayout = matchMedia("(max-width: 820px)");
+
+function isClipped(el: HTMLElement) {
+  return el.scrollWidth > el.clientWidth + 0.5;
+}
+
+/** How wide the bar may be: up to the lyrics column, or the window in the stacked layout. */
+function topbarRoom(): number {
+  const lyr = lyricsPane.getBoundingClientRect();
+  const left = player.hidden || stackedLayout.matches || lyr.width === 0 ? TOPBAR_INSET : lyr.left;
+  return innerWidth - TOPBAR_INSET - left;
+}
+
+/** The bar's natural width: its visible controls end to end, overflow included. */
+function topbarNeed(): number {
+  const shown = Array.from(topbar.children).filter((el) => el.getClientRects().length > 0);
+  if (!shown.length) return 0;
+  return shown[shown.length - 1].getBoundingClientRect().right - shown[0].getBoundingClientRect().left;
+}
+
+function fitTopbar() {
+  topbar.style.maxWidth = "";
+  topbar.classList.remove("terse", "compact");
+  stationNameEl.style.maxWidth = "";
+  sourceRemoteName.style.maxWidth = "";
+  const room = topbarRoom();
+  topbar.style.maxWidth = `${Math.max(0, room)}px`;
+  let over = 0;
+  // After a step that frees room on its own, the names start again from full length.
+  const remeasure = () => {
+    stationNameEl.style.maxWidth = "";
+    sourceRemoteName.style.maxWidth = "";
+    over = topbarNeed() - room;
+  };
+  // Take up to `over` from an element's width, leaving at least `floor` of it.
+  const give = (el: HTMLElement, floor: number) => {
+    const w = el.getBoundingClientRect().width;
+    const cut = Math.min(over, Math.max(0, w - floor));
+    if (cut > 0) {
+      el.style.maxWidth = `${w - cut}px`;
+      over -= cut;
+    }
+  };
+
+  remeasure();
+  if (over <= 0) return;
+  give(stationNameEl, STATION_NAME_MIN);
+  if (over <= 0) return;
+  if (sourceToggle.hidden) {
+    give(stationNameEl, 0);
+    return;
+  }
+
+  if (!sourceRemoteIdle.hidden) {
+    topbar.classList.add("terse");
+    remeasure();
+    give(stationNameEl, STATION_NAME_MIN);
+    if (over <= 0) return;
+  }
+  give(sourceRemoteName, SPEAKER_NAME_MIN);
+  if (over <= 0) return;
+
+  topbar.classList.add("compact");
+  remeasure();
+  give(stationNameEl, STATION_NAME_MIN);
+  if (over > 0) give(stationNameEl, 0);
+}
+
+// Refit whenever something in the bar appears, disappears or is renamed, when remote mode
+// hides the mode, and when the room changes. The observer ignores `style` and `class`,
+// which are what fitTopbar itself writes.
+new MutationObserver(() => fitTopbar()).observe(topbar, {
+  subtree: true,
+  childList: true,
+  characterData: true,
+  attributes: true,
+  attributeFilter: ["hidden"],
+});
+new MutationObserver(() => fitTopbar()).observe(document.body, {
+  attributes: true,
+  attributeFilter: ["class"],
+});
+new ResizeObserver(() => fitTopbar()).observe(lyricsPane);
+window.addEventListener("resize", fitTopbar);
+void document.fonts.ready.then(fitTopbar);
+
+attachTip(sourceLocalBtn, () => (topbar.classList.contains("compact") ? "This computer" : ""));
+attachTip(sourceRemoteBtn, () =>
+  topbar.classList.contains("compact") ||
+  topbar.classList.contains("terse") ||
+  isClipped(sourceRemoteName)
+    ? `${remoteDevice}${remote ? "" : " · idle"}`
+    : ""
+);
 
 let remoteDevice = "";
 listen<RemoteState>("remote://state", (e) => {

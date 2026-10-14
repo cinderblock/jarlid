@@ -29,12 +29,16 @@ anywhere in it.
   picker, recently-played art gallery with per-track detail modal.
 - **Station Modes**: switch a station between My Station, Crowd Faves, Discovery, Deep Cuts,
   Newly Released, Artist Only, Energy Boost and Relax, with Pandora's own description of each
-  shown inline. Switching clears the queued tracks so the change is audible within a song or two.
+  shown inline. The mode is part of the station button in the top bar,
+  `STATION NAME | Crowd Faves ▾`, because it qualifies the station rather than being a place
+  of its own. Switching clears the queued tracks so the change is audible within a song or two.
 - **QuickMix shows its source**: QuickMix blends dozens of your stations, and each track says
   which one it came from — otherwise there's no way to tell what you're actually listening to.
-- **Network player (UPnP/DLNA + WiiM) remote mode**: a **This computer | speaker** toggle,
-  always on screen once a renderer is found, picks which source the screen, the play button
-  (and Space) and the media keys drive; a dot marks whichever is audibly playing. Whichever
+- **Network player (UPnP/DLNA + WiiM) remote mode**: a **This computer | speaker** toggle in
+  the top bar, always on screen once a renderer is found, picks which source the screen, the
+  play button (and Space) and the media keys drive; a dot marks whichever is audibly playing.
+  On a narrow window the toggle gives way after the station name: " · idle" goes, then the
+  speaker's name shortens, then it shows an icon per side, with the words in a tooltip. Whichever
   source *starts* playing takes over on its own (the speaker only while local is idle), and
   pausing never moves it — so Play resumes whatever you paused. With the speaker chosen,
   Jarlid is its display: art, synced lyrics, and (on a WiiM) the Pandora station it is on,

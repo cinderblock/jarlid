@@ -48,7 +48,22 @@
          "Stations" before anything is playing, so it is never a blank pill. Cast is its
          own button beside it and opens the same panel, where every row can be cast. -->
     <div id="topbar">
+      <!-- Where the music plays: this computer or a network player. Shown whenever one has
+           been found; the dot marks whichever is audibly playing. The icons are the compact
+           form, used only when the bar has no room for the words (see fitTopbar in main.ts). -->
+      <div id="source-toggle" role="radiogroup" aria-label="Playback source" hidden>
+        <button id="source-local" role="radio"><span class="src-dot"></span><svg class="src-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span class="src-label">This computer</span></button>
+        <button id="source-remote" role="radio"><span class="src-dot"></span><svg class="src-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"/><circle cx="12" cy="14" r="3.5"/><path d="M12 6.5h.01"/></svg><span id="source-remote-name" class="src-label"></span><span id="source-remote-idle" class="src-label"> · idle</span></button>
+      </div>
       <button id="station" aria-label="Stations"><span id="station-name">Stations</span></button>
+      <!-- The station's mode, as a modifier on the station: the right half of one pill.
+           Hidden for a station with fewer than two modes, which leaves the plain pill. -->
+      <div id="mode-wrap" hidden>
+        <button id="mode-btn"></button>
+        <div id="mode-panel" hidden>
+          <div id="mode-list"></div>
+        </div>
+      </div>
       <button id="speakers-btn" aria-label="Cast to speakers" hidden>
         <svg viewBox="0 0 24 24"><path d="M12 19h7a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v1"/><path d="M3 11a9 9 0 0 1 9 9M3 15a5 5 0 0 1 5 5M3 20h.01"/></svg>
       </button>
@@ -455,19 +470,7 @@
           <img id="art" alt="Album art" />
         </div>
         <div class="meta">
-          <!-- Which source the screen, play button and media keys drive. Shown whenever a
-               network player has been found; the dot marks whichever is audibly playing. -->
-          <div id="source-toggle" role="radiogroup" aria-label="Playback source" hidden>
-            <button id="source-local" role="radio"><span class="src-dot"></span>This computer</button>
-            <button id="source-remote" role="radio"><span class="src-dot"></span><span id="source-remote-name"></span><span id="source-remote-idle"> · idle</span></button>
-          </div>
           <div id="source-station" hidden></div>
-          <div id="mode-wrap" hidden>
-            <button id="mode-btn"></button>
-            <div id="mode-panel" hidden>
-              <div id="mode-list"></div>
-            </div>
-          </div>
           <h1 id="title" class="marquee"><span id="title-inner" class="marquee-inner">—</span></h1>
           <!-- Artist and album share a line rather than taking one each; the row they
                save goes to the album art. The dot is its own element so it can be
