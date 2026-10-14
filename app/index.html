@@ -318,6 +318,53 @@
             </div>
           </section>
 
+          <!-- Hidden until the backend says this build can offer it: until an engine release is
+               pinned, release builds have nothing to download. -->
+          <section class="set-section" id="set-autosync-section" hidden>
+            <h3>Auto-synced lyrics</h3>
+            <div class="set-item">
+              <b class="set-item-title">Time lyrics that have no timings</b>
+              <div class="set-item-text">
+                <p>Many songs on LRCLIB have their words but not when each line is sung. With
+                  this on, Jarlid listens to the song on this computer and works the timings
+                  out, so the lines light up as they are sung. Songs are worked on while the
+                  one before them plays, so they are usually ready when they start.</p>
+                <p>Turning it on downloads a speech engine of about 700 MB. Nothing you play
+                  leaves this computer, and nothing is published unless you choose to.</p>
+                <p id="set-autosync-status" class="set-item-status"></p>
+                <div class="set-progress" id="set-autosync-progress" hidden>
+                  <div class="set-progress-fill" id="set-autosync-progress-fill"></div>
+                </div>
+              </div>
+              <div class="set-item-ctl">
+                <input id="set-autosync-enabled" type="checkbox"
+                  aria-label="Time lyrics that have no timings" />
+              </div>
+            </div>
+
+            <div class="set-item" id="set-autosync-gpu-item" hidden>
+              <b class="set-item-title">Use the graphics card</b>
+              <div class="set-item-text">
+                <p>Leaves the processor free for everything else. Turn this off if lyrics
+                  never get timed and the debug log mentions the GPU.</p>
+              </div>
+              <div class="set-item-ctl">
+                <input id="set-autosync-gpu" type="checkbox" aria-label="Use the graphics card" />
+              </div>
+            </div>
+
+            <div class="set-item" id="set-autosync-remove-item" hidden>
+              <b class="set-item-title">Speech engine</b>
+              <div class="set-item-text">
+                <p>Removing it frees the disk space, and the timings it made. Turning auto-sync
+                  on again downloads it again.</p>
+              </div>
+              <div class="set-item-ctl">
+                <button id="set-autosync-remove" class="btn">Remove</button>
+              </div>
+            </div>
+          </section>
+
           <section class="set-section">
             <h3>Account</h3>
             <div class="set-item">

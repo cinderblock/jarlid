@@ -2,6 +2,7 @@
 // this, despite `native_sign_out` existing since the native client landed.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { createSelect, type Option } from "./select";
 import { setTheme, themePref, type ThemePref } from "./theme";
 import { recentsOrder, setRecentsOrder, type RecentsOrder } from "./recents";
@@ -38,6 +39,15 @@ const cacheClearBtn = $<HTMLButtonElement>("set-cache-clear");
 const debugLog = $<HTMLInputElement>("set-debug-log");
 const debugLogPath = $("set-debug-log-path");
 const debugLogShow = $<HTMLButtonElement>("set-debug-log-show");
+const autosyncSection = $("set-autosync-section");
+const autosyncEnabled = $<HTMLInputElement>("set-autosync-enabled");
+const autosyncStatusEl = $("set-autosync-status");
+const autosyncProgress = $("set-autosync-progress");
+const autosyncProgressFill = $("set-autosync-progress-fill");
+const autosyncGpuItem = $("set-autosync-gpu-item");
+const autosyncGpu = $<HTMLInputElement>("set-autosync-gpu");
+const autosyncActionItem = $("set-autosync-remove-item");
+const autosyncActionBtn = $<HTMLButtonElement>("set-autosync-remove");
 
 type Policy = "instant" | "afterSong" | "manualInstall" | "notifyOnly";
 type CheckSchedule =
@@ -57,6 +67,18 @@ interface AudioCache {
   /** MiB. */
   maxMb: number;
 }
+/** Auto-synced lyrics; see `settings::AutoSync`. */
+interface AutoSync {
+  enabled: boolean;
+  gpu: boolean;
+}
+/** Where the downloadable speech engine stands; see `autosync::Status`. */
+type AutoSyncStatus =
+  | { state: "unavailable" }
+  | { state: "notInstalled" }
+  | { state: "downloading"; done: number; total: number }
+  | { state: "installed"; bytes: number; version: string }
+  | { state: "failed"; message: string };
 /** What the song cache holds right now; see `engine::cache::CacheStats`. */
 interface CacheStats {
   bytes: number;
@@ -76,6 +98,7 @@ interface Settings {
   audioCache: AudioCache;
   /** Write everything the app logs to a file; see `debug_log.rs`. */
   debugLog: boolean;
+  autoSync: AutoSync;
 }
 
 /** The value used for "follow the Windows default", which is `null` on the wire. */
@@ -113,6 +136,10 @@ const outputSel = createSelect($("set-output-device"), [{ value: FOLLOW_DEFAULT,
 
 /** Sizes offered for the song cache, in MiB. */
 const CACHE_SIZES_MB = [256, 512, 1024, 2048, 5120, 10240];
+
+/** For a settings file written before auto-sync existed. Matches `AutoSync::default`. */
+const NO_AUTOSYNC: AutoSync = { enabled: false, gpu: true };
+let autosyncStatus: AutoSyncStatus = { state: "unavailable" };
 
 /** For a settings file written before the cache existed. Matches `AudioCache::default`. */
 const NO_CACHE: AudioCache = { enabled: false, maxMb: 1024 };
@@ -228,6 +255,7 @@ async function refreshSettings() {
     await refreshOutputNow();
     await refreshCacheStats();
     await refreshDebugLogPath();
+    await refreshAutosyncStatus();
   } catch {
     // Can't read them — don't show controls whose state would be a guess.
     setEnabled(false);
@@ -249,6 +277,8 @@ function setEnabled(on: boolean) {
   cacheEnabled.disabled = !on;
   cacheSizeSel.setDisabled(!on);
   debugLog.disabled = !on;
+  autosyncEnabled.disabled = !on;
+  autosyncGpu.disabled = !on;
 }
 
 /** Defaults for a settings file written before blending existed. */
@@ -393,6 +423,10 @@ function render(s: Settings) {
   cacheEnabled.checked = (s.audioCache ?? NO_CACHE).enabled;
   reflectCache();
   debugLog.checked = s.debugLog ?? false;
+  const autoSync = s.autoSync ?? NO_AUTOSYNC;
+  autosyncEnabled.checked = autoSync.enabled;
+  autosyncGpu.checked = autoSync.gpu;
+  reflectAutosync();
   const sched = s.checkSchedule;
   scheduleSel.setOptions(scheduleOptions(sched));
   scheduleSel.value =
@@ -480,6 +514,7 @@ async function persist() {
     outputDevice: readOutput(),
     audioCache: readCache(),
     debugLog: debugLog.checked,
+    autoSync: { enabled: autosyncEnabled.checked, gpu: autosyncGpu.checked },
   };
   timeInput.hidden = next.checkSchedule.kind !== "dailyAt";
   // Disabling a control takes focus with it, so a keyboard user would be dropped
@@ -570,6 +605,97 @@ cacheEnabled.addEventListener("change", () => {
 });
 
 debugLog.addEventListener("change", () => void persist());
+
+// Turning it on is the consent to download: the backend starts as soon as it is saved.
+autosyncEnabled.addEventListener("change", () => {
+  reflectAutosync();
+  void persist();
+});
+autosyncGpu.addEventListener("change", () => void persist());
+
+/**
+ * Show the section only where this build can offer it, then say where the engine stands.
+ * The one button changes job with the state — stop a download, retry a failed one, or
+ * remove what is installed — so there is never a control that can't do anything.
+ */
+function reflectAutosync() {
+  const st = autosyncStatus;
+  autosyncSection.hidden = st.state === "unavailable";
+  const on = autosyncEnabled.checked;
+  autosyncGpuItem.hidden = !on;
+  autosyncProgress.hidden = st.state !== "downloading";
+
+  let text = "";
+  let action: "" | "cancel" | "retry" | "remove" | "download" = "";
+  switch (st.state) {
+    case "notInstalled":
+      text = on ? "Not downloaded yet." : "";
+      action = on ? "download" : "";
+      break;
+    case "downloading": {
+      const pct = st.total ? Math.floor((st.done / st.total) * 100) : 0;
+      autosyncProgressFill.style.width = `${pct}%`;
+      text = `Downloading the speech engine… ${formatBytes(st.done)} of ${formatBytes(st.total)} (${pct}%)`;
+      action = "cancel";
+      break;
+    }
+    case "installed":
+      text = `Speech engine installed, ${formatBytes(st.bytes)}.${on ? "" : " Not in use while this is off."}`;
+      action = "remove";
+      break;
+    case "failed":
+      text = `The download didn't finish: ${st.message}`;
+      action = "retry";
+      break;
+  }
+  autosyncStatusEl.textContent = text;
+  autosyncActionItem.hidden = action === "";
+  autosyncActionBtn.dataset.action = action;
+  autosyncActionBtn.dataset.armed = "";
+  autosyncActionBtn.textContent = { "": "", cancel: "Stop download", retry: "Try again", remove: "Remove", download: "Download" }[action];
+}
+
+async function refreshAutosyncStatus() {
+  try {
+    autosyncStatus = await invoke<AutoSyncStatus>("autosync_status");
+  } catch {
+    autosyncStatus = { state: "unavailable" };
+  }
+  reflectAutosync();
+}
+
+void listen<AutoSyncStatus>("autosync://status", (e) => {
+  autosyncStatus = e.payload;
+  reflectAutosync();
+});
+
+autosyncActionBtn.addEventListener("click", async () => {
+  const action = autosyncActionBtn.dataset.action;
+  if (action === "retry" || action === "download") {
+    autosyncStatus = await invoke<AutoSyncStatus>("autosync_install").catch(() => autosyncStatus);
+    reflectAutosync();
+    return;
+  }
+  // Removing throws away a 700 MB download, so it takes two clicks, like signing out.
+  if (action === "remove" && autosyncActionBtn.dataset.armed !== "1") {
+    autosyncActionBtn.dataset.armed = "1";
+    autosyncActionBtn.textContent = "Really remove it?";
+    setTimeout(() => {
+      if (autosyncActionBtn.dataset.armed === "1") reflectAutosync();
+    }, 4000);
+    return;
+  }
+  // Stopping or removing both mean "not now": turn the setting off too, or the next launch
+  // would start downloading again.
+  autosyncEnabled.checked = false;
+  try {
+    autosyncStatus = await invoke<AutoSyncStatus>("autosync_remove");
+  } catch {
+    await refreshAutosyncStatus();
+  }
+  reflectAutosync();
+  void persist();
+});
 
 /** Say where the log is, in full: the folder is three levels deep in AppData. */
 async function refreshDebugLogPath() {

@@ -272,3 +272,71 @@ fn read(
         let _ = tx.send(JobEvent::Error("the speech engine exited".into()));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// End to end against a real engine: start it, hear a track, check the words come back in
+    /// order and on the track's clock. Needs an engine directory holding the DLLs, the sidecar
+    /// and the `autosync-manifest.json` that `package.ps1` writes, plus the model and a 16 kHz
+    /// mono WAV:
+    ///
+    /// ```text
+    /// JARLID_AUTOSYNC_TEST_ENGINE=<dir> JARLID_AUTOSYNC_TEST_MODEL=<model.bin> \
+    /// JARLID_AUTOSYNC_TEST_WAV=<audio.wav> cargo test -- --ignored sidecar_hears_a_track
+    /// ```
+    #[test]
+    #[ignore = "needs a built engine, the model and a WAV; see the doc comment"]
+    fn sidecar_hears_a_track() {
+        let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
+        let engine_dir = std::path::PathBuf::from(var("JARLID_AUTOSYNC_TEST_ENGINE"));
+        let manifest: super::super::component::Manifest = serde_json::from_slice(
+            &std::fs::read(engine_dir.join("autosync-manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let installed = Installed {
+            manifest,
+            engine_dir,
+            model: var("JARLID_AUTOSYNC_TEST_MODEL").into(),
+        };
+        let sidecar = Sidecar::start(&installed, false, 3).expect("start");
+        let wav = std::path::PathBuf::from(var("JARLID_AUTOSYNC_TEST_WAV"));
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut rx = sidecar.transcribe("t1", &wav, 0.0).unwrap();
+            let (mut windows, mut words) = (0, Vec::new());
+            loop {
+                match rx.recv().await.expect("event") {
+                    JobEvent::Words { done, of, words: w } => {
+                        windows += 1;
+                        assert_eq!(done, windows);
+                        assert!(of >= done);
+                        words.extend(w);
+                    }
+                    JobEvent::Done => break,
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+            assert!(windows > 1, "a song is several windows");
+            assert!(words.len() > 20, "heard only {} words", words.len());
+            assert!(words.iter().all(|w| w.start >= 0.0 && w.end >= w.start));
+
+            // A second job on the same process: the model stays loaded between songs.
+            let mut rx = sidecar.transcribe("t2", &wav, 1e9).unwrap();
+            sidecar.cancel("t2");
+            loop {
+                match rx.recv().await.expect("event") {
+                    JobEvent::Cancelled | JobEvent::Done => break,
+                    JobEvent::Words { .. } => {}
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        });
+        assert!(sidecar.alive());
+    }
+}

@@ -37,6 +37,9 @@ export interface Lyrics {
   stale?: boolean;
   /// Set when the listener chose this record over the automatic match.
   pinned?: boolean;
+  /// Set when `synced` was worked out on this machine from LRCLIB's plain lyrics, because
+  /// LRCLIB had no timings (see `autosync` in Rust). Never published unless the listener does.
+  auto?: boolean;
 }
 
 export interface EditorContext {

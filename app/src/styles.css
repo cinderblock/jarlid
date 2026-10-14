@@ -2278,6 +2278,21 @@ body.remote #remote-vol-wrap {
 .set-item-status:empty {
   display: none;
 }
+/* A download's progress under its status line: the same thin track as the song's. */
+.set-progress {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 4px;
+  background: rgba(var(--wash), 0.14);
+  overflow: hidden;
+}
+.set-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.25s linear;
+}
 /* A path deep in AppData, with no spaces to break at. */
 #set-debug-log-path {
   overflow-wrap: anywhere;

@@ -744,7 +744,13 @@ function applyLyrics(res: Lyrics) {
   // picker runs can turn up a record the automatic lookup missed.
   lyricsEditBtn.hidden = false;
   lyricsVersionsBtn.hidden = lyricEditor.isEditing();
-  const note = res.overridden ? " · edited" : res.pinned ? " · your pick" : "";
+  const note = res.overridden
+    ? " · edited"
+    : res.pinned
+      ? " · your pick"
+      : res.auto
+        ? " · auto-synced"
+        : "";
 
   // Edit mode owns the pane's contents. Repainting under it would throw away the rows
   // and the caret mid-edit, so keep the state current and leave the DOM alone.
@@ -864,8 +870,44 @@ attachTip(lyricsEditBtn, () =>
     ? "Stop editing"
     : lastLyrics?.overridden
       ? "Edit lyrics (showing your local edit)"
-      : "Fix or time these lyrics"
+      : lastLyrics?.auto
+        ? "Check the auto-synced timings, and publish them to LRCLIB if they're right"
+        : "Fix or time these lyrics"
 );
+
+// ---- auto-synced lyrics --------------------------------------------------
+
+/// Progress from `autosync` in Rust: timings worked out on this machine for a song LRCLIB has
+/// words for but no timings. `lrc` is the whole song so far (every line has a time), or null
+/// while too little has been heard to trust; `final` ends it, `ok` saying whether the result
+/// passed the quality gate.
+interface AutoSyncLines {
+  title: string;
+  artist: string;
+  lrc: string | null;
+  done: number;
+  of: number;
+  final: boolean;
+  ok: boolean;
+}
+
+void listen<AutoSyncLines>("autosync://lines", (e) => {
+  const p = e.payload;
+  const key = `${p.title}|${p.artist}`;
+  if (key !== currentKey) return;
+  // Only ever in place of plain lyrics: never over real timings or the listener's own edit.
+  const shown = lastLyrics;
+  if (!shown?.plain || shown.overridden || (shown.synced && !shown.auto)) return;
+  // The editor and the version picker own the pane while they are open.
+  if (lyricEditor.isEditing() || lyricPicker.isOpen()) return;
+  if (p.final) {
+    // Ask again: the stored result comes back marked `auto`, or plain lyrics if it failed.
+    void loadLyricsFor(lastMeta, lastDuration, key);
+    return;
+  }
+  if (p.lrc) applyLyrics({ ...shown, synced: p.lrc, auto: true });
+  lyricsStatus.textContent = `${p.lrc ? "Synced lyrics" : "Lyrics"} · syncing ${p.done} of ${p.of}`;
+});
 
 // ---- playhead ----------------------------------------------------------
 // Playing/paused is derived from whether the position is actually moving —

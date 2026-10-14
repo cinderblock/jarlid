@@ -90,9 +90,17 @@ pub fn apply(app: &AppHandle, setting: &crate::settings::AutoSync) {
     }
     if component::available() && component::installed(app).is_none() {
         start_install(app);
-    } else {
-        kick(app);
+        return;
     }
+    // A changed GPU choice applies from the sidecar's next start, so an idle one can go now.
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let ctl = app.state::<AutoSyncCtl>();
+        if ctl.jobs.lock().unwrap().is_empty() {
+            ctl.sidecar.lock().await.take();
+        }
+        kick(&app);
+    });
 }
 
 /// Whether the engine should fetch the next song whole for us: auto-sync is on and installed.
@@ -609,6 +617,28 @@ mod tests {
     #[test]
     fn file_stems_are_safe() {
         assert_eq!(file_stem("TR:123/../x"), "TR_123____x");
+    }
+
+    /// Media Foundation straight to the sidecar's input format. Needs a real song:
+    /// `JARLID_AUTOSYNC_TEST_AUDIO=<file.m4a> cargo test -- --ignored decodes_to_16k`.
+    #[test]
+    #[ignore = "needs an audio file; see the doc comment"]
+    fn decodes_to_16k_wav() {
+        let src =
+            std::env::var("JARLID_AUTOSYNC_TEST_AUDIO").expect("set JARLID_AUTOSYNC_TEST_AUDIO");
+        let wav = std::env::temp_dir().join("jarlid-autosync-decode-test.wav");
+        decode_to_wav(&src, &wav).unwrap();
+        let bytes = std::fs::read(&wav).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(
+            u32::from_le_bytes(bytes[24..28].try_into().unwrap()),
+            16_000
+        );
+        assert!(
+            bytes.len() > 44 + 16_000 * 2 * 10,
+            "under ten seconds of audio"
+        );
+        let _ = std::fs::remove_file(&wav);
     }
 
     #[test]
