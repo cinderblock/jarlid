@@ -20,6 +20,17 @@ anywhere in it.
   "no lyrics found".
   Lyrics with no timestamps still follow the song: the pane drifts through them in proportion to
   the elapsed time, and holds still while you scroll it yourself.
+- **Auto-synced lyrics** *(opt-in)*: when LRCLIB has a song's words but not their timings,
+  Jarlid works them out on your computer. A speech model
+  ([Parakeet v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), run by whisper.cpp) hears
+  the song, and the known words are lined up against what it heard. The next song is worked on
+  while the current one plays, so it is usually ready when it starts; a song that starts with
+  nothing prepared fills in from the playhead as it is heard. Across 56 test songs, 74% of lines
+  land within 0.3 s of LRCLIB's hand-synced timings (89% within 1 s), on songs where the model
+  heard enough of the vocals to pass the quality check. The engine is about 700 MB and is
+  downloaded only when you turn this on in Settings; every file is checked against a hash this
+  build was released with. Nothing is published: auto-synced lyrics are marked as such, and the
+  timing editor can check them and publish them to LRCLIB if you choose.
 - **Native Windows media integration**: hardware media keys and the volume-flyout / lock-screen
   media panel (title, artist, album art, live state) via a real SMTC session, fed from the player
   itself rather than inferred from a page. Plus a **taskbar thumbnail toolbar** (thumbs down ·
@@ -206,6 +217,21 @@ A Tauri app whose only webview is our own UI. Three library crates do the real w
   the adaptive device-buffer policy, the opt-in song cache (`cache.rs`, keyed by `pandora_id`),
   and credentials in the Windows Credential Manager.
 
+Auto-synced lyrics add two more, kept apart so the large speech engine is never in the installer:
+
+- **`crates/autosync`** — pure Rust. Lines up a lyric's words with timed words a speech model
+  heard (a sequence alignment over normalised words), cuts a song into the overlapping windows
+  the model is fed, and scores results against known-good synced lyrics. Its `bench` example and
+  `engine`'s `autosync-corpus` example are the measurement harness behind every number in
+  `plans/auto-synced-lyrics.md`.
+- **`crates/autosync-sidecar`** — `jarlid-autosync.exe`, the downloadable sidecar. It loads
+  whisper.cpp's Parakeet runtime from DLLs at run time and answers a JSON-lines protocol on stdio
+  with timed words, a window at a time. `build-engine.ps1` builds the DLLs from a pinned
+  whisper.cpp release, with every CPU instruction-set level and Vulkan selected at run time;
+  `package.ps1` writes the manifest of file hashes; an `autosync-v*` tag publishes it all.
+  `app/src-tauri/src/autosync/` downloads and verifies it, runs it at below-normal priority, and
+  does the aligning, so aligner fixes ship with ordinary app updates.
+
 `app/src-tauri/src/native.rs` drives the engine and emits the same `engine://` events the old
 bridge script did, so the UI, media integration and lyrics needed no changes when the webview was
 removed. Lyrics still come from [LRCLIB](https://lrclib.net) via a Rust command.
@@ -232,7 +258,20 @@ bun install
 bun run tauri dev
 ```
 
-Frontend unit tests: `bun run test` in `app/`. Rust: `cargo test` in `app/src-tauri/`.
+Frontend unit tests: `bun run test` in `app/`. Rust: `cargo test` in `app/src-tauri/` and in
+`crates/`.
+
+Auto-synced lyrics are offered only by builds that pin an engine release (`MANIFEST_SHA256` in
+`app/src-tauri/src/autosync/component.rs`). To try them in a dev build before that, build the
+engine and sidecar locally and point the app at a manifest of local files:
+
+```sh
+pwsh crates/autosync-sidecar/build-engine.ps1 -Out C:/tmp/engine
+cargo build --release -p autosync-sidecar --manifest-path crates/Cargo.toml
+cp crates/target/release/jarlid-autosync.exe C:/tmp/engine/
+pwsh crates/autosync-sidecar/package.ps1 -Dist C:/tmp/engine -BaseUrl file:///C:/tmp/engine
+JARLID_AUTOSYNC_MANIFEST=C:/tmp/engine/autosync-manifest.json bun run tauri dev
+```
 
 Requirements: Rust, Bun, and the WebView2 runtime (WebView2 renders Jarlid's own UI; it no longer
 loads pandora.com). First launch: sign in with your Pandora account — the password goes to the
