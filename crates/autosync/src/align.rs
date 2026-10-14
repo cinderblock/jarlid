@@ -12,16 +12,43 @@
 use crate::text::{similarity, words};
 use crate::Heard;
 
-/// Below this, two words are not the same word misheard but two different words.
-const MATCH_SIM: f64 = 0.6;
-/// Cost of a lyric word the model did not hear, or a heard word not in the lyrics.
-const GAP: f64 = -0.4;
-/// Cost of pairing two unrelated words. Worse than two gaps, so the alignment prefers to leave
-/// both unmatched rather than pretend they correspond.
-const MISMATCH: f64 = -1.0;
-
 /// Fallback seconds-per-word, when too few words matched to measure it.
 const DEFAULT_WORD_SECONDS: f64 = 0.35;
+
+/// The aligner's tunables. [`Params::default`] is what ships; the fields are public so the bench
+/// can sweep them against the corpus.
+#[derive(Debug, Clone)]
+pub struct Params {
+    /// Below this, two words are not the same word misheard but two different words.
+    pub match_sim: f64,
+    /// Cost of a lyric word the model did not hear, or a heard word not in the lyrics.
+    pub gap: f64,
+    /// Cost of pairing two unrelated words. Worse than two gaps, so the alignment prefers to
+    /// leave both unmatched rather than pretend they correspond.
+    pub mismatch: f64,
+    /// Matched words a line needs before its time is read off them, unless every word in the
+    /// line matched. One stray match — an "it's" borrowed from the line before — is not
+    /// evidence, and a line anchored on it drags every interpolated line around it.
+    pub min_anchor_words: usize,
+    /// Seconds subtracted from every line. Lyrics are stamped where the line *begins to be
+    /// heard*, and a highlight that lands a beat early reads better than one a beat late.
+    /// Measured: Parakeet's windowed word starts run 0.15 s behind LRCLIB's hand-synced lines on
+    /// the 56-track corpus, and taking 0.15 s off moved lines within 0.3 s from 52% to 59%. Other
+    /// engines will need their own figure.
+    pub lead: f64,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self {
+            match_sim: 0.6,
+            gap: -0.4,
+            mismatch: -1.0,
+            min_anchor_words: 2,
+            lead: 0.15,
+        }
+    }
+}
 
 /// When one line starts.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +82,11 @@ impl Alignment {
 
 /// Align `lines` (the lyric text, one entry per line) against `heard`.
 pub fn align(lines: &[&str], heard: &[Heard]) -> Alignment {
+    align_with(lines, heard, &Params::default())
+}
+
+/// [`align`] with explicit tunables.
+pub fn align_with(lines: &[&str], heard: &[Heard], params: &Params) -> Alignment {
     // Every lyric word, tagged with its line.
     let mut lyric: Vec<(usize, String)> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -62,7 +94,7 @@ pub fn align(lines: &[&str], heard: &[Heard]) -> Alignment {
     }
     let heard_words: Vec<String> = heard.iter().map(|h| words(&h.text).concat()).collect();
 
-    let pairs = match_words(&lyric, &heard_words);
+    let pairs = match_words(&lyric, &heard_words, params);
     let matched_words = pairs.iter().filter(|p| p.is_some()).count();
 
     // Seconds per word, measured from consecutive matched words, so lines can be extrapolated
@@ -103,8 +135,13 @@ pub fn align(lines: &[&str], heard: &[Heard]) -> Alignment {
             entry.matched += 1;
             if entry.t.is_none() {
                 let before = k - first_word_of_line[*line].unwrap_or(k);
-                entry.t = Some(heard[j].start - before as f64 * word_seconds);
+                entry.t = Some(heard[j].start - before as f64 * word_seconds - params.lead);
             }
+        }
+    }
+    for line in out.iter_mut() {
+        if line.matched < params.min_anchor_words.min(line.words) {
+            line.t = None;
         }
     }
 
@@ -119,7 +156,7 @@ pub fn align(lines: &[&str], heard: &[Heard]) -> Alignment {
 }
 
 /// For each lyric word, the index of the heard word it aligned to, if any.
-fn match_words(lyric: &[(usize, String)], heard: &[String]) -> Vec<Option<usize>> {
+fn match_words(lyric: &[(usize, String)], heard: &[String], params: &Params) -> Vec<Option<usize>> {
     let (n, m) = (lyric.len(), heard.len());
     let width = m + 1;
     let mut score = vec![0f64; (n + 1) * width];
@@ -127,7 +164,7 @@ fn match_words(lyric: &[(usize, String)], heard: &[String]) -> Vec<Option<usize>
     let mut from = vec![0u8; (n + 1) * width];
 
     for i in 1..=n {
-        score[i * width] = i as f64 * GAP;
+        score[i * width] = i as f64 * params.gap;
         from[i * width] = 1;
     }
     // Row 0 stays zero: heard words before the first lyric word are free.
@@ -137,18 +174,18 @@ fn match_words(lyric: &[(usize, String)], heard: &[String]) -> Vec<Option<usize>
 
     let pair = |i: usize, j: usize| {
         let s = similarity(&lyric[i].1, &heard[j]);
-        if s >= MATCH_SIM {
+        if s >= params.match_sim {
             2.0 * s - 0.5
         } else {
-            MISMATCH
+            params.mismatch
         }
     };
 
     for i in 1..=n {
         for j in 1..=m {
             let diagonal = score[(i - 1) * width + j - 1] + pair(i - 1, j - 1);
-            let up = score[(i - 1) * width + j] + GAP;
-            let left = score[i * width + j - 1] + GAP;
+            let up = score[(i - 1) * width + j] + params.gap;
+            let left = score[i * width + j - 1] + params.gap;
             let (best, dir) = if diagonal >= up && diagonal >= left {
                 (diagonal, 0)
             } else if up >= left {
@@ -170,7 +207,7 @@ fn match_words(lyric: &[(usize, String)], heard: &[String]) -> Vec<Option<usize>
     while i > 0 {
         match from[i * width + j] {
             0 if j > 0 => {
-                if similarity(&lyric[i - 1].1, &heard[j - 1]) >= MATCH_SIM {
+                if similarity(&lyric[i - 1].1, &heard[j - 1]) >= params.match_sim {
                     out[i - 1] = Some(j - 1);
                 }
                 i -= 1;
@@ -238,6 +275,15 @@ fn median(values: &mut [f64]) -> Option<f64> {
 mod tests {
     use super::*;
 
+    /// Alignment with no lead, so tests can assert exact times.
+    fn exact(lines: &[&str], heard: &[Heard]) -> Alignment {
+        let params = Params {
+            lead: 0.0,
+            ..Params::default()
+        };
+        align_with(lines, heard, &params)
+    }
+
     fn heard(spec: &[(&str, f64)]) -> Vec<Heard> {
         spec.iter()
             .map(|&(text, start)| Heard {
@@ -270,7 +316,7 @@ mod tests {
             ("you", 16.7),
             ("again", 17.0),
         ]);
-        let a = align(&lines, &h);
+        let a = exact(&lines, &h);
         assert_eq!(a.lines[0].t, Some(10.0));
         assert_eq!(a.lines[1].t, None);
         assert_eq!(a.lines[2].t, Some(15.0));
@@ -291,7 +337,7 @@ mod tests {
             ("na", 9.3),
             ("na", 9.6),
         ]);
-        let a = align(&lines, &h);
+        let a = exact(&lines, &h);
         let t: Vec<Option<f64>> = a.lines.iter().map(|l| l.t).collect();
         assert_eq!(t, [Some(1.0), Some(5.0), Some(9.0)]);
     }
@@ -308,7 +354,7 @@ mod tests {
             ("line", 12.4),
             ("subscribe", 30.0),
         ]);
-        let a = align(&lines, &h);
+        let a = exact(&lines, &h);
         assert_eq!(a.lines[0].t, Some(4.0));
         assert!(a.lines[1].interpolated);
         let mid = a.lines[1].t.unwrap();
@@ -320,8 +366,56 @@ mod tests {
     fn unmatched_first_words_step_back() {
         let lines = ["oh yeah here we go"];
         let h = heard(&[("here", 10.0), ("we", 10.3), ("go", 10.6)]);
-        let a = align(&lines, &h);
+        let a = exact(&lines, &h);
         let t = a.lines[0].t.unwrap();
         assert!((t - (10.0 - 2.0 * 0.3)).abs() < 1e-9, "{t}");
+    }
+
+    #[test]
+    fn the_default_lead_moves_every_line_earlier() {
+        let lines = ["first line"];
+        let h = heard(&[("first", 10.0), ("line", 10.4)]);
+        assert_eq!(
+            align(&lines, &h).lines[0].t,
+            Some(10.0 - Params::default().lead)
+        );
+    }
+
+    #[test]
+    fn one_stray_word_does_not_anchor_a_long_line() {
+        // "it's" is heard once, and belongs to the first line; the second line must not be
+        // pinned to it, or every line interpolated around it moves too.
+        let lines = [
+            "because I just can't look it's killing me",
+            "but it's just the price I pay",
+        ];
+        let h = heard(&[
+            ("because", 1.0),
+            ("I", 1.3),
+            ("just", 1.6),
+            ("can't", 1.9),
+            ("look", 2.2),
+            ("killing", 2.8),
+            ("me", 3.1),
+            ("it's", 30.0),
+        ]);
+        let a = exact(&lines, &h);
+        assert_eq!(a.lines[0].t, Some(1.0));
+        assert_eq!(a.lines[1].matched, 1);
+        assert_eq!(a.lines[1].t, None);
+    }
+
+    #[test]
+    fn a_short_line_fully_matched_still_anchors() {
+        let lines = ["jealousy", "turning saints into the sea"];
+        let h = heard(&[
+            ("jealousy", 5.0),
+            ("turning", 7.0),
+            ("saints", 7.4),
+            ("into", 7.8),
+            ("the", 8.0),
+            ("sea", 8.2),
+        ]);
+        assert_eq!(exact(&lines, &h).lines[0].t, Some(5.0));
     }
 }
