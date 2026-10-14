@@ -192,10 +192,18 @@ pause analysis if the device-buffer readout shows underruns climbing.
      synced lyrics. Measure phase-1 alignment error, with and without vocal isolation.
 2. Sidecar crate + JSON protocol + CI build + pinned hashes — done except the first
    published release (`3eb5c9c`, `7452e47`). See "As built" below.
-3. Download manager + Settings UI (opt-in, progress, remove). ← current
-4. Engine hook: analyse the next track ahead; analyse the current track progressively.
-5. Lyrics integration: new sources, cache, precedence, pane status, quality gate.
-6. "Review & publish" through the timing editor.
+3. Download manager + Settings UI (opt-in, progress, remove) — done (`4523c85`, `45ed4b3`).
+4. Engine hook: analyse the next track ahead; analyse the current track progressively — done
+   (`4523c85`).
+5. Lyrics integration: new sources, cache, precedence, pane status, quality gate — done
+   (`4523c85`, `45ed4b3`).
+6. "Review & publish" through the timing editor — done by construction: auto-synced timings
+   are ordinary `synced` lyrics in the pane (marked `auto`), so the existing editor opens them
+   and its Publish button sends them to LRCLIB as a correction of the matched record. The
+   pencil's tip says so when they are auto-synced (`45ed4b3`).
+**Remaining before it ships:** publish `autosync-v0.1.0` and pin its manifest hash in
+`component.rs` (needs the user's go-ahead to push), then a live run in the app (needs the
+installed Jarlid closed). ← current
 7. Phase 2 quality work, as the benchmark dictates: vocal isolation, CTC aligner.
 8. Transcription-from-nothing mode (opt-in), if quality is tolerable.
 9. README section.
@@ -412,11 +420,20 @@ pause analysis if the device-buffer readout shows underruns climbing.
         context or biasing parameter; the decoder is greedy TDT.
 - [x] Step 2: sidecar (`3eb5c9c`), release workflow and manifest (`7452e47`).
   - [ ] First `autosync-v0.1.0` release published, and its manifest hash pinned in the app.
-- [ ] Step 3: download manager + Settings UI ← current
-- [ ] Step 4: engine hook (next track whole, transient when the song cache is off)
-- [ ] Step 5: lyrics integration
-- [ ] Step 6: Review & publish
-- [ ] Step 9: README
+- [x] Step 3: download manager + Settings UI (`4523c85`, `45ed4b3`).
+- [x] Step 4: engine hook: `NextDownloaded`, `cached_file`, `upcoming`, and the transient cache
+      (`4523c85`).
+- [x] Step 5: lyrics integration: `fetch_lyrics` adds stored results, a 60% coverage gate, live
+      `autosync://lines` (`4523c85`, `45ed4b3`).
+- [x] Step 6: Review & publish, through the existing editor (`45ed4b3`).
+- [x] Step 9: README (`ce246f5`).
+- [x] Integration tests (ignored by default): the real sidecar process end to end, and MF
+      decoding AAC to the 16 kHz WAV. Both pass against the local engine build.
+- [ ] Publish `autosync-v0.1.0`; pin `MANIFEST_SHA256`. **Waiting on the user** (push).
+- [ ] Live run in the app with a dev manifest. **Waiting on the user** (close Jarlid).
+- [ ] Step 7: vocal isolation for the songs the model barely hears (later).
+- [ ] Step 8: transcription for songs with no lyrics at all (later; protocol and sources leave
+      room for it).
 
 Spike layout: `%LOCALAPPDATA%\jarlid-autosync-spike\` — `dl/` (official binaries),
 `src/whisper.cpp/build-vulkan/` (Vulkan build), `models/`, `corpus/<track>/`,
@@ -425,7 +442,14 @@ Everything heavy goes through the CPU broker at 4 slots with `-t 4`.
 
 ## Open questions for the user
 
-None open. (The first five were answered 2026-10-13; see "Decisions already made".)
+1. **May I publish the engine?** It needs `master` pushed to `origin`, which also publishes
+   other sessions' unpushed commits (origin was 30+ behind), and a tag `autosync-v0.1.0`
+   pushed. CI then builds and publishes the engine release (`--latest=false`), and I pin its
+   manifest hash in `component.rs`. *Recommendation:* yes, when you're ready to push master
+   anyway. Until then, release builds simply don't show the setting.
+2. **A live test needs the installed Jarlid closed** for a few minutes: a dev build has the same
+   app identity (single-instance hands it over) and Pandora allows one stream. *Recommendation:*
+   tell me when, or run it yourself with the dev manifest command in the README.
 
 ## Things not to do
 
