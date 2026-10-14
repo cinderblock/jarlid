@@ -148,8 +148,43 @@ variant clips "THIS COMPUT" / "LIVING ROOM", and the mode dropdown overhangs the
 
 1. ~~Rolling log file?~~ Answered: an opt-in flag. Built.
 2. ~~Art size in remote mode?~~ Answered: don't change it. Done in `ad0b817`.
-3. Pills on one line: comparison shown. Recommendation: don't, because at ordinary window sizes
-   it either does nothing or clips the speaker's name.
+3. ~~Pills on one line?~~ Answered with a redesign instead (round 3).
+
+## Round 3 (user, 2026-10-13): location in the top bar, mode as a station modifier
+
+> variant like "crowd faves" should not be on the same line as the playback location. playback
+> location selection should be in the top bar with settings and radio selection. "crowd faves"
+> and the like should be a modifier on the selected station
+
+### Decisions (don't re-ask)
+
+- The playback-location toggle (`#source-toggle`) moves into `#topbar`, alongside the station
+  button and settings.
+- The station mode is a modifier on the station: one compound control in the top bar,
+  `[ STATION NAME | Crowd Faves ▾ ]`. When the station has fewer than two modes it is just the
+  station pill. Hidden in remote mode, because modes apply to the local engine, not the speaker.
+- Both leave `.meta`, so `--row-source-toggle` and `--row-mode` go away and the art gets their
+  69px back.
+
+### Progress
+
+- [x] Implementation, `605c73a`. Location toggle in `#topbar`; `#mode-wrap` is the right half of
+      the station pill; mode panel right-aligned; `body.remote #mode-wrap` hidden.
+- [x] `fitTopbar()` in `main.ts`: the bar is capped at the lyrics column (it never reaches over the
+      art), and gives way in order: station name to 72px, drop " · idle", speaker name to 64px,
+      then icons for the toggle. Done in JS because the order depends on the names' lengths,
+      which CSS can't express.
+- [x] Sweep of 735 sizes and states: no overlaps, nothing off-screen. Art at 1000×620 167 → 236px,
+      at 1440×900 410 → 479px. Screenshots in `plans/mockups/topbar-*.png`.
+- [x] README.
+
+### Choices made without asking (flag to the user)
+
+1. The station name brightens one step while a mode shows, so the mode reads as the qualifier.
+2. " · idle" is dropped before the speaker's name is cut.
+3. The bar stops at the lyrics column rather than reaching into the gap beside the art.
+4. The lyrics header starts at least 56px down, below the bar. That costs 19px of lyrics at 620
+   tall and nothing above ~930 tall. The stacked layout gets a 56px strip for the bar.
 
 ## Things not to do
 
