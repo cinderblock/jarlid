@@ -334,7 +334,16 @@ pause analysis if the device-buffer readout shows underruns climbing.
     showed.
   - **Download size is its big advantage:** 18 MB against 356 MB (Parakeet q4_0) or
     669 MB (q8_0).
-  - Full-corpus run in progress (1 thread, so slow; it may need resuming).
+  - **Corpus verdict (31 of 56 tracks, 1 thread, 1.14× realtime; stopped there because the
+    answer was clear):** on the same 30 scored tracks, Whistle passes the 60% coverage gate
+    on **12/30 against Parakeet's 26/30**, with median 0.41 s against 0.15 s, ≤0.3 s 42%
+    against 66%, and ≤1 s 64% against 83%. Where it does pass the gate it's respectable
+    (median 0.21 s, ≤1 s 83%), but it would deliver synced lyrics for about 4 songs in 10
+    where Parakeet manages 9. Its numbers use Parakeet's 0.15 s lead; Whistle's own bias
+    is about 0.05 s, which doesn't change the verdict.
+  - **Decision:** Parakeet v3 q8_0 is the engine. Whistle isn't worth offering even as a
+    "lite" download: an option that fails on most songs isn't a feature. Revisit if
+    Cactus ships a larger checkpoint or frame-level timestamps.
 - **Engine choice so far:** Parakeet v3 is the primary candidate. It covers English and 24
   European languages, including Spanish, French, German, Italian and Portuguese. Whisper
   stays the candidate fallback for anything else (Japanese, Korean, Hindi …), pending a
@@ -364,7 +373,7 @@ pause analysis if the device-buffer readout shows underruns climbing.
         threads. q8_0 stays the default; Vulkan matches it in quality.
   - [x] Aligner improvements round 1: anchor rule, lead, Params + bench sweeps (`ca6aaf3`).
   - [x] Whistle on the test track: plain, word keywords, line keywords.
-  - [ ] Whistle (word keywords) over the full corpus ← running (1 slot, 1 thread)
+  - [x] Whistle (word keywords) over the corpus: 31/56, then stopped. Parakeet wins clearly.
   - [ ] Vocal isolation trial on the failing tracks (Radiohead, Metallica, Stevie Nicks)
   - [ ] Keyword biasing for Parakeet? It has no flag; check whether `parakeet.dll` exposes
         any context biasing.
