@@ -1,0 +1,67 @@
+name: Auto-sync engine
+
+# The downloadable speech engine for auto-synced lyrics: jarlid-autosync.exe, the whisper.cpp
+# Parakeet/ggml DLLs it loads, and a manifest listing every file with its SHA-256. Released on its
+# own tag because it changes rarely, and the app pins one manifest hash in source.
+#
+# Never mark this release "latest": the app's updater reads releases/latest/download/latest.json,
+# and a sidecar release becoming latest would hide the app's own update from every install.
+
+on:
+  push:
+    tags:
+      - "autosync-v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the crate version
+        shell: pwsh
+        run: |
+          $v = [regex]::Match((Get-Content crates/autosync-sidecar/Cargo.toml -Raw), '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+          if ("autosync-v$v" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} but crate version $v" }
+
+      - uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.4.304.0
+          install_runtime: false
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: crates
+
+      - name: Test
+        working-directory: crates
+        run: cargo test -p autosync -p autosync-sidecar
+
+      - name: Build the sidecar
+        working-directory: crates
+        run: cargo build --release -p autosync-sidecar
+
+      - name: Build the engine
+        shell: pwsh
+        run: crates/autosync-sidecar/build-engine.ps1 -Out dist -Jobs 4
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item crates/target/release/jarlid-autosync.exe dist/
+          crates/autosync-sidecar/package.ps1 -Dist dist -BaseUrl "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" (Get-ChildItem dist -File).FullName `
+            --title "Auto-sync engine ${{ github.ref_name }}" `
+            --notes "Speech engine for Jarlid's auto-synced lyrics, downloaded by the app on request. Not an app release." `
+            --latest=false
