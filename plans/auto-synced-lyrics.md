@@ -37,7 +37,23 @@ the binary blob it needs only if the user wants to use the auto lyrics".
 - Windows only (Media Foundation decoding). Tauri v2 updater with a minisign key in
   `tauri.conf.json`. Release CI is in `.github/workflows/release.yml`.
 
-## Key design points (proposed — see Open questions)
+## Decisions already made (don't re-ask)
+
+Answered 2026-10-13:
+
+- **Sidecar executable**, not an in-process library (§5).
+- **v1 aligns LRCLIB plain lyrics only.** Transcription-from-nothing comes later, but the
+  design must keep it easy to add: sources, pipeline stages and the protocol are built so
+  that more modes and stages can be added without rework.
+- **Test CPU and GPU now**, in the spike, rather than deferring GPU.
+- **Downloading the next song whole is fine**, and that download **is what plays**: one
+  complete download replaces the stream, the way `engine::cache_next` already works. With
+  the song cache off, the file is transient: it is deleted once played (or skipped).
+  With the cache on, it is simply the cache entry.
+- Benchmark harness first (§4), sidecar with hash-pinned on-demand download (§5),
+  "Review & publish" through the timing editor, never auto-publish (§6): all approved.
+
+## Key design points
 
 ### 1. Look ahead a whole track, not "live"
 
@@ -115,6 +131,34 @@ opt-in.
   size before downloading.
 - **Uninstall:** a "Remove downloaded files" control in Settings.
 
+#### Sidecar protocol (draft)
+
+One long-lived process per app session, started on first use and stopped after idling.
+JSON lines over stdin/stdout; stderr is logged. PCM goes through a temp file, not the
+pipe: 16 kHz mono s16 WAV, written by the app (MF decode) and deleted afterwards. That
+keeps the protocol text-only, and lets the sidecar re-read the audio for a second pass.
+
+```text
+→ {"op":"hello","protocol":1}
+← {"ev":"ready","protocol":1,"engines":["parakeet","whisper"],"backends":["cpu","vulkan"]}
+→ {"op":"load","engine":"parakeet","model":"<path>","backend":"vulkan","threads":4}
+← {"ev":"loaded","ms":2100}
+→ {"op":"job","id":"<pandoraId>","wav":"<path>","mode":"align","lines":["…","…"],
+   "language":"en","from":0.0}
+← {"ev":"progress","id":"…","heardTo":61.2}
+← {"ev":"lines","id":"…","lines":[{"i":0,"t":12.31,"matched":5,"words":5}, …]}   (partial)
+← {"ev":"done","id":"…","coverage":0.82,"score":…}
+→ {"op":"cancel","id":"…"}
+```
+
+- `mode` is `align` in v1. `transcribe` slots in later without a protocol change: no
+  `lines`, and the result carries text. Same for future stages (`separate`), which become
+  options on `job`.
+- Alignment runs **in the sidecar** (the `autosync` crate links into it), so partial
+  results stream back as soon as there's enough heard text to anchor lines.
+- `from` lets the current track start near the playhead rather than at 0:00 when that
+  matters.
+
 ### 6. Storage, precedence, UX
 
 - Generated timings are cached per track like LRCLIB results, but as their own source
@@ -161,9 +205,69 @@ pause analysis if the device-buffer readout shows underruns climbing.
   arXiv 2506.15514 (source separation for Whisper ALT).
 - `condition_on_previous_text = false` is the usual anti-repetition-loop setting for
   Whisper on music.
-- Not yet verified: which Windows assets whisper.cpp's official releases ship (CPU,
-  Vulkan, CUDA), and the current DTW flag name. Irrelevant if we build our own sidecar,
-  but needed for the step-1 spike.
+- **whisper.cpp official Windows assets** (release `b5454` = v1.9.5, 2026-10-06): CPU x64
+  (8.9 MB zip, runtime-dispatched `ggml-cpu-<arch>.dll` variants), BLAS, and CUDA 11.8/12.4
+  (285 MB / 685 MB). **No Vulkan build for Windows.** DTW flag is `--dtw <preset>`, presets
+  `base`, `small`, `large.v3.turbo` etc.
+- **whisper.cpp now ships Parakeet** (`parakeet-cli`, `parakeet.dll`): NVIDIA
+  `parakeet-tdt-0.6b-v3`, 25 European languages, ggml models at `ggml-org/parakeet-GGUF`
+  (q4_0 356 MB, q8_0 669 MB, f16 1.26 GB). TDT emits per-token frame times with a
+  `word_start` flag, at 10 ms resolution. That's a strong candidate for word timing, so it's
+  benchmarked alongside Whisper.
+- **Building whisper.cpp with Vulkan on Windows:** the SDK ships `SPIRV-HeadersConfig.cmake`
+  flat in `$VULKAN_SDK/Lib/cmake`, which CMake's prefix search doesn't find
+  (`CMAKE_PREFIX_PATH=$VULKAN_SDK` still fails with "Could not find a package configuration
+  file provided by SPIRV-Headers"). Fix: `-DSPIRV-Headers_DIR=$VULKAN_SDK/Lib/cmake`.
+  Result: `ggml-vulkan.dll` is 36 MB; everything else is about 3 MB.
+- **MF decodes straight to 16 kHz mono 16-bit:** `Decoder::open_at(path, Some(Format { 16000,
+  1, 16 }))` negotiated exactly that on all 56 corpus tracks. No resampler of our own needed.
+- **Corpus** (`crates/engine/examples/autosync-corpus.rs`): 16 seed artists on anonymous
+  stations gave 64 tracks, 56 of which have LRCLIB synced+plain lyrics within 2 s of
+  Pandora's length. Spans rap (Eminem, Kendrick, Coolio), metal (Metallica, Pantera, SOAD),
+  country, soul, pop and rock. 408 MB of 16 kHz WAV, kept outside the repo.
+- **Sweep results** (one track, `coldplay-yellow`, 266 s; 37 scored lines; 4 threads;
+  wall time includes model load):
+
+  | Config | Wall | × realtime | Median err | Signed | p90 | ≤0.3 s | ≤1 s |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | parakeet q8 CPU, whole track | 160 s | 1.7 | 0.17 | +0.06 | 10.2 | 46% | 49% |
+  | parakeet f16 Vulkan, whole track | 131 s | 2.0 | 0.18 | +0.05 | 12.9 | 57% | 59% |
+  | **parakeet q8 CPU, 30 s windows** | 103 s | 2.6 | **0.13** | +0.06 | **1.26** | **78%** | 84% |
+  | **parakeet f16 Vulkan, 30 s windows** | 97 s | 2.7 | **0.10** | +0.06 | 1.34 | 76% | 81% |
+  | whisper base CPU | 48 s | 5.5 | 0.46 | 0.00 | 1.96 | 32% | 76% |
+  | whisper base Vulkan | 76 s | 3.5 | 1.22 | −1.22 | 52.4 | 16% | 41% |
+  | whisper small CPU | 133 s | 2.0 | 0.39 | −0.18 | 2.46 | 43% | 73% |
+  | whisper small Vulkan | 177 s | 1.5 | 0.52 | −0.14 | 2.66 | 38% | 70% |
+  | whisper large-v3-turbo CPU | 1072 s | **0.25** | 2.04 | −1.21 | 7.42 | 0% | 8% |
+  | whisper large-v3-turbo Vulkan | 1392 s | **0.19** | 1.54 | −0.80 | 7.60 | 11% | 27% |
+
+  Takeaways:
+  - **Parakeet's word times are far more precise than Whisper's.** Where it heard a line,
+    it's typically within 0.1–0.2 s (33.60 vs 33.80, 52.96 vs 52.82, 58.56 vs 58.58).
+  - **Parakeet must be fed windows, not a whole song.** Whole-track, it stops transcribing
+    reliably after about 3:00, and every later line is wrong (the p90 of 10–13 s).
+    30 s windows with 6 s overlap fixed it and were faster too.
+  - **The Intel iGPU barely helps Parakeet and hurts Whisper.** Vulkan's value on such
+    machines is leaving the CPU free for playback, not speed. On a discrete GPU this will
+    differ; measure it there before deciding the default backend.
+  - **large-v3-turbo is unusable on a 15 W laptop CPU or iGPU**: 4–5× *slower* than
+    realtime.
+- **Whisper failure modes seen:**
+  - Turbo looped "Music by Kevin MacLeod" for 2½ minutes over real singing: the classic
+    conditioning-on-previous-text hallucination. `-mc 0` (max context 0) is the fix.
+  - **`--dtw` is silently ignored while flash attention is on**, and whisper.cpp now
+    defaults flash attention *on*: `whisper.cpp:3817` "dtw_token_timestamps is not
+    supported with flash_attn - disabling". Every `t_dtw` came back −1. Pass `-nfa`.
+  - **`--vad` broke timing**: with Silero VAD the token times were relative to the
+    speech-only audio (errors of −80 to −160 s), and VAD discarded most of the singing
+    (small ran in 29 s instead of 133 s). Don't use whisper.cpp's VAD on music as-is.
+- **Engine choice so far:** Parakeet v3 is the primary candidate. It covers English and 24
+  European languages, including Spanish, French, German, Italian and Portuguese. Whisper
+  stays the candidate fallback for anything else (Japanese, Korean, Hindi …), pending a
+  fixed-flags re-run.
+- **Test machine:** i7-10710U (6C/12T, 15 W laptop part), Intel UHD (Comet Lake) iGPU with
+  Vulkan 1.3, 64 GB RAM. A deliberately low-end target: if it's fast enough here, it's fast
+  enough nearly everywhere.
 
 ## Progress log
 
@@ -171,21 +275,28 @@ pause analysis if the device-buffer readout shows underruns climbing.
       formats.
 - [x] Literature / practitioner research.
 - [x] Design written (this doc).
-- [ ] Step 1 spike.
+- [ ] Step 1 spike ← in progress
+  - [x] whisper.cpp CPU build (official) + Vulkan build (local, from v1.9.5 source).
+  - [x] Models: whisper base-q5_1, small-q5_1, large-v3-turbo q5_0 + f16; parakeet v3
+        q8_0 + f16; silero VAD v5.1.2. SHA-256s recorded in the spike dir.
+  - [x] Corpus: 56 labelled tracks.
+  - [x] `crates/autosync`: text normalisation, word alignment (Needleman–Wunsch, free
+        heard-word ends), line timing, LRC, scoring. `examples/bench.rs` scores model output.
+  - [x] Speed sweep, 8 configs on one track (`coldplay-yellow`, 266 s). Results in
+        Findings → "Sweep results".
+  - [x] Fixes found by the sweep: Parakeet in 30 s windows; Whisper `-mc 0 -nfa`.
+  - [ ] Accuracy over the full corpus: windowed Parakeet q8 on CPU ← running
+  - [ ] Same, Vulkan f16, and q4_0 (smaller download)
+  - [ ] Aligner improvements, judged on the corpus numbers
+
+Spike layout: `%LOCALAPPDATA%\jarlid-autosync-spike\` — `dl/` (official binaries),
+`src/whisper.cpp/build-vulkan/` (Vulkan build), `models/`, `corpus/<track>/`,
+`results/<config>/`. Runner: `crates/autosync/spike/run-asr.sh <config> <track-dir>…`.
+Everything heavy goes through the CPU broker at 4 slots with `-t 4`.
 
 ## Open questions for the user
 
-1. **Sidecar exe vs in-process DLL** for the optional core. *Recommend sidecar* (§5).
-2. **Scope of v1:** alignment of LRCLIB plain lyrics only, with transcription-from-nothing
-   later? *Recommend yes*: transcription quality on singing is poor, and showing wrong
-   words as "lyrics" is worse than showing none.
-3. **GPU in v1?** A Vulkan build covers NVIDIA/AMD/Intel, but adds build complexity and
-   size. *Recommend: decide after the spike's CPU timings.* If `large-v3-turbo` beats
-   realtime on CPU here, ship CPU first.
-4. **Pandora terms:** analysis downloads the next track whole even when the disk cache is
-   off. Only text is kept and the audio is discarded after analysis. This is the same kind
-   of fetch `prefetch` already does, just longer. OK?
-5. Okay to run the step-1 spike now?
+None open. (The first five were answered 2026-10-13; see "Decisions already made".)
 
 ## Things not to do
 
