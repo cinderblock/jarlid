@@ -184,20 +184,42 @@ pause analysis if the device-buffer readout shows underruns climbing.
 
 ## Plan / steps
 
-1. **Spike, measure before building** ← *current, pending your go-ahead*
+1. **Spike, measure before building** — done (Parakeet v3 q8_0, windowed; see Findings).
    - Decode a Pandora track to 16 kHz mono through MF; dump it to a WAV.
    - Run it through stock whisper.cpp (`base`, `small`, `large-v3-turbo` q5; CPU and
      Vulkan) on this machine. Record speed vs realtime and word-timestamp quality.
    - Build the benchmark harness (§4) as a dev example over ~20 tracks that have LRCLIB
      synced lyrics. Measure phase-1 alignment error, with and without vocal isolation.
-2. Sidecar crate + JSON protocol + CI build + pinned hashes.
-3. Download manager + Settings UI (opt-in, progress, remove).
+2. Sidecar crate + JSON protocol + CI build + pinned hashes — done except the first
+   published release (`3eb5c9c`, `7452e47`). See "As built" below.
+3. Download manager + Settings UI (opt-in, progress, remove). ← current
 4. Engine hook: analyse the next track ahead; analyse the current track progressively.
 5. Lyrics integration: new sources, cache, precedence, pane status, quality gate.
 6. "Review & publish" through the timing editor.
 7. Phase 2 quality work, as the benchmark dictates: vocal isolation, CTC aligner.
 8. Transcription-from-nothing mode (opt-in), if quality is tolerable.
 9. README section.
+
+### As built (step 2), where it differs from the draft above
+
+- **Alignment runs in the app, not the sidecar.** The sidecar only hears: it returns timed words
+  per window (`crates/autosync-sidecar/src/protocol.rs`). The app aligns after every window,
+  which costs milliseconds. Aligner improvements then ship with normal app updates instead of
+  needing a sidecar re-release and a new pinned hash.
+- **Engine loaded at run time** (`libloading`), not linked: the crate builds and tests with no
+  C++ toolchain, and it's an ordinary workspace member.
+- **One bundle for every machine:** `build-engine.ps1` builds whisper.cpp v1.9.5 (pinned by
+  commit) with `GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS` + Vulkan. That's 13 DLLs: nine CPU
+  builds chosen at run time per instruction-set level, plus `ggml-vulkan.dll` (37 MB), which is
+  ignored where there's no GPU. About 45 MB in all, plus the 669 MB model.
+- **Download = a manifest plus files, not a zip.** `package.ps1` lists every file with its size
+  and SHA-256, and the model by pinned Hugging Face commit. The app pins **only the manifest's
+  hash**; every other file is verified through it. No zip handling, and per-file verification.
+- **Release:** an `autosync-v<crate version>` tag builds and publishes it
+  (`.github/workflows/autosync-sidecar.yml`), with `--latest=false`, because the app's updater
+  reads `releases/latest/download/latest.json`.
+- **End to end on coldplay-yellow:** scores identical to `parakeet-cli`; 77 s for 267 s of audio
+  on CPU at 3 threads (3.5× realtime), 85 s on Vulkan; model load 0.8–1.5 s.
 
 ## Findings / gotchas
 
@@ -348,6 +370,16 @@ pause analysis if the device-buffer readout shows underruns climbing.
   European languages, including Spanish, French, German, Italian and Portuguese. Whisper
   stays the candidate fallback for anything else (Japanese, Korean, Hindi …), pending a
   fixed-flags re-run.
+- **Cancel latency is a whole window** (12.8 s measured at 2 threads). Parakeet checks the
+  abort callback only between the encoder and decoder stages (`parakeet.cpp` 2104/2359/2411),
+  never inside a graph. Acceptable for v1. If skips need a faster turnaround, restart the
+  sidecar instead: a model load is 0.8–1.5 s.
+- **`ggml_log_set` is exported by `ggml-base.dll`, not `ggml.dll`.** `GetProcAddress` searches
+  only the library it's given, never that library's dependencies.
+- **Parakeet does not load ggml's backends itself.** With `GGML_BACKEND_DL`, the host must call
+  `ggml_backend_load_all_from_path` before creating the model, or there is no CPU backend at all.
+- **Hugging Face confirms model hashes**: the `X-Linked-ETag` header on a `resolve/` URL is the
+  file's SHA-256 (it matched the locally computed `4d64e9e9…`).
 - **Test machine:** i7-10710U (6C/12T, 15 W laptop part), Intel UHD (Comet Lake) iGPU with
   Vulkan 1.3, 64 GB RAM. A deliberately low-end target: if it's fast enough here, it's fast
   enough nearly everywhere.
@@ -358,7 +390,7 @@ pause analysis if the device-buffer readout shows underruns climbing.
       formats.
 - [x] Literature / practitioner research.
 - [x] Design written (this doc).
-- [ ] Step 1 spike ← in progress
+- [x] Step 1 spike
   - [x] whisper.cpp CPU build (official) + Vulkan build (local, from v1.9.5 source).
   - [x] Models: whisper base-q5_1, small-q5_1, large-v3-turbo q5_0 + f16; parakeet v3
         q8_0 + f16; silero VAD v5.1.2. SHA-256s recorded in the spike dir.
@@ -374,9 +406,17 @@ pause analysis if the device-buffer readout shows underruns climbing.
   - [x] Aligner improvements round 1: anchor rule, lead, Params + bench sweeps (`ca6aaf3`).
   - [x] Whistle on the test track: plain, word keywords, line keywords.
   - [x] Whistle (word keywords) over the corpus: 31/56, then stopped. Parakeet wins clearly.
-  - [ ] Vocal isolation trial on the failing tracks (Radiohead, Metallica, Stevie Nicks)
-  - [ ] Keyword biasing for Parakeet? It has no flag; check whether `parakeet.dll` exposes
-        any context biasing.
+  - [ ] Vocal isolation trial on the failing tracks (Radiohead, Metallica, Stevie Nicks).
+        Moved to step 7.
+  - [x] Keyword biasing for Parakeet: not possible. `parakeet.h` (v1.9.5) has no prompt,
+        context or biasing parameter; the decoder is greedy TDT.
+- [x] Step 2: sidecar (`3eb5c9c`), release workflow and manifest (`7452e47`).
+  - [ ] First `autosync-v0.1.0` release published, and its manifest hash pinned in the app.
+- [ ] Step 3: download manager + Settings UI ← current
+- [ ] Step 4: engine hook (next track whole, transient when the song cache is off)
+- [ ] Step 5: lyrics integration
+- [ ] Step 6: Review & publish
+- [ ] Step 9: README
 
 Spike layout: `%LOCALAPPDATA%\jarlid-autosync-spike\` — `dl/` (official binaries),
 `src/whisper.cpp/build-vulkan/` (Vulkan build), `models/`, `corpus/<track>/`,
