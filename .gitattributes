@@ -1,0 +1,2 @@
+# Bash reads a CR as part of the command, so shell scripts must stay LF on Windows checkouts too.
+*.sh text eol=lf
