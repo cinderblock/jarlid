@@ -12,11 +12,13 @@
 //! - [`align`] — lyric words ↔ heard words, then line start times.
 //! - [`lrc`] — reading and writing LRC.
 //! - [`score`] — how close a result is to a known-good synced copy.
+//! - [`window`] — cutting a track into overlapping windows for the model, and stitching back.
 
 pub mod align;
 pub mod lrc;
 pub mod score;
 pub mod text;
+pub mod window;
 
 /// One word the speech model heard, with when it heard it.
 #[derive(Debug, Clone, PartialEq)]

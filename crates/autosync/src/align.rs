@@ -168,8 +168,8 @@ fn match_words(lyric: &[(usize, String)], heard: &[String], params: &Params) -> 
         from[i * width] = 1;
     }
     // Row 0 stays zero: heard words before the first lyric word are free.
-    for j in 1..=m {
-        from[j] = 2;
+    for cell in &mut from[1..=m] {
+        *cell = 2;
     }
 
     let pair = |i: usize, j: usize| {

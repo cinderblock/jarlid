@@ -322,13 +322,7 @@ fn parakeet_words(dump: &str) -> Vec<Heard> {
 fn parakeet_tokens(dump: &str) -> Vec<Heard> {
     let field = |line: &str, key: &str| -> Option<String> {
         let at = line.find(key)? + key.len();
-        Some(
-            line[at..]
-                .trim_start()
-                .split_whitespace()
-                .next()?
-                .to_string(),
-        )
+        Some(line[at..].split_whitespace().next()?.to_string())
     };
     let mut out: Vec<Heard> = Vec::new();
     for line in dump.lines().filter(|l| l.contains("word_start=")) {
