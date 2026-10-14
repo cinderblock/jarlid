@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Spike: run one speech-model configuration over corpus tracks and record wall time.
+#
+#   run-asr.sh <config> <track-dir>...
+#
+# Configs are named <engine>-<backend>-<model>. Output: $SPIKE/results/<config>/<track>.{json,txt}
+# and a line per track in $SPIKE/results/<config>/times.tsv (track, audio seconds, wall seconds).
+# Meant to be run under the CPU broker with 4 slots; every config uses 4 threads.
+set -euo pipefail
+SPIKE="${SPIKE:-$LOCALAPPDATA/jarlid-autosync-spike}"
+CPU="$SPIKE/dl/whisper-cpu/Release"
+GPU="$SPIKE/src/whisper.cpp/build-vulkan/bin/Release"
+M="$SPIKE/models"
+config="$1"; shift
+out="$SPIKE/results/$config"; mkdir -p "$out"
+
+case "$config" in
+  whisper-cpu-*|parakeet-cpu-*) bin="$CPU" ;;
+  whisper-vk-*|parakeet-vk-*) bin="$GPU" ;;
+  *) echo "unknown config $config" >&2; exit 2 ;;
+esac
+
+for dir in "$@"; do
+  track="$(basename "$dir")"
+  wav="$dir/audio.wav"
+  secs=$(( ($(stat -c %s "$wav") - 44) / 32000 ))
+  start=$(date +%s%N)
+  case "$config" in
+    whisper-*-base)  "$bin/whisper-cli.exe" -t 4 -l en -m "$M/ggml-base-q5_1.bin" --dtw base -ojf -of "$out/$track" -np "$wav" ;;
+    whisper-*-small) "$bin/whisper-cli.exe" -t 4 -l en -m "$M/ggml-small-q5_1.bin" --dtw small -ojf -of "$out/$track" -np "$wav" ;;
+    whisper-*-turbo) "$bin/whisper-cli.exe" -t 4 -l en -m "$M/ggml-large-v3-turbo-q5_0.bin" --dtw large.v3.turbo -ojf -of "$out/$track" -np "$wav" ;;
+    parakeet-*-q8)   "$bin/parakeet-cli.exe" -t 4 -m "$M/ggml-parakeet-tdt-0.6b-v3-q8_0.bin" -ps -np -f "$wav" > "$out/$track.txt" 2>&1 ;;
+    parakeet-*-f16)  "$bin/parakeet-cli.exe" -t 4 -m "$M/ggml-parakeet-tdt-0.6b-v3-f16.bin" -ps -np -f "$wav" > "$out/$track.txt" 2>&1 ;;
+    # Fixed decode: no conditioning on previous text (stops repetition loops), flash attention
+    # off (whisper.cpp silently disables DTW with it on), Silero VAD so instrumental stretches
+    # aren't transcribed at all.
+    whisper-*-base2)  "$bin/whisper-cli.exe" -t 4 -l en -m "$M/ggml-base-q5_1.bin" --dtw base -nfa -mc 0 --vad -vm "$M/ggml-silero-v5.1.2.bin" -ojf -of "$out/$track" -np "$wav" ;;
+    whisper-*-small2) "$bin/whisper-cli.exe" -t 4 -l en -m "$M/ggml-small-q5_1.bin" --dtw small -nfa -mc 0 --vad -vm "$M/ggml-silero-v5.1.2.bin" -ojf -of "$out/$track" -np "$wav" ;;
+    # Parakeet over overlapping windows (see chunk.py); one process, one model load, many files.
+    parakeet-*-q8w|parakeet-*-f16w)
+      chunks="$SPIKE/chunks/$track"; python -I "$(dirname "$0")/chunk.py" "$wav" "$chunks" 30 6
+      model=ggml-parakeet-tdt-0.6b-v3-q8_0.bin; [[ "$config" == *f16w ]] && model=ggml-parakeet-tdt-0.6b-v3-f16.bin
+      "$bin/parakeet-cli.exe" -t 4 -m "$M/$model" -ps "$chunks"/*.wav > "$out/$track.txt" 2>&1 ;;
+    *) echo "unknown config $config" >&2; exit 2 ;;
+  esac
+  wall=$(awk "BEGIN{printf \"%.1f\", ($(date +%s%N) - $start) / 1e9}")
+  printf '%s\t%s\t%s\n' "$track" "$secs" "$wall" | tee -a "$out/times.tsv"
+done

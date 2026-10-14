@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["pandora", "audio", "engine"]
+members = ["pandora", "audio", "engine", "autosync"]
 
 # Keeping the protocol crate (`pandora`, portable) and the decoder (`audio`, Windows-only) as
 # separate members means the protocol work stays platform-independent and testable anywhere.

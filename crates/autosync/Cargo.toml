@@ -1,0 +1,15 @@
+[package]
+name = "autosync"
+version = "0.1.0"
+edition = "2021"
+description = "Synced lyrics from audio: align known lyric text to what a speech model heard"
+authors = ["Cameron Tacklind <cameron@tacklind.com>"]
+license = "MIT"
+
+# Pure Rust and platform-independent on purpose. The speech model runs elsewhere (a downloaded
+# sidecar); this crate turns its timed words plus the lyric text into timed lines, and scores the
+# result. See `plans/auto-synced-lyrics.md`.
+[dependencies]
+
+[dev-dependencies]
+serde_json = "1"
