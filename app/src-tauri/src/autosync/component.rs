@@ -22,9 +22,10 @@ use tauri::{AppHandle, Emitter, Manager};
 const MANIFEST_URL: &str =
     "https://github.com/cinderblock/jarlid/releases/download/autosync-v0.1.0/autosync-manifest.json";
 
-/// SHA-256 of that manifest, as `package.ps1` printed it. Empty until the first engine release
-/// is published, which leaves auto-sync unavailable in release builds.
-const MANIFEST_SHA256: &str = "";
+/// SHA-256 of that manifest, as `package.ps1` printed it in the release run. Moving to a new
+/// engine release means changing the URL and this together; empty would leave auto-sync
+/// unavailable in release builds.
+const MANIFEST_SHA256: &str = "2e41a04a9cc001f7f36e94b83397e7906861fb1a96d4469daf133f20f8152f45";
 
 /// The sidecar protocol this app speaks. Must match `crates/autosync-sidecar/src/protocol.rs`.
 pub const PROTOCOL: u32 = 1;
@@ -417,6 +418,56 @@ mod tests {
         .unwrap();
         assert_eq!(m.total_bytes(), 100);
         assert_eq!(m.files[0].name, "jarlid-autosync.exe");
+    }
+
+    /// Against the real release: the pinned manifest checks out, and a file it lists downloads
+    /// and verifies, resuming from a partial `.part` left by an interrupted attempt.
+    /// `cargo test -- --ignored pinned_release`.
+    #[test]
+    #[ignore = "downloads from GitHub"]
+    fn pinned_release_downloads_and_verifies() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let http = reqwest::Client::new();
+            let (_, manifest) = fetch_manifest(&http).await.expect("pinned manifest");
+            assert_eq!(manifest.protocol, PROTOCOL);
+            let entry = manifest
+                .files
+                .iter()
+                .find(|f| f.name == "ggml.dll")
+                .expect("ggml.dll listed");
+
+            let dir = std::env::temp_dir().join("jarlid-autosync-fetch-test");
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let dest = dir.join(&entry.name);
+            // Half a file from an earlier, interrupted attempt.
+            let whole = http
+                .get(&entry.url)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
+            std::fs::write(dir.join("ggml.dll.part"), &whole[..whole.len() / 2]).unwrap();
+
+            let stop = AtomicBool::new(false);
+            let mut seen = 0;
+            fetch(&http, entry, &dest, &stop, |n| seen = n)
+                .await
+                .expect("fetch");
+            assert_eq!(seen, entry.size);
+            assert_eq!(sha256_file(&dest).unwrap(), entry.sha256);
+            // Present and right: a second fetch downloads nothing.
+            fetch(&http, entry, &dest, &stop, |_| panic!("re-downloaded"))
+                .await
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+        });
     }
 
     #[test]
