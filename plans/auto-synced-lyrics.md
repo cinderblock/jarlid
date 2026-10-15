@@ -201,9 +201,9 @@ pause analysis if the device-buffer readout shows underruns climbing.
    are ordinary `synced` lyrics in the pane (marked `auto`), so the existing editor opens them
    and its Publish button sends them to LRCLIB as a correction of the matched record. The
    pencil's tip says so when they are auto-synced (`45ed4b3`).
-**Remaining before it ships:** publish `autosync-v0.1.0` and pin its manifest hash in
-`component.rs` (needs the user's go-ahead to push), then a live run in the app (needs the
-installed Jarlid closed). ← current
+**Shipped in v1.13.0** (2026-10-14): engine release `autosync-v0.1.0` published and pinned
+(`487ea7d`), app released (`0905f03`, tag `v1.13.0`). **Remaining:** a first live run in the
+installed app, which will update itself to 1.13.0. ← current
 7. Phase 2 quality work, as the benchmark dictates: vocal isolation, CTC aligner.
 8. Transcription-from-nothing mode (opt-in), if quality is tolerable.
 9. README section.
@@ -429,8 +429,15 @@ installed Jarlid closed). ← current
 - [x] Step 9: README (`ce246f5`).
 - [x] Integration tests (ignored by default): the real sidecar process end to end, and MF
       decoding AAC to the 16 kHz WAV. Both pass against the local engine build.
-- [ ] Publish `autosync-v0.1.0`; pin `MANIFEST_SHA256`. **Waiting on the user** (push).
-- [ ] Live run in the app with a dev manifest. **Waiting on the user** (close Jarlid).
+- [x] Published `autosync-v0.1.0` (CI run 38660563363). Not marked latest; the updater still
+      resolved to the app release. All 14 files re-downloaded and checked against the
+      manifest, and the CI-built engine passed the sidecar integration test here. Pinned
+      `MANIFEST_SHA256 = 2e41a04a…` (`487ea7d`); a network test checks the pin and a resumed
+      download.
+- [x] App v1.13.0 released (`0905f03`, CI run 38661792955): installer, MSI, signatures and
+      `latest.json` attached; `releases/latest` now serves 1.13.0.
+- [ ] First live run in the installed app: turn auto-sync on in Settings, let it download, and
+      play songs LRCLIB has only plain lyrics for.
 - [ ] Step 7: vocal isolation for the songs the model barely hears (later).
 - [ ] Step 8: transcription for songs with no lyrics at all (later; protocol and sources leave
       room for it).
@@ -442,14 +449,22 @@ Everything heavy goes through the CPU broker at 4 slots with `-t 4`.
 
 ## Open questions for the user
 
-1. **May I publish the engine?** It needs `master` pushed to `origin`, which also publishes
-   other sessions' unpushed commits (origin was 30+ behind), and a tag `autosync-v0.1.0`
-   pushed. CI then builds and publishes the engine release (`--latest=false`), and I pin its
-   manifest hash in `component.rs`. *Recommendation:* yes, when you're ready to push master
-   anyway. Until then, release builds simply don't show the setting.
-2. **A live test needs the installed Jarlid closed** for a few minutes: a dev build has the same
-   app identity (single-instance hands it over) and Pandora allows one stream. *Recommendation:*
-   tell me when, or run it yourself with the dev manifest command in the README.
+1. ~~May I publish the engine?~~ Yes, 2026-10-14 ("publish"), together with an app minor
+   version carrying the other changes since v1.12.1.
+2. **The first live run is yours to do** now that the installed app updates to 1.13.0: turn on
+   Settings → Auto-synced lyrics. If anything misbehaves, turn on the debug log too; every
+   step logs with an `[autosync]` prefix.
+
+## Releasing a new engine
+
+1. Bump `version` in `crates/autosync-sidecar/Cargo.toml` (and `PROTOCOL` in `protocol.rs` and
+   `component.rs` together if a message changed shape).
+2. Tag `autosync-v<version>` and push it. CI builds, tests and publishes with `--latest=false`.
+3. Download the release's `autosync-manifest.json`, `sha256sum` it, and set `MANIFEST_URL` and
+   `MANIFEST_SHA256` in `app/src-tauri/src/autosync/component.rs` together.
+4. Run `cargo test -- --ignored pinned_release` in `app/src-tauri`, then ship an app release.
+   Installs move to the new engine on their next install or "Try again". Old engine dirs are
+   removed by `remove_others` after a successful install.
 
 ## Things not to do
 
