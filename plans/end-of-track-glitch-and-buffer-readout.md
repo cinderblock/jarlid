@@ -186,6 +186,19 @@ variant clips "THIS COMPUT" / "LIVING ROOM", and the mode dropdown overhangs the
 4. The lyrics header starts at least 56px down, below the bar. That costs 19px of lyrics at 620
    tall and nothing above ~930 tall. The stacked layout gets a 56px strip for the bar.
 
+## Round 4 (user, 2026-10-14): "the readout and the art fix aren't there"
+
+Both are on master and unchanged since: `711afc1` (readout) and `cff76a6` (+ `ad0b817`), checked
+against `ddc9682`. Since `605c73a` the only CSS change is the Settings download bar. The user is
+running the installed **v1.12.1**, built 2026-10-13 14:12 and running since 14:22, which is
+before both commits (14:59, 15:09). Nothing has been released since v1.12.1. Master is 27
+commits ahead.
+
+- Shipping master as-is is safe for autosync: `MANIFEST_SHA256` is still `""`, so
+  `component.rs:125` reports the engine unavailable rather than downloading anything unpinned.
+- **Waiting on the user:** whether to release (the version number is the user's call), or to
+  test a local build first (needs Jarlid closed; don't build while listening).
+
 ## Things not to do
 
 - Don't bump the version (project rule).
