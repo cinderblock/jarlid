@@ -23,11 +23,14 @@ anywhere in it.
 - **Auto-synced lyrics** *(opt-in)*: when LRCLIB has a song's words but not their timings,
   Jarlid works them out on your computer. A speech model
   ([Parakeet v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), run by whisper.cpp) hears
-  the song, and the known words are lined up against what it heard. The next song is worked on
-  while the current one plays, so it is usually ready when it starts; a song that starts with
-  nothing prepared fills in from the playhead as it is heard. Across 56 test songs, 74% of lines
-  land within 0.3 s of LRCLIB's hand-synced timings (89% within 1 s), on songs where the model
-  heard enough of the vocals to pass the quality check. The engine is about 700 MB and is
+  the song, and the known words are lined up against what it heard. Only timings are added: the
+  words, and their order, are LRCLIB's exactly, however the model misheard them. Lines it
+  didn't hear at all are placed from the song's line pace and its stanzas. The next song is
+  worked on while the current one plays, so it is usually ready when it starts; a song that
+  starts with nothing prepared fills in from the playhead as it is heard. Across 56 test songs,
+  counting every line shown, 74% of lines land within 0.3 s of LRCLIB's hand-synced timings, 90%
+  within 1 s and 96% within 3 s, on songs where the model heard enough of the vocals to pass
+  the quality check. The engine is about 700 MB and is
   downloaded only when you turn this on in Settings; every file is checked against a hash this
   build was released with. Nothing is published: auto-synced lyrics are marked as such, and the
   timing editor can check them and publish them to LRCLIB if you choose.
@@ -220,10 +223,11 @@ A Tauri app whose only webview is our own UI. Three library crates do the real w
 Auto-synced lyrics add two more, kept apart so the large speech engine is never in the installer:
 
 - **`crates/autosync`** — pure Rust. Lines up a lyric's words with timed words a speech model
-  heard (a sequence alignment over normalised words), cuts a song into the overlapping windows
-  the model is fed, and scores results against known-good synced lyrics. Its `bench` example and
-  `engine`'s `autosync-corpus` example are the measurement harness behind every number in
-  `plans/auto-synced-lyrics.md`.
+  heard (a sequence alignment over normalised words, in which lyric words the model missed still
+  need time to be sung), cuts a song into the overlapping windows the model is fed, and scores
+  results against known-good synced lyrics. Its `bench` example and `engine`'s `autosync-corpus`
+  example are the measurement harness behind every number in `plans/auto-synced-lyrics.md` and
+  `plans/autosync-lyrics-first.md`.
 - **`crates/autosync-sidecar`** — `jarlid-autosync.exe`, the downloadable sidecar. It loads
   whisper.cpp's Parakeet runtime from DLLs at run time and answers a JSON-lines protocol on stdio
   with timed words, a window at a time. `build-engine.ps1` builds the DLLs from a pinned
