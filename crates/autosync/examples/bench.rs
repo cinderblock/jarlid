@@ -140,12 +140,12 @@ fn main() {
 
     println!("\n== summary (all lines of all tracks pooled)");
     println!(
-        "{:<52} {:>6} {:>6} {:>6} {:>7} {:>7} {:>6} {:>6} {:>6}",
-        "config", "tracks", "lines", "med", "signed", "p90", "<0.3s", "<0.5s", "<1s"
+        "{:<52} {:>6} {:>6} {:>6} {:>7} {:>7} {:>6} {:>6} {:>6} {:>6}",
+        "config", "tracks", "lines", "med", "signed", "p90", "<0.3s", "<0.5s", "<1s", "<3s"
     );
     for (name, tracks, s) in summaries {
         println!(
-            "{:<52} {:>6} {:>6} {:>6} {:>7} {:>7} {:>5.0}% {:>5.0}% {:>5.0}%",
+            "{:<52} {:>6} {:>6} {:>6} {:>7} {:>7} {:>5.0}% {:>5.0}% {:>5.0}% {:>5.0}%",
             name,
             tracks,
             s.paired,
@@ -155,6 +155,7 @@ fn main() {
             s.within(0.3) * 100.0,
             s.within(0.5) * 100.0,
             s.within(1.0) * 100.0,
+            s.within(3.0) * 100.0,
         );
     }
 }
@@ -178,6 +179,12 @@ fn params_from_env() -> align::Params {
     }
     if let Some(v) = get("LEAD").and_then(|v| v.parse().ok()) {
         p.lead = v;
+    }
+    if let Some(v) = get("UNHEARD_WORD_SECONDS").and_then(|v| v.parse().ok()) {
+        p.unheard_word_seconds = v;
+    }
+    if let Some(v) = get("CROWDING").and_then(|v| v.parse().ok()) {
+        p.crowding = v;
     }
     p
 }
