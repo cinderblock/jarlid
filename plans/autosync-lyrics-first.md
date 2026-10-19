@@ -120,11 +120,13 @@ the two apart.
 1. [x] Diagnose from Cameron's stored results and the corpus bench.
 2. [x] Bench scores `placed()` output (`dfa903b`).
 3. [x] Time-aware alignment, stanza placement, tests from real data (`1162e29`).
-4. [ ] Results stored by the old aligner are re-made: stored records carry the aligner
-       version and the heard words, so a new aligner re-times from the stored words without
-       hearing the song again. Records without heard words are heard again the next time the
-       song plays. ← current
-5. [ ] README, commit, and ask about a release.
+4. [x] Results stored by the old aligner are re-made (`142f1a1`): stored records carry the
+       aligner version (`autosync::align::VERSION`, now 2) and the heard words, so a newer
+       aligner re-times from them without hearing the song again. v1.13.0's records have no
+       heard words, so those songs are heard again the next time they play.
+5. [x] README (`d041fe8`).
+6. [ ] Release: the fix reaches the installed app only with an app release. Waiting on
+       Cameron (version numbers are his call). ← current
 
 ## Progress log
 
@@ -132,10 +134,17 @@ the two apart.
 - [x] 2026-10-19: bench scores the pane's output (`dfa903b`).
 - [x] 2026-10-19: new aligner (`1162e29`). Tests: the split (from real heard words; fails on
       the old aligner), stanza pace, in-stanza spread.
+- [x] 2026-10-19: stored results keep heard words and aligner version (`142f1a1`); README
+      (`d041fe8`).
+- [ ] Release, then a live check in the installed app.
 
 ## Open questions for the user
 
-(none yet)
+1. Cut a release with this? It's a patch-sized change to the app only (no new engine). The
+   aligner and re-timing are on master; nothing else is unreleased since v1.13.0.
+2. Later, if mistimed unheard stanzas still bother you: the sidecar could report vocal
+   activity per window (it has the audio), which would settle where a break falls around a
+   stanza the model heard none of. That needs an engine release.
 
 ## Things not to do
 
