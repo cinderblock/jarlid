@@ -1457,18 +1457,33 @@ stationBtn.addEventListener("click", (e) => {
   openStationsFromName();
 });
 
+// ---- state events -------------------------------------------------------
+// Some engine events say how things *are* — what's playing, its thumbs, the mode, the station
+// and the station list — and each is sent once, when it changes. An engine that comes up fast
+// sends them before this module has registered its listeners, and a Tauri emit has no replay:
+// resuming after an update left the window blank until the next song. So these are listened for
+// through `onState`, and once every one is registered, `catchUpOnState` (below) asks the backend
+// for the latest of each and runs it through the same handler. Listening first is what makes
+// the pair airtight, the same way as the sign-in card's.
+const stateListeners: Promise<[string, (payload: never) => void]>[] = [];
+
+function onState<T>(event: string, handle: (payload: T) => void) {
+  const replay = handle as (payload: never) => void;
+  stateListeners.push(listen<T>(event, (e) => handle(e.payload)).then(() => [event, replay]));
+}
+
 // Which station is playing, with its token. The nowplaying event carries only the name,
 // and two stations can share one — see save_last_station in native.rs.
-listen<{ name: string; token: string }>("engine://station-active", (e) => {
-  if (!e.payload.token) return;
-  stationStats.noteActive(e.payload.token);
-  activeStation = e.payload.name || activeStation;
-  activeToken = e.payload.token;
-  stationsPage.setActiveStation(activeStation, e.payload.token);
+onState<{ name: string; token: string }>("engine://station-active", (p) => {
+  if (!p.token) return;
+  stationStats.noteActive(p.token);
+  activeStation = p.name || activeStation;
+  activeToken = p.token;
+  stationsPage.setActiveStation(activeStation, p.token);
 });
 
-listen<{ stations: StationInfo[] }>("engine://stations", (e) => {
-  const next = e.payload.stations;
+onState<{ stations: StationInfo[] }>("engine://stations", (p) => {
+  const next = p.stations;
   if (!next?.length) return;
   stationStats.prune(next.map((s) => s.token));
   stationsPage.setStations(next, activeStation);
@@ -1585,9 +1600,9 @@ window.addEventListener("click", (e) => {
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") modePanel.hidden = true;
 });
-listen<{ mode: string }>("engine://mode", (e) => {
-  if (e.payload.mode) {
-    activeMode = e.payload.mode;
+onState<{ mode: string }>("engine://mode", (p) => {
+  if (p.mode) {
+    activeMode = p.mode;
     modeBtn.textContent = activeMode;
     renderModes();
   }
@@ -2116,12 +2131,28 @@ setInterval(() => {
 }, 400);
 
 // ---- events from the engine bridge ------------------------------------
-listen<NowPlaying>("engine://nowplaying", (e) => onNowPlaying(e.payload));
+onState<NowPlaying>("engine://nowplaying", (np) => void onNowPlaying(np));
 listen<Playhead>("engine://playhead", (e) => onPlayhead(e.payload));
 listen<Technical>("engine://technical", (e) => renderTechnical(e.payload));
-listen<{ thumbUp: boolean; thumbDown: boolean }>("engine://thumbs", (e) =>
-  setThumbs(e.payload.thumbUp, e.payload.thumbDown)
+onState<{ thumbUp: boolean; thumbDown: boolean }>("engine://thumbs", (p) =>
+  setThumbs(p.thumbUp, p.thumbDown)
 );
+
+// Every state listener is registered above this point. Catch up on whatever was sent before
+// they were, in the order they were registered: the station before the station list, which
+// marks it.
+void (async function catchUpOnState() {
+  try {
+    const handlers = await Promise.all(stateListeners);
+    const latest = await invoke<Record<string, unknown>>("native_latest_state");
+    for (const [event, handle] of handlers) {
+      if (event in latest) handle(latest[event] as never);
+    }
+  } catch (e) {
+    // The events still arrive from here on; at worst the window waits for the next song.
+    console.warn("catching up on engine state failed", e);
+  }
+})();
 
 function showLogin() {
   player.hidden = true;

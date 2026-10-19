@@ -593,6 +593,7 @@ pub fn run() {
             native::native_cmd,
             native::native_is_signed_in,
             native::native_needs_login,
+            native::native_latest_state,
             native::native_play_station,
             native::native_sign_in,
             native::native_sign_out,

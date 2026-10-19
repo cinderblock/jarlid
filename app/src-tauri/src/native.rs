@@ -7,6 +7,7 @@
 //! One thing genuinely improves: the old playhead had to *infer* paused state, because Pandora's
 //! DOM and audio elements misreported it. Here we own the player, so `paused` is authoritative.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -134,7 +135,8 @@ fn last_station_path(app: &AppHandle) -> Option<std::path::PathBuf> {
 /// anything the UI keys per-station (its play tally, when it was last on) has to key on the
 /// token or quietly merge them.
 fn save_last_station(app: &AppHandle, name: &str, token: &str) {
-    let _ = app.emit(
+    emit_state(
+        app,
         "engine://station-active",
         json!({ "name": name, "token": token }),
     );
@@ -192,6 +194,15 @@ pub struct NativeEngine {
     /// the sign-in card stayed hidden, and there was no way to log in at all. This latch lets the
     /// UI *ask* on startup instead of only listening.
     needs_login: Arc<AtomicBool>,
+    /// The last payload of each event that says how things *are* — what is playing, its thumbs,
+    /// the mode, the station and the station list — for a window that wasn't listening yet.
+    ///
+    /// The same trap as `needs_login`, one step later. Those events are sent once each, when
+    /// they change, and an engine that comes up fast sends them before the webview has
+    /// registered a listener. Resuming after an update does exactly that: the song was playing
+    /// a second after launch, and the window stayed blank, all but the Stations button, until
+    /// the next song. See [`emit_state`] and [`native_latest_state`].
+    latest: Arc<std::sync::Mutex<HashMap<&'static str, serde_json::Value>>>,
 }
 
 impl NativeEngine {
@@ -225,10 +236,22 @@ impl NativeEngine {
 /// answers [`native_needs_login`] for one that is not yet. Emitting without latching is what made
 /// a fresh install unusable — see [`NativeEngine::needs_login`].
 fn require_login(app: &AppHandle) {
-    app.state::<NativeEngine>()
-        .needs_login
-        .store(true, Ordering::Relaxed);
+    let state = app.state::<NativeEngine>();
+    state.needs_login.store(true, Ordering::Relaxed);
+    // Nothing is playing for a window that opens now; it shows the sign-in card.
+    state.latest.lock().unwrap().clear();
     let _ = app.emit("engine://needs-login", json!({}));
+}
+
+/// Send an event that says how things are now, and keep it for a window that opens, or
+/// reloads, after it was sent.
+fn emit_state(app: &AppHandle, event: &'static str, payload: serde_json::Value) {
+    app.state::<NativeEngine>()
+        .latest
+        .lock()
+        .unwrap()
+        .insert(event, payload.clone());
+    let _ = app.emit(event, payload);
 }
 
 /// Start the engine from saved credentials at launch, or ask the UI for a login.
@@ -284,7 +307,8 @@ async fn attach(
     // flags — the Stations page marks them, because a QuickMix has no seeds or thumbs of
     // its own and would otherwise look like a broken export.
     if let Ok(stations) = engine.station_list().await {
-        let _ = app.emit(
+        emit_state(
+            &app,
             "engine://stations",
             json!({ "stations": station_payload(&stations) }),
         );
@@ -300,7 +324,7 @@ async fn attach(
                 match event {
                     Event::StationChanged(name) => station = name,
                     Event::ModeChanged(name) => {
-                        let _ = app.emit("engine://mode", json!({ "mode": name }));
+                        emit_state(&app, "engine://mode", json!({ "mode": name }));
                     }
                     Event::TrackStarted(track) => {
                         // The UI wants a big image and a smaller fallback, exactly as before.
@@ -315,7 +339,8 @@ async fn attach(
                         // would just repeat the station name.
                         let source = engine.source_station().await.unwrap_or_default();
 
-                        let _ = app.emit(
+                        emit_state(
+                            &app,
                             "engine://nowplaying",
                             json!({
                                 "title": track.song_title,
@@ -334,7 +359,8 @@ async fn attach(
                                 "thumbDown": false,
                             }),
                         );
-                        let _ = app.emit(
+                        emit_state(
+                            &app,
                             "engine://thumbs",
                             json!({ "thumbUp": track.is_thumbed_up(), "thumbDown": false }),
                         );
@@ -537,6 +563,16 @@ pub async fn native_needs_login(state: tauri::State<'_, NativeEngine>) -> Result
     Ok(state.needs_login.load(Ordering::Relaxed))
 }
 
+/// The latest of each state event (see `NativeEngine::latest`), for a window to catch up on after
+/// registering its listeners. Listen first, then ask: anything sent between the two arrives as an
+/// event, and replaying the latest copy of it again is harmless.
+#[tauri::command]
+pub fn native_latest_state(
+    state: tauri::State<'_, NativeEngine>,
+) -> HashMap<&'static str, serde_json::Value> {
+    state.latest.lock().unwrap().clone()
+}
+
 /// Station list for the picker: name plus the token playback needs.
 #[tauri::command]
 pub async fn native_stations(
@@ -680,12 +716,14 @@ pub async fn native_cmd(
         // we roll the UI back immediately, and the next time Pandora serves the track its real
         // `songRating` overrides whatever we assumed.
         "thumbup" => {
-            let _ = app.emit(
+            emit_state(
+                &app,
                 "engine://thumbs",
                 json!({ "thumbUp": true, "thumbDown": false }),
             );
             if let Err(e) = engine.thumb_up().await {
-                let _ = app.emit(
+                emit_state(
+                    &app,
                     "engine://thumbs",
                     json!({ "thumbUp": false, "thumbDown": false }),
                 );
@@ -693,12 +731,14 @@ pub async fn native_cmd(
             }
         }
         "thumbdown" => {
-            let _ = app.emit(
+            emit_state(
+                &app,
                 "engine://thumbs",
                 json!({ "thumbUp": false, "thumbDown": true }),
             );
             if let Err(e) = engine.thumb_down().await {
-                let _ = app.emit(
+                emit_state(
+                    &app,
                     "engine://thumbs",
                     json!({ "thumbUp": false, "thumbDown": false }),
                 );
