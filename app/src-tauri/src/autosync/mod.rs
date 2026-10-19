@@ -111,7 +111,7 @@ pub fn wants_next_file(app: &AppHandle, setting: &crate::settings::AutoSync) -> 
 /// Stored timings for a track, if they were made from exactly this plain text and passed the
 /// quality gate. Called by `lyrics::fetch_lyrics`.
 pub fn stored_lrc(app: &AppHandle, key: &str, plain: &str) -> Option<String> {
-    stored(app, key, plain)?.lrc
+    current(app, key, plain)?.lrc
 }
 
 /// A song started playing.
@@ -242,8 +242,9 @@ async fn run(
     let Some(plain) = lyrics.plain else {
         return Ok(());
     };
-    // Done before for these words — or tried, and failed the gate. Not again until they change.
-    if stored(app, &key, &plain).is_some() {
+    // Done before for these words — or tried, and failed the gate. Not again until they change,
+    // or the aligner does and the song has to be heard again to re-time it.
+    if current(app, &key, &plain).is_some() {
         return Ok(());
     }
 
@@ -280,12 +281,13 @@ async fn run(
 
     let result = hear_and_align(app, installed, track, &wav, from, &plain, duration, gpu).await;
     let _ = std::fs::remove_file(&wav);
-    let Some((lrc, coverage)) = result? else {
+    let Some(heard) = result? else {
         // Cancelled: a skip made it moot. Nothing stored, so it is tried again if it comes back.
         return Ok(());
     };
 
-    let ok = coverage >= GATE && lrc.is_some();
+    let (lrc, coverage) = time(&plain, &heard, duration);
+    let ok = lrc.is_some();
     eprintln!(
         "[autosync] {} — {}: {:.0}% of words heard{}",
         track.artist_name,
@@ -302,17 +304,24 @@ async fn run(
         &key,
         &Stored {
             plain_hash: fnv(&plain),
-            lrc: if ok { lrc.clone() } else { None },
+            lrc: lrc.clone(),
             coverage,
             engine: installed.manifest.version.clone(),
             created: unix_now(),
+            aligner: autosync::align::VERSION,
+            heard: heard
+                .iter()
+                .map(|w| (w.text.clone(), w.start, w.end))
+                .collect(),
+            duration,
         },
     );
-    emit_lines(app, track, if ok { lrc } else { None }, 0, 0, true, ok);
+    emit_lines(app, track, lrc, 0, 0, true, ok);
     Ok(())
 }
 
-/// Run the job and align after every window. `None` if it was cancelled.
+/// Run the job, showing the timings so far after every window. Everything heard, in order, or
+/// `None` if it was cancelled.
 #[allow(clippy::too_many_arguments)]
 async fn hear_and_align(
     app: &AppHandle,
@@ -323,7 +332,7 @@ async fn hear_and_align(
     plain: &str,
     duration: f64,
     gpu: bool,
-) -> Result<Option<(Option<String>, f64)>, String> {
+) -> Result<Option<Vec<autosync::Heard>>, String> {
     let sidecar = sidecar(app, installed, gpu).await?;
     let mut rx = sidecar.transcribe(&track.pandora_id, wav, from)?;
     let lines: Vec<&str> = plain.lines().collect();
@@ -348,11 +357,18 @@ async fn hear_and_align(
             None => return Err("the speech engine went away".into()),
         }
     }
-    let aligned = autosync::align::align(&lines, &heard);
-    Ok(Some((
-        lrc_of(&aligned, &lines, duration),
-        aligned.coverage(),
-    )))
+    Ok(Some(heard))
+}
+
+/// The timings for `plain` from `heard`, or `None` below the quality gate, and the share of the
+/// lyric words heard.
+fn time(plain: &str, heard: &[autosync::Heard], duration: f64) -> (Option<String>, f64) {
+    let lines: Vec<&str> = plain.lines().collect();
+    let aligned = autosync::align::align(&lines, heard);
+    let lrc = (aligned.coverage() >= GATE)
+        .then(|| lrc_of(&aligned, &lines, duration))
+        .flatten();
+    (lrc, aligned.coverage())
 }
 
 fn lrc_of(aligned: &autosync::align::Alignment, lines: &[&str], duration: f64) -> Option<String> {
@@ -512,7 +528,7 @@ pub async fn autosync_remove(app: AppHandle) -> Result<Status, String> {
 
 // ---- results --------------------------------------------------------------------------------
 
-/// One song's outcome, kept so a song is analysed once per version of its words.
+/// One song's outcome, kept so a song is heard once per version of its words.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Stored {
@@ -524,6 +540,16 @@ struct Stored {
     /// The engine release that made it.
     engine: String,
     created: u64,
+    /// The aligner that timed it (`autosync::align::VERSION`); 0 before that was kept.
+    #[serde(default)]
+    aligner: u32,
+    /// What the engine heard, as `(text, start, end)`, so a newer aligner can re-time the song
+    /// without hearing it again. Empty in results from before that was kept.
+    #[serde(default)]
+    heard: Vec<(String, f64, f64)>,
+    /// The track's length, which placing lines after the last one heard needs.
+    #[serde(default)]
+    duration: f64,
 }
 
 /// In the cache dir: all of it can be made again.
@@ -535,6 +561,33 @@ fn stored(app: &AppHandle, key: &str, plain: &str) -> Option<Stored> {
     let path = crate::lyrics::hashed_file(results_dir(app)?, key)?;
     let s: Stored = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     (s.plain_hash == fnv(plain)).then_some(s)
+}
+
+/// The stored result for these words, re-timed first if an older aligner made it. `None` when
+/// there isn't one, or when it is too old to re-time because the words heard weren't kept: then
+/// the song is heard again the next time it plays.
+fn current(app: &AppHandle, key: &str, plain: &str) -> Option<Stored> {
+    let mut s = stored(app, key, plain)?;
+    if s.aligner == autosync::align::VERSION {
+        return Some(s);
+    }
+    if s.heard.is_empty() {
+        return None;
+    }
+    let heard: Vec<autosync::Heard> = s
+        .heard
+        .iter()
+        .map(|(text, start, end)| autosync::Heard {
+            text: text.clone(),
+            start: *start,
+            end: *end,
+            p: 1.0,
+        })
+        .collect();
+    (s.lrc, s.coverage) = time(plain, &heard, s.duration);
+    s.aligner = autosync::align::VERSION;
+    store(app, key, &s);
+    Some(s)
 }
 
 fn store(app: &AppHandle, key: &str, result: &Stored) {
@@ -639,6 +692,16 @@ mod tests {
             "under ten seconds of audio"
         );
         let _ = std::fs::remove_file(&wav);
+    }
+
+    #[test]
+    fn results_from_before_the_aligner_was_kept_read_as_too_old() {
+        // As v1.13.0 wrote them: no aligner version, no heard words.
+        let old = r#"{"plainHash":"c4cc69423559b7d0","lrc":"[00:04.33] Fake faces\n",
+            "coverage":0.65,"engine":"0.1.0","created":1792117168}"#;
+        let s: Stored = serde_json::from_str(old).unwrap();
+        assert_ne!(s.aligner, autosync::align::VERSION);
+        assert!(s.heard.is_empty());
     }
 
     #[test]

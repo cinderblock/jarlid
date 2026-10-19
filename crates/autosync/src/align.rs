@@ -21,6 +21,12 @@ use std::collections::VecDeque;
 use crate::text::{similarity, words};
 use crate::Heard;
 
+/// Which aligner this is. Bump it whenever the same heard words would come out timed
+/// differently, so timings kept from an older one are made again.
+///
+/// 1: v1.13.0. 2: unheard words take time, unheard lines placed by stanza.
+pub const VERSION: u32 = 2;
+
 /// Fallback seconds-per-word, when too few words matched to measure it.
 const DEFAULT_WORD_SECONDS: f64 = 0.35;
 
