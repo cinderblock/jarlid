@@ -308,7 +308,7 @@ async fn attach(
     // its own and would otherwise look like a broken export.
     if let Ok(stations) = engine.station_list().await {
         emit_state(
-            &app,
+            app,
             "engine://stations",
             json!({ "stations": station_payload(&stations) }),
         );
