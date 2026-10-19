@@ -125,8 +125,9 @@ the two apart.
        aligner re-times from them without hearing the song again. v1.13.0's records have no
        heard words, so those songs are heard again the next time they play.
 5. [x] README (`d041fe8`).
-6. [ ] Release: the fix reaches the installed app only with an app release. Waiting on
-       Cameron (version numbers are his call). ← current
+6. [x] Released as v1.13.1 (`6c89528`, CI run 39325698339): installer, MSI, signatures and
+       `latest.json` attached; `releases/latest` serves 1.13.1.
+7. [ ] Live check in the installed app once it updates (Cameron). ← current
 
 ## Progress log
 
@@ -136,12 +137,12 @@ the two apart.
       the old aligner), stanza pace, in-stanza spread.
 - [x] 2026-10-19: stored results keep heard words and aligner version (`142f1a1`); README
       (`d041fe8`).
-- [ ] Release, then a live check in the installed app.
+- [x] 2026-10-19: v1.13.1 released.
+- [ ] Live check in the installed app.
 
 ## Open questions for the user
 
-1. Cut a release with this? It's a patch-sized change to the app only (no new engine). The
-   aligner and re-timing are on master; nothing else is unreleased since v1.13.0.
+1. ~~Cut a release?~~ Yes, 2026-10-19 ("deploy/release"): v1.13.1.
 2. Later, if mistimed unheard stanzas still bother you: the sidecar could report vocal
    activity per window (it has the audio), which would settle where a break falls around a
    stanza the model heard none of. That needs an engine release.
