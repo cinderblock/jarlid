@@ -86,10 +86,25 @@ impl Alignment {
     /// singing rate, inside `0..=duration`. Without this they would vanish from the pane, which
     /// shows only timed lines. Empty if nothing anchored at all.
     pub fn timed(&self, lines: &[&str], duration: f64) -> Vec<crate::lrc::Line> {
+        lines
+            .iter()
+            .zip(self.placed(duration))
+            .filter_map(|(text, t)| {
+                t.map(|t| crate::lrc::Line {
+                    t,
+                    text: text.trim().to_string(),
+                })
+            })
+            .collect()
+    }
+
+    /// One time per input line, as [`Alignment::timed`] shows them: `None` only for blank lines,
+    /// or for every line when nothing anchored.
+    pub fn placed(&self, duration: f64) -> Vec<Option<f64>> {
         let mut t: Vec<Option<f64>> = self.lines.iter().map(|l| l.t).collect();
         let span = |i: usize| self.lines[i].words as f64 * self.word_seconds + LINE_GAP;
         let Some(first) = t.iter().position(Option::is_some) else {
-            return Vec::new();
+            return t;
         };
         let last = t.iter().rposition(Option::is_some).unwrap_or(first);
         for i in (0..first).rev() {
@@ -107,18 +122,12 @@ impl Alignment {
                 t[i] = Some((prev + span(k)).min(duration.max(prev)));
             }
         }
-        lines
-            .iter()
-            .zip(&t)
-            .zip(&self.lines)
-            .filter(|(_, l)| l.words > 0)
-            .filter_map(|((text, t), _)| {
-                t.map(|t| crate::lrc::Line {
-                    t,
-                    text: text.trim().to_string(),
-                })
-            })
-            .collect()
+        for (t, line) in t.iter_mut().zip(&self.lines) {
+            if line.words == 0 {
+                *t = None;
+            }
+        }
+        t
     }
 
     /// Share of lyric words found in what was heard.

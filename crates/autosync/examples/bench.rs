@@ -98,22 +98,14 @@ fn main() {
                         );
                     }
                 }
-                let times: Vec<Option<f64>> = aligned.lines.iter().map(|l| l.t).collect();
+                // Scored as the lyrics pane shows them: every line timed, including those before
+                // the first anchor and after the last.
+                let duration = duration_of(&dir);
+                let times = aligned.placed(duration);
                 let s = score::score(&lines, &times, &lrc::parse(&synced));
-
-                let generated: Vec<lrc::Line> = lines
-                    .iter()
-                    .zip(&times)
-                    .filter_map(|(text, t)| {
-                        t.map(|t| lrc::Line {
-                            t,
-                            text: text.to_string(),
-                        })
-                    })
-                    .collect();
                 let _ = std::fs::write(
                     results.join(config).join(format!("{track}{suffix}.lrc")),
-                    lrc::format(&generated),
+                    lrc::format(&aligned.timed(&lines, duration)),
                 );
 
                 println!(
@@ -192,6 +184,16 @@ fn params_from_env() -> align::Params {
 
 /// Coverage below which a result would be rejected rather than shown as synced.
 const GATE: f64 = 0.6;
+
+/// The track's length from the corpus's `meta.json` (Pandora's, which is what the app has), or
+/// unbounded when it isn't there.
+fn duration_of(dir: &Path) -> f64 {
+    std::fs::read_to_string(dir.join("meta.json"))
+        .ok()
+        .and_then(|json| serde_json::from_str::<Value>(&json).ok())
+        .and_then(|v| v["pandoraLength"].as_f64())
+        .unwrap_or(f64::MAX)
+}
 
 fn secs(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("{v:.2}"))
