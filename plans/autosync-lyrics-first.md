@@ -141,8 +141,8 @@ the two apart.
 - [x] 2026-10-19: after updating to v1.13.1 the window was blank but for Stations. Not this
       task's code (no frontend change since v1.13.0): the update resumed playback before the
       window listened, and now-playing etc. were one-off events. Fixed by latching the state
-      events and having the window ask after listening (`d0aa669`, `4fdd22b`). Needs a release
-      to reach the installed app; waiting on Cameron.
+      events and having the window ask after listening (`d0aa669`, `4fdd22b`). Released in
+      v1.13.2 (`2da0d72`, CI run 39331058139; all five assets, `latest.json` says 1.13.2).
 - [ ] Live check in the installed app.
 
 ## Open questions for the user
