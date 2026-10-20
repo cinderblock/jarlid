@@ -157,3 +157,55 @@ decode thread.
 
 In v1.12.0 (2026-10-13). It was released before the open verification items above were
 checked, at the user's call. Those items still stand, now against the released build.
+
+## Round 3 (2026-10-19): "I'm still getting underruns"
+
+Read from the debug log (`%LOCALAPPDATA%\com.camer.pandora-desktop\logs\jarlid.log`), session
+15:29–17:37 on installed **v1.13.2**, default output = Dell P2715Q (Intel Display Audio), on an
+i7-10710U with 64 GB (30 GB free, so not memory pressure).
+
+### Findings
+
+- **The adaptive buffer worked as designed and did not help.** It climbed 30 → 60 → 120 → 240 ms
+  inside three minutes, and then **two underruns happened at 240 ms, the cap** (15:41:18 and
+  15:41:25). It relaxed back to 30 ms over the next hour, and the cycle repeated (16:05, 16:19,
+  17:29).
+- **The callback period on this device is ~10 ms at every buffer size** (measured 2026-10-19
+  with the instrumented `device-buffer` example, muted: 30 ms and 240 ms both run at a 6–10 ms
+  period, longest wait 18 ms). So an underrun at 240 ms means about 24 periods with no callback,
+  or the device discarding a full buffer. That is not scheduling jitter, and a bigger buffer is
+  not the fix. The cause is a stall of a quarter of a second or more, and its source is unknown.
+- **Underruns come in pairs or threes, 4–7 s apart** (84.1/87.9 s, 39.4/46.9/76.7 s,
+  113.5/120.4 s, 114.5/120.0/151.4 s). No correlation with autosync: most happened with the
+  speech engine idle. Only one (17:29:01) happened while it was running.
+- **The mid-song rebuild is itself a ~1 s dropout.** "Still underrunning; rebuilding" drops the
+  player and reopens the CDN stream at the position. Measured from the log: 15:30:46.865 →
+  47.918 (1.05 s), 15:33:18.260 → 19.437 (1.18 s), 16:06:02.610 → 03.436 (0.83 s). That is a
+  longer hole than the glitch it is trying to fix.
+- The bursts drove the buffer up two sizes in 110 ms (15:30:46.694 and .808). That is
+  `a_burst_in_one_poll_counts` working as written, but it means one bad moment can count twice.
+
+### Instrumentation added (`6d6edb6`)
+
+Each underrun line now says how long the callback waited before it, the device period and the
+slowest callback. A callback waiting more than ¾ of the buffer is logged as a late callback.
+
+- Wait ≈ buffer or longer: the callback thread was not run (or cpal's loop was blocked).
+- Wait ≈ one period with the device empty: Windows played or dropped a whole buffer in one
+  period (an engine or endpoint event, not us).
+- Slowest callback large: our own callback stalled (a page fault, for instance).
+
+Not yet in any installed build. A release or a local install is needed before the next
+occurrence can be read.
+
+### Candidate fixes, waiting on the data
+
+1. If the callback thread is being starved: register the **cpal callback thread** with MMCSS
+   (`Pro Audio`), the way a WASAPI render thread is meant to be. This is not the same as the
+   "don't raise the callback priority" rule above, which was about `SetThreadPriority` within
+   the normal band. MMCSS moves it into the realtime band with a guaranteed share.
+2. In any case, make the mid-song rebuild **keep the decoded ring and the decoder**, so that only
+   the cpal stream is reopened. That would replace the ~1 s hole with tens of ms. Or stop
+   rebuilding mid-song at all, since growing has been shown not to fix it.
+3. If it is an endpoint event (on-time callback, empty device): nothing in the app fixes it.
+   The open question from round 2 decides that: does other audio crackle at the same moment?
