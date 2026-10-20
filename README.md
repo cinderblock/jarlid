@@ -32,8 +32,9 @@ anywhere in it.
   within 1 s and 96% within 3 s, on songs where the model heard enough of the vocals to pass
   the quality check. The engine is about 700 MB and is
   downloaded only when you turn this on in Settings; every file is checked against a hash this
-  build was released with. Nothing is published: auto-synced lyrics are marked as such, and the
-  timing editor can check them and publish them to LRCLIB if you choose.
+  build was released with. Nothing is published on its own: auto-synced lyrics are marked as
+  such, and once you've watched them line up, **Looks right? Publish** beside the lyrics (or the
+  timing editor, to fix them first) sends them to LRCLIB after asking.
 - **Flag lyrics as wrong**: press `F` while a song plays to flag the line being sung, without
   stopping anything (the line before comes too if this one has only just started). The flag
   button above the lyrics opens flag mode: click a line to flag it, shift-click to flag a

@@ -19,6 +19,8 @@
 // positionally and assumes ascending timestamps, and neither holds mid-pass.
 
 import { invoke } from "@tauri-apps/api/core";
+import * as confirm from "./lyric-confirm";
+import { publicationFor } from "./lyric-publish";
 
 export interface Lyrics {
   synced: string | null;
@@ -87,11 +89,6 @@ const revertBtn = $<HTMLButtonElement>("lyric-revert");
 const publishBtn = $<HTMLButtonElement>("lyric-publish");
 const flagBtn = $<HTMLButtonElement>("lyric-flag");
 const doneBtn = $<HTMLButtonElement>("lyric-done");
-const confirmEl = $("lyric-confirm");
-const confirmTitle = $("lyric-confirm-title");
-const confirmMsg = $("lyric-confirm-msg");
-const confirmGo = $<HTMLButtonElement>("lyric-confirm-go");
-const reasonEl = $<HTMLInputElement>("lyric-reason");
 
 interface Line {
   t: number | null;
@@ -170,7 +167,7 @@ export function end() {
   stamping = false;
   lyricsEl.classList.remove("editing", "stamping");
   bar.hidden = true;
-  confirmEl.hidden = true;
+  confirm.cancel();
   ctx?.onExit();
   ctx = null;
 }
@@ -430,9 +427,9 @@ timestampBtn.addEventListener("click", () => (stamping ? stopStamping() : startS
 // space would stamp instead of typing.
 window.addEventListener("keydown", (e) => {
   if (!editing) return;
+  // An open confirmation takes Escape for itself (see lyric-confirm.ts).
   if (e.key === "Escape") {
-    if (!confirmEl.hidden) hideConfirm();
-    else if (stamping) stopStamping();
+    if (stamping) stopStamping();
     return;
   }
   const el = e.target as HTMLElement;
@@ -472,7 +469,6 @@ function refreshBar() {
 function setBusy(on: boolean) {
   busy = on;
   refreshBar();
-  confirmGo.disabled = on;
 }
 
 /// The edited track's length. The live playhead only fills in while this track is still
@@ -553,24 +549,9 @@ revertBtn.addEventListener("click", async () => {
 
 // ---- publishing -----------------------------------------------------------
 
-/// LRCLIB identifies a record by track/artist/album/duration together, so all four are
-/// required and must be the matched record's own wording — publishing under Pandora's
-/// spelling files a new record beside the wrong one instead of correcting it.
-function publication() {
-  if (!ctx) return null;
-  const { lyrics, meta } = ctx;
-  const duration = lyrics.duration ?? trackDuration();
-  const body = edited();
-  if (!duration || (!body.synced && !body.plain)) return null;
-  return {
-    trackName: lyrics.trackName || meta.title,
-    artistName: lyrics.artistName || meta.artist,
-    albumName: lyrics.albumName || meta.album || meta.title,
-    duration,
-    ...body,
-    ...keyArgs(),
-  };
-}
+/// The edit as LRCLIB would file it, under the record it came from (see `publicationFor`).
+const publication = () =>
+  ctx ? publicationFor(ctx.lyrics, ctx.meta, trackDuration(), edited()) : null;
 
 publishBtn.addEventListener("click", () => {
   const p = publication();
@@ -629,10 +610,10 @@ flagBtn.addEventListener("click", () => {
       "Tells LRCLIB the published lyrics for this track are wrong — the right move when they belong to a different song entirely and there is nothing to correct by hand.",
     go: "Report",
     reason: true,
-    run: async () => {
+    run: async (reason) => {
       await invoke("flag_lyrics", {
         trackId: id,
-        content: reasonEl.value || null,
+        content: reason || null,
         ...keyArgs(),
       });
       setStatus("Reported to LRCLIB.", "ok");
@@ -642,43 +623,24 @@ flagBtn.addEventListener("click", () => {
 
 // ---- confirmation ---------------------------------------------------------
 
-let pending: (() => Promise<void>) | null = null;
-
-function showConfirm(opts: {
+/// Ask first (see lyric-confirm.ts), then run the action with the bar busy and its outcome
+/// in the status line. `run` gets the reason typed, when one was asked for.
+async function showConfirm(opts: {
   title: string;
   message: string;
   go: string;
   reason?: boolean;
-  run: () => Promise<void>;
+  run: (reason: string) => Promise<void>;
 }) {
-  confirmTitle.textContent = opts.title;
-  confirmMsg.textContent = opts.message;
-  confirmGo.textContent = opts.go;
-  reasonEl.hidden = !opts.reason;
-  reasonEl.value = "";
-  pending = opts.run;
-  confirmEl.hidden = false;
-  (opts.reason ? reasonEl : confirmGo).focus();
-}
-
-function hideConfirm() {
-  confirmEl.hidden = true;
-  pending = null;
-}
-
-$("lyric-confirm-cancel").addEventListener("click", hideConfirm);
-
-confirmGo.addEventListener("click", async () => {
-  const run = pending;
-  if (!run || busy) return;
-  hideConfirm();
+  const reason = await confirm.ask(opts);
+  if (reason === null || busy || !editing) return;
   setBusy(true);
   setStatus("Working…");
   try {
-    await run();
+    await opts.run(reason);
   } catch (e) {
     setStatus(String(e), "err");
   } finally {
     setBusy(false);
   }
-});
+}

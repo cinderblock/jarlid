@@ -3171,3 +3171,8 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
   color: var(--accent);
   border-color: var(--accent-soft);
 }
+/* "Looks right? Publish" borrows the chip's quiet look; it only changes while it works. */
+.lyric-publish:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}

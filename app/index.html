@@ -606,6 +606,9 @@
              sync offset is nudged, and the button must not be dragged along with it. -->
         <div class="lyrics-head">
           <div id="lyrics-status">Lyrics</div>
+          <!-- Shown only beside finished auto-synced timings: the listener has watched them
+               line up and can send them to LRCLIB without opening the editor. Asks first. -->
+          <button id="lyrics-publish" class="lyric-dual lyric-publish" hidden>Looks right? Publish</button>
           <!-- Shown only for lyrics with every line in two languages: names them, and
                cycles both / swapped / one / the other. -->
           <button id="lyrics-dual" class="lyric-dual" hidden></button>

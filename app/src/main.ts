@@ -8,6 +8,8 @@ import * as lyricEditor from "./lyric-editor";
 import type { Lyrics } from "./lyric-editor";
 import * as lyricPicker from "./lyric-picker";
 import * as lyricFlags from "./lyric-flags";
+import * as lyricConfirm from "./lyric-confirm";
+import { publicationFor } from "./lyric-publish";
 import type { Row } from "./flags";
 import { parseLrc, type LyricLine } from "./lrc";
 import { detectDual, type Dual } from "./dual-lyrics";
@@ -81,6 +83,7 @@ const lyricsStatus = $("lyrics-status");
 const lyricsEditBtn = $("lyrics-edit");
 const lyricsVersionsBtn = $("lyrics-versions");
 const lyricsFlagBtn = $("lyrics-flag");
+const lyricsPublishBtn = $<HTMLButtonElement>("lyrics-publish");
 
 const fmt = (s: number) => {
   if (!isFinite(s) || s < 0) s = 0;
@@ -98,6 +101,13 @@ let lastLyrics: Lyrics | null = null;
 let lastMeta = { title: "", artist: "", album: "" };
 // The track length the lookup was made with, for weighing other versions against it.
 let lastDuration: number | null = null;
+/// The copy painted while autosync is still working. It hasn't passed the quality gate, so it
+/// is never offered for publishing; the finished result arrives as a fresh `fetch_lyrics`.
+let autoSyncPreview: Lyrics | null = null;
+/// Tracks (`title|artist`) whose timings went to LRCLIB this session, so the chip doesn't
+/// come back if LRCLIB is slow to serve them.
+const publishedTracks = new Set<string>();
+let publishing = false;
 // A lookup that failed to reach LRCLIB is tried again while the song is still playing:
 // after these pauses, in order, and then no more. The backend already retries each
 // request a few times, so this covers an outage of a minute or so, not a long one —
@@ -425,6 +435,7 @@ async function onNowPlaying(np: NowPlaying) {
     // stays while editing — it is how the open editor is closed.
     if (!lyricEditor.isEditing()) lyricsEditBtn.hidden = true;
     lyricsVersionsBtn.hidden = true;
+    refreshPublishChip();
     lyricFlags.trackChanged();
     pushHistory(np);
     await loadLyrics(np);
@@ -694,6 +705,7 @@ async function loadLyricsFor(
     lastLyrics = null;
     lyricsEditBtn.hidden = true;
     lyricsVersionsBtn.hidden = true;
+    refreshPublishChip();
     lyricFlags.trackChanged();
     noteDual(null);
     syncedLines = null;
@@ -761,8 +773,11 @@ function applyLyrics(res: Lyrics) {
     : res.pinned
       ? " · your pick"
       : res.auto
-        ? " · auto-synced"
+        ? publishedTracks.has(currentKey)
+          ? " · auto-synced · published"
+          : " · auto-synced"
         : "";
+  refreshPublishChip();
 
   // Edit mode owns the pane's contents. Repainting under it would throw away the rows
   // and the caret mid-edit, so keep the state current and leave the DOM alone.
@@ -836,9 +851,11 @@ lyricsVersionsBtn.addEventListener("click", () => {
     },
     onClosed: () => {
       lyricsVersionsBtn.classList.remove("on");
+      refreshPublishChip();
       lyricFlags.refresh();
     },
   });
+  refreshPublishChip();
   lyricFlags.refresh();
 });
 attachTip(lyricsVersionsBtn, () =>
@@ -891,6 +908,7 @@ lyricsEditBtn.addEventListener("click", () => {
       }
     },
   });
+  refreshPublishChip();
   lyricFlags.refresh();
 });
 attachTip(lyricsEditBtn, () =>
@@ -963,8 +981,68 @@ void listen<AutoSyncLines>("autosync://lines", (e) => {
     void loadLyricsFor(lastMeta, lastDuration, key);
     return;
   }
-  if (p.lrc) applyLyrics({ ...shown, synced: p.lrc, auto: true });
+  if (p.lrc) {
+    autoSyncPreview = { ...shown, synced: p.lrc, auto: true };
+    applyLyrics(autoSyncPreview);
+  }
   lyricsStatus.textContent = `${p.lrc ? "Synced lyrics" : "Lyrics"} · syncing ${p.done} of ${p.of}`;
+});
+
+// ---- publishing checked auto-synced timings ------------------------------
+// Generated timings are never published on their own (plans/autosync-quick-publish.md).
+// Once the listener has watched them line up, this chip sends them to LRCLIB without a trip
+// through the editor — after the same confirmation, under the same record identity.
+
+/// What the chip would publish: exactly what the pane shows, filed under the matched record.
+function autoPublication() {
+  const l = lastLyrics;
+  if (!l?.auto || l === autoSyncPreview || !l.id) return null;
+  // The pane can still hold the last track's lyrics while the new track's load.
+  if (`${lastMeta.title}|${lastMeta.artist}` !== currentKey) return null;
+  return publicationFor(l, lastMeta, lastDuration, { synced: l.synced, plain: l.plain });
+}
+
+function refreshPublishChip() {
+  lyricsPublishBtn.hidden =
+    lyricEditor.isEditing() ||
+    lyricPicker.isOpen() ||
+    publishedTracks.has(currentKey) ||
+    !autoPublication();
+  lyricsPublishBtn.disabled = publishing;
+  lyricsPublishBtn.textContent = publishing ? "Publishing…" : "Looks right? Publish";
+}
+
+lyricsPublishBtn.addEventListener("click", async () => {
+  const shown = lastLyrics;
+  const meta = lastMeta;
+  const key = currentKey;
+  const p = autoPublication();
+  if (!p || publishing) return;
+  const go = await lyricConfirm.ask({
+    title: "Publish these timings to LRCLIB?",
+    message: `They were worked out on this computer, not by a person, so publish them only if you've watched them line up with the song. They become the synced lyrics every LRCLIB app gets for ${p.artistName} — ${p.trackName}; the current version is kept as an earlier revision.`,
+    go: "Publish",
+  });
+  // What was confirmed is `p`, captured before asking, so a track change while the dialog
+  // was open doesn't change what gets published or where.
+  if (go === null) return;
+  publishing = true;
+  refreshPublishChip();
+  try {
+    await invoke("publish_lyrics", { publication: p });
+    publishedTracks.add(key);
+    showToast(`Published the timings for ${p.artistName} — ${p.trackName} to LRCLIB.`);
+    // Look again, so the pane shows what LRCLIB now serves — unless something else has
+    // taken the pane in the meantime.
+    if (key === currentKey && lastLyrics === shown && !lyricEditor.isEditing() && !lyricPicker.isOpen()) {
+      await loadLyricsFor(meta, lastDuration, key);
+    }
+  } catch (e) {
+    showToast(`Couldn't publish to LRCLIB. ${e}`);
+  } finally {
+    publishing = false;
+    refreshPublishChip();
+  }
 });
 
 // ---- playhead ----------------------------------------------------------
