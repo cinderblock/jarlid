@@ -304,3 +304,9 @@ from-scratch Tauri release build.
 - If they continue with a one-period gap and an empty device, that is the endpoint (Intel
   Display Audio lives on the iGPU driver; autosync runs Vulkan on the same iGPU), and nothing
   in the app fixes it.
+
+## Released
+
+In **v1.14.1** (`27ac345`, 2026-10-20): the callback-thread MMCSS fix, the stream-only reopen,
+and the callback timing in the debug log. Release run succeeded and all five assets are
+attached (setup exe, msi, both signatures, `latest.json` at 1.14.1).
