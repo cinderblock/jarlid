@@ -19,6 +19,10 @@ obvious place would have changed nothing.
 `src/host/wasapi/stream.rs:353`). The callback is never the thread that loses a CPU race, and it
 was never the problem.
 
+> **Wrong** (found 2026-10-20, round 3 below): that code passes a thread id as a handle and the
+> call fails; the callback thread was at normal priority all along. Kept as written above
+> because it is the mistake the rest of this file was built on.
+
 The problem is the **decode thread** in `crates/audio/src/player.rs`, spawned with a bare
 `std::thread::spawn` at default priority. It is the producer for the ring buffer the callback
 drains. Under load — a big compile, a render, a game — the scheduler can deschedule it long enough
@@ -76,9 +80,12 @@ So the fix belongs on the producer, not the consumer.
 
 ## Things not to do
 
-- Don't raise the cpal callback priority. It is already `TIME_CRITICAL`; going higher just starves
-  something else.
+- ~~Don't raise the cpal callback priority. It is already `TIME_CRITICAL`.~~ **It was not** —
+  see "The premise was wrong" in round 3. It is now registered with MMCSS from the first
+  callback. Don't go further than that: the `Pro Audio` class is the sanctioned ceiling.
 - Don't register the *whole process* as high priority to fix this. The problem is one thread.
+- Don't trust a claim about a thread's priority that was not measured from that thread. The
+  one at the top of this file cost a week.
 
 ## Verification
 
@@ -236,10 +243,49 @@ muted (`reopened at … in X ms; position a -> b`):
 The playhead moving by the device's buffer is the old queue playing out, not a skip; the gap
 is the stream open itself. Against 0.83–1.18 s for the old rebuild from the 2026-10-19 log.
 
-### Candidate fixes, still waiting on the data
+### The data (local build installed 22:20 on 2026-10-19, 20 minutes of play)
 
-1. If the callback thread is being starved: register the **cpal callback thread** with MMCSS
-   (`Pro Audio`), the way a WASAPI render thread is meant to be. This is not the same as the
-   "don't raise the callback priority" rule above, which was about `SetThreadPriority` within
-   the normal band. MMCSS moves it into the realtime band with a guaranteed share.
-2. If it is an endpoint event (on-time callback, empty device): nothing in the app fixes it.
+Every event had the same shape: the callback waited **22–41 ms** to be run, and the callback
+itself took **0.04–0.55 ms**. One late callback (12.3 s in) took 39.7 ms *inside* the callback,
+i.e. it was pre-empted mid-call. The device never had anything to do with it.
+
+```
+1 device underrun at 9.0s (30 ms buffer); the callback came 41.5 ms after the one before (period 9.3 ms, slowest callback 0.06 ms)
+2 device underruns at 73.1s (30 ms buffer); the callback came 33.3 ms after the one before (period 3.2 ms, slowest callback 0.10 ms)
+```
+
+The reopen also ran for real at 22:40:16: `reopening at 73.2s with 60 ms` → `reopened … at
+73.2s, 60 ms device buffer` 200 ms later, position unchanged, no CDN reconnect.
+
+### The premise was wrong: cpal never raised the callback thread
+
+The diagnosis at the top of this file says cpal runs its WASAPI callback at
+`THREAD_PRIORITY_TIME_CRITICAL`. The code is in `cpal-0.16.0/src/host/wasapi/stream.rs`,
+`boost_current_thread_priority` (the `audio_thread_priority` feature is off):
+
+```rust
+let thread_id = Threading::GetCurrentThreadId();
+let _ = Threading::SetThreadPriority(HANDLE(thread_id as isize), THREAD_PRIORITY_TIME_CRITICAL);
+```
+
+A thread *id* where a thread *handle* belongs, and the error discarded. Measured from inside the
+callback with `GetThreadPriority(GetCurrentThread())`: **0, normal priority.** So the thread
+that has a 30 ms deadline was competing on equal terms with everything else on the machine, and
+a 30–40 ms hold under load is exactly what that looks like. "Raising the callback priority
+would not help, it is already TIME_CRITICAL" was asserted twice in this file and never checked.
+
+### Fix
+
+The first callback registers its own thread with MMCSS as `Pro Audio` (`AudioPriority`, now
+taking a task name; falls back to `SetThreadPriority(TIME_CRITICAL)`), and the guard lives in
+the closure, which cpal drops on the same thread. It records what it found and what it got;
+the engine logs `output callback thread found at priority 0; now MMCSS Pro Audio
+(priority 15)` once per stream, the `device-buffer` example prints the same, and
+`the_output_callback_raises_its_own_thread` pins `found == 0` so a cpal upgrade that fixes
+this upstream will fail the test and say so.
+
+- [ ] Confirm in real use: with the thread registered, underruns under the same load should
+      stop, or at least the "callback came N ms after" figure should stop exceeding the buffer.
+- If they continue with a one-period gap and an empty device, that is the endpoint (Intel
+  Display Audio lives on the iGPU driver; autosync runs Vulkan on the same iGPU), and nothing
+  in the app fixes it.
