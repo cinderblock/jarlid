@@ -138,6 +138,8 @@ whether the fix fixed it.
 
 - [x] 2026-10-19: design settled with Cameron (both purposes; quick key + line pick).
 - [x] 2026-10-19: built, unit-tested, checked in the browser harness.
+- [x] 2026-10-19: released in **v1.14.0** (bump `d03fe01`, CI run 39369170928): installer, MSI,
+      their `.sig` files and `latest.json` attached; `releases/latest` serves 1.14.0.
 
 ## Open questions for the user
 
