@@ -7,6 +7,8 @@ import * as settingsPage from "./settings-page";
 import * as lyricEditor from "./lyric-editor";
 import type { Lyrics } from "./lyric-editor";
 import * as lyricPicker from "./lyric-picker";
+import * as lyricFlags from "./lyric-flags";
+import type { Row } from "./flags";
 import { parseLrc, type LyricLine } from "./lrc";
 import { detectDual, type Dual } from "./dual-lyrics";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
@@ -78,6 +80,7 @@ const lyricsEl = $("lyrics");
 const lyricsStatus = $("lyrics-status");
 const lyricsEditBtn = $("lyrics-edit");
 const lyricsVersionsBtn = $("lyrics-versions");
+const lyricsFlagBtn = $("lyrics-flag");
 
 const fmt = (s: number) => {
   if (!isFinite(s) || s < 0) s = 0;
@@ -152,12 +155,14 @@ function renderPlainLyrics(lines: PaneLine[]) {
   lyricsEl.innerHTML = "";
   introEl = introBar = null;
   paneLines = lines;
-  for (const ln of lines) {
+  lines.forEach((ln, i) => {
     const div = document.createElement("div");
     div.className = "line plain";
+    // Not for the highlighter, which leaves plain rows alone: flags point at rows by index.
+    div.dataset.idx = String(i);
     fillLine(div, ln);
     lyricsEl.appendChild(div);
-  }
+  });
   // A new song starts at its first verse, wherever the last one's pane was left.
   stopPlainFollow();
   lyricsEl.scrollTo({ top: 0, behavior: "instant" });
@@ -328,8 +333,12 @@ for (const ev of ["wheel", "touchstart", "pointerdown"] as const) {
   );
 }
 
+/// Where the song is, by whichever source is on screen: the local playhead or the speaker's.
+let lyricsPosition = 0;
+
 /// One entry point for the playhead: synced lyrics light a line, plain ones drift.
 function followLyrics(position: number, duration: number) {
+  lyricsPosition = position;
   if (syncedLines) highlightLine(position);
   else followPlainLyrics(position, duration);
 }
@@ -368,7 +377,8 @@ function highlightLine(position: number) {
   // Before the first line, the countdown row is what the pane centres on — otherwise
   // there is no target and the first line arrives with a jump.
   const active = idx < 0 ? introEl : nodes[idx];
-  if (active) active.scrollIntoView({ block: "center", behavior: "smooth" });
+  // In flag mode the listener may be reaching for a row; don't scroll it out from under them.
+  if (active && !lyricFlags.holdScroll()) active.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
 // ---- now-playing -------------------------------------------------------
@@ -415,6 +425,7 @@ async function onNowPlaying(np: NowPlaying) {
     // stays while editing — it is how the open editor is closed.
     if (!lyricEditor.isEditing()) lyricsEditBtn.hidden = true;
     lyricsVersionsBtn.hidden = true;
+    lyricFlags.trackChanged();
     pushHistory(np);
     await loadLyrics(np);
   }
@@ -683,6 +694,7 @@ async function loadLyricsFor(
     lastLyrics = null;
     lyricsEditBtn.hidden = true;
     lyricsVersionsBtn.hidden = true;
+    lyricFlags.trackChanged();
     noteDual(null);
     syncedLines = null;
     introEl = introBar = null;
@@ -761,6 +773,14 @@ function applyLyrics(res: Lyrics) {
     return;
   }
   paintLyrics(res, note);
+  showFlags(res);
+}
+
+/// Tell the flags which lyrics, and which rows, the track now shows. Not while editing: the
+/// editor's rows aren't these, and leaving it repaints through here anyway.
+function showFlags(res: Lyrics) {
+  const rows: Row[] = syncedLines ?? (res.plain ? paneLines.map((l) => ({ t: null, ...l })) : []);
+  lyricFlags.show(lastMeta, lastDuration ?? res.duration, res, rows);
 }
 
 /// Draw a set of lyrics in the pane and drive the highlighter from them. Doesn't adopt
@@ -800,6 +820,7 @@ lyricsVersionsBtn.addEventListener("click", () => {
   if (!lastLyrics || lyricEditor.isEditing()) return;
   const key = currentKey;
   lyricsVersionsBtn.classList.add("on");
+  lyricFlags.close();
   void lyricPicker.open({
     meta: lastMeta,
     duration: lastDuration,
@@ -813,8 +834,12 @@ lyricsVersionsBtn.addEventListener("click", () => {
     onExit: () => {
       if (lastLyrics) applyLyrics(lastLyrics);
     },
-    onClosed: () => lyricsVersionsBtn.classList.remove("on"),
+    onClosed: () => {
+      lyricsVersionsBtn.classList.remove("on");
+      lyricFlags.refresh();
+    },
   });
+  lyricFlags.refresh();
 });
 attachTip(lyricsVersionsBtn, () =>
   lyricPicker.isOpen()
@@ -832,6 +857,7 @@ lyricsEditBtn.addEventListener("click", () => {
   if (!lastLyrics) return;
   // Editing works on what the track shows, not on a version being tried.
   lyricPicker.close();
+  lyricFlags.close();
   lyricsEditBtn.classList.add("on");
   lyricsVersionsBtn.hidden = true;
   // The editor shows each line as stored, both languages together; the chip means nothing there.
@@ -861,9 +887,11 @@ lyricsEditBtn.addEventListener("click", () => {
       if (`${lastMeta.title}|${lastMeta.artist}` !== currentKey) {
         lyricsEditBtn.hidden = true;
         lyricsVersionsBtn.hidden = true;
+        lyricFlags.trackChanged();
       }
     },
   });
+  lyricFlags.refresh();
 });
 attachTip(lyricsEditBtn, () =>
   lyricEditor.isEditing()
@@ -874,6 +902,36 @@ attachTip(lyricsEditBtn, () =>
         ? "Check the auto-synced timings, and publish them to LRCLIB if they're right"
         : "Fix or time these lyrics"
 );
+
+/// How long the status line says what was just flagged.
+const FLAG_NOTE_MS = 3000;
+let flagNote: { was: string; text: string; timer: number } | null = null;
+
+lyricFlags.init({
+  currentKey: () => currentKey,
+  now: () => lyricsPosition + syncOffset,
+  offset: () => syncOffset,
+  blocked: () => lyricEditor.isEditing() || lyricPicker.isOpen(),
+  covered: () => stationsPage.isOpen() || settingsPage.isOpen() || !histModal.hidden,
+  // A flag's description goes stale as soon as the flag grows or goes, unlike a sync nudge's
+  // "offset +0.25s", so it gives the status line back once it has been read.
+  flash: (text) => {
+    // Several flags in quick succession all give back what was there before the first.
+    if (!flagNote || lyricsStatus.textContent !== flagNote.text) {
+      flagNote = { was: lyricsStatus.textContent ?? "", text, timer: 0 };
+    }
+    flagNote.text = text;
+    flashStatus(text);
+    clearTimeout(flagNote.timer);
+    flagNote.timer = window.setTimeout(() => {
+      if (flagNote && lyricsStatus.textContent === flagNote.text) {
+        lyricsStatus.textContent = flagNote.was;
+      }
+      flagNote = null;
+    }, FLAG_NOTE_MS);
+  },
+});
+attachTip(lyricsFlagBtn, lyricFlags.tip);
 
 // ---- auto-synced lyrics --------------------------------------------------
 
@@ -1803,6 +1861,7 @@ function renderRemote(r: RemoteState) {
   syncedLines = null;
   activeLineIdx = NO_LINE;
   syncOffset = parseFloat(localStorage.getItem(`syncoff:${key}`) || "0") || 0;
+  lyricFlags.trackChanged();
   loadLyricsFor({ title: r.title, artist: r.artist, album: r.album }, r.duration || null, key);
 }
 

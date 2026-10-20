@@ -34,6 +34,14 @@ anywhere in it.
   downloaded only when you turn this on in Settings; every file is checked against a hash this
   build was released with. Nothing is published: auto-synced lyrics are marked as such, and the
   timing editor can check them and publish them to LRCLIB if you choose.
+- **Flag lyrics as wrong**: press `F` while a song plays to flag the line being sung, without
+  stopping anything (the line before comes too if this one has only just started). The flag
+  button above the lyrics opens flag mode: click a line to flag it, shift-click to flag a
+  stretch, flag the whole song, and say what's wrong (timing, words, wrong version, a note).
+  Flagged lines get a wavy underline. Pandora won't replay a song on request, so Settings lists
+  every flagged song. Flags stay on your computer, and each keeps a copy of the lyrics it was
+  made on. For auto-synced lyrics it also keeps what the speech engine heard, so the song can
+  be re-timed later without hearing it again.
 - **Native Windows media integration**: hardware media keys and the volume-flyout / lock-screen
   media panel (title, artist, album art, live state) via a real SMTC session, fed from the player
   itself rather than inferred from a page. Plus a **taskbar thumbnail toolbar** (thumbs down ·

@@ -3032,6 +3032,105 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
   margin-left: auto;
 }
 
+/* ---- lyrics flags ---- */
+/* Lit when the song has flags on it: for a whole-song flag, the only sign there is. */
+.lyric-flag.flagged {
+  opacity: 0.9;
+  color: var(--bad);
+}
+
+/* A flagged row gets a spell-check squiggle: the mark everyone already reads as "something's
+   wrong here", and one that takes no room, so nothing moves when a row is flagged. Quiet
+   while listening, plain in flag mode. */
+#lyrics .line.flagged {
+  text-decoration: underline wavy var(--bad-soft);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.28em;
+}
+#lyrics.flagging .line {
+  cursor: pointer;
+  border-radius: 8px;
+}
+#lyrics.flagging .line:hover {
+  background: rgba(var(--wash), 0.06);
+}
+#lyrics.flagging .line.flagged {
+  text-decoration-color: var(--bad);
+}
+#lyrics.flagging .line.flag-sel {
+  background: var(--bad-soft);
+}
+
+#lyric-flag-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  margin-top: 4px;
+  border-top: 1px solid rgba(var(--wash), 0.1);
+}
+#lyric-flag-bar .btn {
+  padding: 7px 12px;
+  font-size: 0.78rem;
+}
+#lyric-flag-info {
+  flex: 1;
+  min-width: 100%;
+  font-size: 0.78rem;
+  color: var(--faint);
+  order: -1;
+}
+#lyric-flag-tags {
+  display: flex;
+  gap: 6px;
+}
+.flag-tag {
+  font: inherit;
+  font-size: 0.72rem;
+  color: var(--faint);
+  background: rgba(var(--wash), 0.06);
+  border: 1px solid rgba(var(--wash), 0.1);
+  border-radius: 999px;
+  padding: 4px 11px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.flag-tag:hover,
+.flag-tag:focus-visible {
+  color: var(--fg);
+  background: rgba(var(--wash), 0.12);
+}
+.flag-tag.on {
+  color: var(--bad-ink);
+  background: var(--bad-soft);
+  border-color: var(--bad-soft);
+}
+#lyric-flag-note {
+  flex: 1;
+  min-width: 140px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+}
+/* Pushes the two that are always there to the right, whatever else is showing. */
+#lyric-flag-whole {
+  margin-left: auto;
+}
+#lyric-flag-whole.on {
+  color: var(--bad-ink);
+  background: var(--bad-soft);
+}
+
+/* The flagged songs in Settings: each one a setting-shaped row, ruled off like the rest. */
+#set-flags-list > .set-item {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(var(--wash), 0.07);
+}
+#set-flags-list .set-item-text p {
+  overflow-wrap: anywhere;
+}
+
 /* ---- two languages in one file ---- */
 /* The second language sits under the first as a subtitle: present, readable, and plainly
    not the line being sung louder. Both are one row, so they light up together. */

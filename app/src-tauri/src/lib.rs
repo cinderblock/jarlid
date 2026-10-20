@@ -5,6 +5,7 @@ mod diagnostics;
 mod export;
 mod focus;
 mod import;
+mod lyric_flags;
 mod lyrics;
 mod native;
 mod settings;
@@ -585,6 +586,10 @@ pub fn run() {
             lyrics::lyrics_candidates,
             lyrics::choose_lyrics,
             lyrics::clear_lyrics_choice,
+            lyric_flags::lyric_flags,
+            lyric_flags::save_lyric_flags,
+            lyric_flags::all_lyric_flags,
+            lyric_flags::lyric_flags_reveal,
             native::native_account,
             settings::get_settings,
             settings::set_settings,

@@ -366,6 +366,24 @@
           </section>
 
           <section class="set-section">
+            <h3>Flagged lyrics</h3>
+            <div class="set-item">
+              <b class="set-item-title">Lyrics you've flagged as wrong</b>
+              <div class="set-item-text">
+                <p>Press F while a song plays to flag the line being sung, or use the flag
+                  above the lyrics to flag a stretch of them or the whole song. Flags stay on
+                  this computer. Each keeps a copy of the lyrics it was made on, so it still
+                  makes sense after they change.</p>
+                <p id="set-flags-status" class="set-item-status"></p>
+              </div>
+              <div class="set-item-ctl">
+                <button id="set-flags-show" class="btn">Show folder</button>
+              </div>
+            </div>
+            <div id="set-flags-list"></div>
+          </section>
+
+          <section class="set-section">
             <h3>Account</h3>
             <div class="set-item">
               <b id="set-account" class="set-item-title">Checking…</b>
@@ -597,6 +615,9 @@
           <button id="lyrics-versions" class="lyric-edit" aria-label="Other versions of these lyrics" hidden>
             <svg viewBox="0 0 24 24"><path d="M12 4l9 5-9 5-9-5z"/><path d="M3 14l9 5 9-5"/></svg>
           </button>
+          <button id="lyrics-flag" class="lyric-edit lyric-flag" aria-label="Flag something wrong with these lyrics" hidden>
+            <svg viewBox="0 0 24 24"><path d="M5 21V4"/><path d="M5 4h12l-2.5 4.5L17 13H5"/></svg>
+          </button>
         </div>
         <div id="lyrics"></div>
 
@@ -616,6 +637,17 @@
           <button id="lyric-pick-next" class="btn" aria-label="Next version">›</button>
           <button id="lyric-pick-list" class="btn">All versions</button>
           <button id="lyric-pick-use" class="btn primary">Use this</button>
+        </div>
+
+        <!-- Flag mode's bar. The pane above it keeps playing; its rows are what get flagged. -->
+        <div id="lyric-flag-bar" hidden>
+          <div id="lyric-flag-info"></div>
+          <div id="lyric-flag-tags" hidden></div>
+          <input id="lyric-flag-note" class="field" type="text" autocomplete="off"
+            placeholder="What's wrong? (optional)" aria-label="What's wrong with it" hidden />
+          <button id="lyric-flag-remove" class="btn" hidden>Remove flag</button>
+          <button id="lyric-flag-whole" class="btn">Flag whole song</button>
+          <button id="lyric-flag-done" class="btn">Done</button>
         </div>
 
         <!-- Edit mode's action bar. Lives in the pane rather than in a dialog: fixing a

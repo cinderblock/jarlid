@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { createSelect, type Option } from "./select";
 import { setTheme, themePref, type ThemePref } from "./theme";
 import { recentsOrder, setRecentsOrder, type RecentsOrder } from "./recents";
+import { FLAGS_CHANGED, TAGS, describe, type Flag, type TrackFlags } from "./flags";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -48,6 +49,9 @@ const autosyncGpuItem = $("set-autosync-gpu-item");
 const autosyncGpu = $<HTMLInputElement>("set-autosync-gpu");
 const autosyncActionItem = $("set-autosync-remove-item");
 const autosyncActionBtn = $<HTMLButtonElement>("set-autosync-remove");
+const flagsStatus = $("set-flags-status");
+const flagsList = $("set-flags-list");
+const flagsShow = $<HTMLButtonElement>("set-flags-show");
 
 type Policy = "instant" | "afterSong" | "manualInstall" | "notifyOnly";
 type CheckSchedule =
@@ -169,6 +173,8 @@ let current: Settings | null = null;
 const CLOSE_MS = 200;
 let closeTimer: ReturnType<typeof setTimeout> | undefined;
 
+export const isOpen = () => !page.hidden;
+
 export function open() {
   clearTimeout(closeTimer);
   page.classList.remove("closing");
@@ -177,6 +183,7 @@ export function open() {
   page.addEventListener("animationend", () => page.classList.remove("opening"), { once: true });
   void refreshAccount();
   void refreshSettings();
+  void refreshFlags();
 }
 
 /**
@@ -732,6 +739,112 @@ cacheClearBtn.addEventListener("click", async () => {
     return;
   }
   reflectCache();
+});
+
+// ---- flagged lyrics -------------------------------------------------------------
+// Pandora won't play a song on request, so this list is the only way back to a flag whose
+// song hasn't come round again.
+
+async function refreshFlags() {
+  let all: TrackFlags[];
+  try {
+    all = await invoke<TrackFlags[]>("all_lyric_flags");
+  } catch (e) {
+    flagsStatus.textContent = `Couldn't read the flags: ${e}`;
+    flagsList.replaceChildren();
+    return;
+  }
+  flagsStatus.textContent =
+    all.length === 0
+      ? "Nothing flagged."
+      : `${all.length} ${all.length === 1 ? "song" : "songs"} flagged, most recent first.`;
+  flagsList.replaceChildren(...all.map(flaggedSong));
+}
+
+/// Where the flagged lyrics came from, in a few words.
+function origin(f: Flag): string {
+  const s = f.shown;
+  if (s.overridden) return "your edit";
+  if (s.auto) return "auto-synced";
+  const from = s.id !== null ? `LRCLIB #${s.id}` : s.source;
+  return s.pinned ? `${from}, your pick` : from;
+}
+
+/// One flag as a line of prose: where, what kind, the words it starts on, and the note.
+function flagLine(f: Flag): string {
+  const bits = [describe(f)];
+  const tags = f.tags.map((t) => TAGS.find((x) => x.id === t)?.label ?? t);
+  if (tags.length) bits.push(tags.join(", "));
+  const words = f.span?.text.find((t) => t.trim());
+  if (words) bits.push(`“${words.length > 60 ? `${words.slice(0, 59)}…` : words}”`);
+  bits.push(origin(f));
+  return bits.join(" · ") + (f.note ? `. ${f.note}` : "");
+}
+
+function flaggedSong(t: TrackFlags): HTMLElement {
+  const item = document.createElement("div");
+  item.className = "set-item";
+
+  const title = document.createElement("b");
+  title.className = "set-item-title";
+  title.textContent = `${t.track} · ${t.artist}`;
+
+  const text = document.createElement("div");
+  text.className = "set-item-text";
+  const flags = [...t.flags].sort((a, b) => a.created - b.created);
+  for (const f of flags) {
+    const p = document.createElement("p");
+    p.textContent = flagLine(f);
+    text.append(p);
+  }
+  const when = document.createElement("p");
+  when.className = "set-item-status";
+  const newest = Math.max(...flags.map((f) => f.created));
+  when.textContent = `${t.album ? `${t.album} · ` : ""}Flagged ${new Date(newest).toLocaleDateString()}`;
+  text.append(when);
+
+  const ctl = document.createElement("div");
+  ctl.className = "set-item-ctl";
+  const remove = document.createElement("button");
+  remove.className = "btn";
+  remove.textContent = "Remove";
+  remove.addEventListener("click", async () => {
+    // Two-step, like deleting saved songs: what a flag kept (the lyrics, what auto-sync heard)
+    // can't be made again once the song has moved on.
+    if (remove.dataset.armed !== "1") {
+      remove.dataset.armed = "1";
+      remove.textContent = "Really remove?";
+      setTimeout(() => {
+        remove.dataset.armed = "";
+        remove.textContent = "Remove";
+      }, 4000);
+      return;
+    }
+    remove.disabled = true;
+    try {
+      await invoke("save_lyric_flags", {
+        artist: t.artist,
+        track: t.track,
+        album: t.album,
+        duration: t.duration,
+        flags: [],
+      });
+      window.dispatchEvent(new Event(FLAGS_CHANGED));
+    } catch (e) {
+      flagsStatus.textContent = `Couldn't remove them: ${e}`;
+    }
+    await refreshFlags();
+  });
+  ctl.append(remove);
+
+  item.append(title, text, ctl);
+  return item;
+}
+
+flagsShow.addEventListener("click", () => {
+  invoke("lyric_flags_reveal").catch((err) => {
+    flagsStatus.textContent = `Could not open the folder: ${err}`;
+  });
 });
 
 function close() {

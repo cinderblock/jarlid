@@ -114,6 +114,31 @@ pub fn stored_lrc(app: &AppHandle, key: &str, plain: &str) -> Option<String> {
     current(app, key, plain)?.lrc
 }
 
+/// What a stored result was made from, so a flag on auto-synced lyrics can keep it after the
+/// cache is gone: with the plain words, it is enough to re-run the aligner on the song without
+/// hearing it again.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Evidence {
+    pub engine: String,
+    pub aligner: u32,
+    pub coverage: f64,
+    /// `(text, start, end)`, as [`Stored::heard`].
+    pub heard: Vec<(String, f64, f64)>,
+}
+
+/// The stored result's evidence for exactly these words, as it is on disk. Never re-times: the
+/// flag is about the timings that were shown, and those came from the stored aligner.
+pub fn evidence(app: &AppHandle, key: &str, plain: &str) -> Option<Evidence> {
+    let s = stored(app, key, plain)?;
+    Some(Evidence {
+        engine: s.engine,
+        aligner: s.aligner,
+        coverage: s.coverage,
+        heard: s.heard,
+    })
+}
+
 /// A song started playing.
 pub fn on_track_started(app: &AppHandle, track: &pandora::Track) {
     let app = app.clone();
