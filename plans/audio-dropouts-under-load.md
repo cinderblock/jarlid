@@ -284,8 +284,23 @@ the engine logs `output callback thread found at priority 0; now MMCSS Pro Audio
 `the_output_callback_raises_its_own_thread` pins `found == 0` so a cpal upgrade that fixes
 this upstream will fail the test and say so.
 
-- [ ] Confirm in real use: with the thread registered, underruns under the same load should
-      stop, or at least the "callback came N ms after" figure should stop exceeding the buffer.
+- [x] Confirmed in real use, 2026-10-20 00:44–01:56 (local build of `07b5413`, 30 ms buffer
+      throughout, autosync on): 26 songs, **zero underruns**, through four builds from other
+      sessions (CPU 60–84%) and a from-scratch Jarlid release build with its own build dir,
+      01:47:04–01:56:06 at **90–99% CPU**. The one event was a late callback (23.2 ms of
+      30) at 1.1 s into a stream, during startup. The buffer never grew. Compare the evening
+      before, unloaded: underruns within minutes and waits of 30–41 ms.
+- One unrelated event at 01:42:50, with no build running: Windows reported the Dell's audio
+  endpoint gone ("the requested device is no longer available"). The device-error path
+  rebuilt on it at the same position about 1 s later. A DisplayPort audio dropout, not
+  scheduling.
+
+### Gotcha for anyone making load
+
+`~/.cargo/config.toml` sets a machine-wide `build-dir`, so a "clean" build into a fresh
+`CARGO_TARGET_DIR` still finds every intermediate cached and finishes in a second. Real load
+needs `CARGO_BUILD_BUILD_DIR` pointed at an empty scratch directory too; that gave a 9-minute
+from-scratch Tauri release build.
 - If they continue with a one-period gap and an empty device, that is the endpoint (Intel
   Display Audio lives on the iGPU driver; autosync runs Vulkan on the same iGPU), and nothing
   in the app fixes it.
