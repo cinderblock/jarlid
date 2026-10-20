@@ -198,14 +198,48 @@ slowest callback. A callback waiting more than ¾ of the buffer is logged as a l
 Not yet in any installed build. A release or a local install is needed before the next
 occurrence can be read.
 
-### Candidate fixes, waiting on the data
+### Decisions (user, 2026-10-19; don't re-ask)
+
+- **No other audio is playing when it crackles**, so the "does other audio crackle too" test
+  cannot be run. The callback timing has to settle it instead.
+- **A local install is fine** for getting the new logging onto the machine; no release needed.
+- **Fix the 1 s rebuild gap**: keep the decoded audio and reopen only the stream. Done, below.
+
+### The reopen (built 2026-10-19)
+
+`Player::reopen_on(output, device_buffer)` in `player.rs`. The callback's track state
+(`Live`: ring consumer, voice, blend, control queues, gain ramp) is carried into the stream's
+closure by `Carried`, whose `Drop` pushes it back through a one-slot rtrb queue when cpal drops
+the closure. cpal's `Stream::drop` joins its thread first, so after `drop(stream)` the state is
+there to pop. `open_stream` is the stream-building half of `play_on`, extracted so both use it;
+its "device refused the size" retry also goes through the same hand-back, which removed the old
+rebuild-the-ring-and-channels dance.
+
+Before dropping the old stream, the player pauses itself and waits for `device_audio` to reach
+zero (bounded by buffer + 250 ms), so the audio Windows was holding plays out instead of being
+discarded. The position therefore moves by exactly the call's wall-clock time, and nothing is
+skipped. Refused (playback untouched) if the target device's rate or channel count differs
+from the format the ring was decoded for; the engine then falls back to the full rebuild.
+
+The engine uses it for both the undersized-buffer rebuild and "default output moved". The
+device-error and stream-stall paths still build a fresh player, as they must (the stream or the
+device is gone).
+
+Measured with `cargo run --example device-buffer -- <from> 6 <file> <to>` on the Dell endpoint,
+muted (`reopened at … in X ms; position a -> b`):
+
+| reopen | the call took | playhead moved | gap (call − moved) |
+| --- | --- | --- | --- |
+| 30 → 120 ms | 75 ms | 40 ms | ~35 ms |
+| 240 → 30 ms | 225 ms | 199 ms | ~26 ms |
+
+The playhead moving by the device's buffer is the old queue playing out, not a skip; the gap
+is the stream open itself. Against 0.83–1.18 s for the old rebuild from the 2026-10-19 log.
+
+### Candidate fixes, still waiting on the data
 
 1. If the callback thread is being starved: register the **cpal callback thread** with MMCSS
    (`Pro Audio`), the way a WASAPI render thread is meant to be. This is not the same as the
    "don't raise the callback priority" rule above, which was about `SetThreadPriority` within
    the normal band. MMCSS moves it into the realtime band with a guaranteed share.
-2. In any case, make the mid-song rebuild **keep the decoded ring and the decoder**, so that only
-   the cpal stream is reopened. That would replace the ~1 s hole with tens of ms. Or stop
-   rebuilding mid-song at all, since growing has been shown not to fix it.
-3. If it is an endpoint event (on-time callback, empty device): nothing in the app fixes it.
-   The open question from round 2 decides that: does other audio crackle at the same moment?
+2. If it is an endpoint event (on-time callback, empty device): nothing in the app fixes it.
