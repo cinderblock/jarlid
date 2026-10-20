@@ -14,16 +14,17 @@
 //! been decoded. Decoding runs seconds ahead of what the listener hears, so tracking decode
 //! progress would run synced lyrics early.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Threading::{
     AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, GetCurrentThread,
-    SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+    GetThreadPriority, SetThreadPriority, THREAD_PRIORITY, THREAD_PRIORITY_ABOVE_NORMAL,
+    THREAD_PRIORITY_TIME_CRITICAL,
 };
 
 use crate::{Decoder, Error, Format, Result, Source, Tempo, Voice};
@@ -52,25 +53,35 @@ impl crate::Pcm for rtrb::Consumer<i16> {
 
 /// Tells Windows this thread feeds an audio stream, for as long as the guard lives.
 ///
-/// cpal already runs the device callback at `THREAD_PRIORITY_TIME_CRITICAL`, so the callback is
-/// never the thread that loses a CPU race. The **decode** thread is the one that matters here: it
-/// fills the ring buffer the callback drains, and at ordinary priority a busy machine — a big
-/// compile, a render, a game — can deschedule it long enough for the buffer to run dry. The
-/// callback then dutifully emits silence, which is heard as a dropout even though it never missed
-/// a deadline of its own. Raising the *callback* would not have helped at all.
+/// Two threads need it. The **decode** thread fills the ring buffer, and at ordinary priority a
+/// busy machine — a big compile, a render, a game — can deschedule it long enough for the buffer
+/// to run dry; it registers as `Audio`, the class for a thread feeding a deep buffer. The
+/// **output callback** thread hands the ring to the device, and has a deadline of one device
+/// buffer; it registers as `Pro Audio`, the class for a render thread. cpal 0.16 means to run
+/// it at `THREAD_PRIORITY_TIME_CRITICAL`, but passes a thread *id* where `SetThreadPriority`
+/// wants a handle and ignores the error (`host/wasapi/stream.rs`), so the thread is left at
+/// normal priority. The debug log showed it: every underrun was the callback waiting 30-40 ms
+/// to run, with the callback itself taking a tenth of a millisecond. The registration is done
+/// from the first callback, because that is the only code that runs on cpal's thread; the
+/// guard lives in the closure, which cpal drops on the same thread.
 ///
 /// MMCSS is the sanctioned mechanism: the scheduler guarantees a registered thread a share of each
-/// period rather than leaving it to compete on priority alone. The `Audio` task is the right one —
-/// `Pro Audio` is for low-latency render threads, which this is not.
+/// period rather than leaving it to compete on priority alone.
 ///
 /// Deregistration must happen on the same thread, hence the guard rather than a bare call.
 struct AudioPriority(Option<HANDLE>);
 
+// The handle is created and reverted on one thread. The guard only ever crosses threads
+// empty, when a closure holding `None` is moved onto cpal's thread before its first call.
+unsafe impl Send for AudioPriority {}
+
 impl AudioPriority {
-    fn raise() -> Self {
+    /// Register the current thread with MMCSS as `task`, or failing that raise it to
+    /// `fallback` with a plain priority bump.
+    fn raise(task: PCWSTR, fallback: THREAD_PRIORITY) -> Self {
         unsafe {
             let mut index = 0u32;
-            if let Ok(handle) = AvSetMmThreadCharacteristicsW(w!("Audio"), &mut index) {
+            if let Ok(handle) = AvSetMmThreadCharacteristicsW(task, &mut index) {
                 if !handle.is_invalid() {
                     return Self(Some(handle));
                 }
@@ -78,11 +89,36 @@ impl AudioPriority {
             // MMCSS can be disabled by policy, and the service can fail to start. A plain priority
             // bump is weaker — it buys no scheduling guarantee — but it beats running at the same
             // priority as the workload that is causing the trouble.
-            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+            let _ = SetThreadPriority(GetCurrentThread(), fallback);
             Self(None)
         }
     }
+
+    fn registered(&self) -> bool {
+        self.0.is_some()
+    }
 }
+
+/// The current thread's priority as Windows reports it (`THREAD_PRIORITY_NORMAL` is 0,
+/// `THREAD_PRIORITY_TIME_CRITICAL` 15).
+fn current_thread_priority() -> i32 {
+    unsafe { GetThreadPriority(GetCurrentThread()) }
+}
+
+/// What the output callback's thread runs at; see [`Player::callback_thread`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallbackThread {
+    /// The priority cpal left the thread at, as found by the first callback.
+    pub found_priority: i32,
+    /// Whether MMCSS accepted the thread as `Pro Audio`. If not, it was raised to
+    /// `THREAD_PRIORITY_TIME_CRITICAL` instead.
+    pub mmcss: bool,
+    /// The priority after that, as Windows reports it.
+    pub priority: i32,
+}
+
+/// [`Shared::callback_priority_found`] before the first callback has run.
+const PRIORITY_UNKNOWN: i32 = i32::MIN;
 
 impl Drop for AudioPriority {
     fn drop(&mut self) {
@@ -220,6 +256,13 @@ struct Shared {
     longest_callback_us: AtomicU64,
     /// The wait before the worst callback that found the device empty. Zero if none did.
     underrun_gap_us: AtomicU64,
+    /// The output callback thread's priority as the first callback found it, or
+    /// [`PRIORITY_UNKNOWN`] before then. Evidence, kept because the premise it checks (that
+    /// cpal had already raised the thread) was once assumed and was wrong.
+    callback_priority_found: AtomicI32,
+    /// ... and after the callback registered it: the priority, and whether MMCSS took it.
+    callback_priority: AtomicI32,
+    callback_mmcss: AtomicBool,
     /// Size of the device buffer in frames, learned from the first callback, which is always
     /// asked to fill the whole thing. Zero until then.
     device_capacity: AtomicU64,
@@ -564,7 +607,25 @@ fn open_stream(
                 // The previous callback's start. Reading the clock is a counter read on Windows:
                 // no allocation, no lock, nothing that can block.
                 let mut last_called: Option<Instant> = None;
+                // This thread's MMCSS registration, made by the first callback; see
+                // `AudioPriority`. The first callback only primes the device, so the few
+                // syscalls are spent where nothing can glitch.
+                let mut priority: Option<AudioPriority> = None;
                 move |output: &mut [$sample], _: &cpal::OutputCallbackInfo| {
+                    if priority.is_none() {
+                        callback_shared
+                            .callback_priority_found
+                            .store(current_thread_priority(), Ordering::Relaxed);
+                        let raised =
+                            AudioPriority::raise(w!("Pro Audio"), THREAD_PRIORITY_TIME_CRITICAL);
+                        callback_shared
+                            .callback_mmcss
+                            .store(raised.registered(), Ordering::Relaxed);
+                        callback_shared
+                            .callback_priority
+                            .store(current_thread_priority(), Ordering::Relaxed);
+                        priority = Some(raised);
+                    }
                     let Live {
                         consumer,
                         voice,
@@ -845,7 +906,7 @@ fn spawn_decode(
 ) {
     std::thread::spawn(move || {
         // Held for the life of the thread: this is the thread whose starvation is audible.
-        let _priority = AudioPriority::raise();
+        let _priority = AudioPriority::raise(w!("Audio"), THREAD_PRIORITY_ABOVE_NORMAL);
 
         // The chunk already decoded to establish the true start position; play it, don't
         // re-read it.
@@ -1041,6 +1102,9 @@ impl Player {
             shortest_gap_us: AtomicU64::new(u64::MAX),
             longest_callback_us: AtomicU64::new(0),
             underrun_gap_us: AtomicU64::new(0),
+            callback_priority_found: AtomicI32::new(PRIORITY_UNKNOWN),
+            callback_priority: AtomicI32::new(PRIORITY_UNKNOWN),
+            callback_mmcss: AtomicBool::new(false),
             device_capacity: AtomicU64::new(0),
             device_audio: AtomicU64::new(0),
             delivered: AtomicBool::new(false),
@@ -1163,6 +1227,12 @@ impl Player {
         self.shared.device_capacity.store(0, Ordering::Relaxed);
         self.shared.device_audio.store(0, Ordering::Relaxed);
         self.shared.device_error.store(false, Ordering::Relaxed);
+        self.shared
+            .callback_priority_found
+            .store(PRIORITY_UNKNOWN, Ordering::Relaxed);
+        self.shared
+            .callback_priority
+            .store(PRIORITY_UNKNOWN, Ordering::Relaxed);
 
         let opened = match open_stream(&device, &config, device_buffer, &self.shared, live) {
             Ok(opened) => opened,
@@ -1189,6 +1259,18 @@ impl Player {
     /// over was late.
     pub fn device_underruns(&self) -> u64 {
         self.shared.device_underruns.load(Ordering::Relaxed)
+    }
+
+    /// What the output callback's thread runs at, once the first callback has run and said.
+    /// `None` until then, and again briefly after [`Player::reopen_on`].
+    pub fn callback_thread(&self) -> Option<CallbackThread> {
+        let found = self.shared.callback_priority_found.load(Ordering::Relaxed);
+        let priority = self.shared.callback_priority.load(Ordering::Relaxed);
+        (found != PRIORITY_UNKNOWN && priority != PRIORITY_UNKNOWN).then(|| CallbackThread {
+            found_priority: found,
+            mmcss: self.shared.callback_mmcss.load(Ordering::Relaxed),
+            priority,
+        })
     }
 
     /// How the output callback has kept time since this was last called, and starts the count
@@ -1687,18 +1769,67 @@ mod tests {
 
     /// The registration has to actually succeed, and it fails silently: a wrong task name, a
     /// missing `Win32_System_Threading` feature or a disabled MMCSS service all just return an
-    /// error that the fallback swallows, leaving the decode thread at the priority it was already
-    /// dropping audio at. Only a runtime check tells them apart.
+    /// error that the fallback swallows, leaving the thread at the priority it was already
+    /// dropping audio at. Only a runtime check tells them apart. Both tasks, since each thread
+    /// uses its own.
     #[test]
     fn mmcss_registration_succeeds() {
-        // On its own thread, exactly as the decode thread uses it — MMCSS is per-thread state.
-        let registered = std::thread::spawn(|| AudioPriority::raise().0.is_some())
-            .join()
-            .expect("thread");
+        // The task name is built on the registering thread: a `PCWSTR` cannot be sent to one.
+        let tasks: [(&str, fn() -> PCWSTR, THREAD_PRIORITY); 2] = [
+            ("Audio", || w!("Audio"), THREAD_PRIORITY_ABOVE_NORMAL),
+            (
+                "Pro Audio",
+                || w!("Pro Audio"),
+                THREAD_PRIORITY_TIME_CRITICAL,
+            ),
+        ];
+        for (name, task, fallback) in tasks {
+            // On its own thread, exactly as the threads use it — MMCSS is per-thread state.
+            let registered =
+                std::thread::spawn(move || AudioPriority::raise(task(), fallback).registered())
+                    .join()
+                    .expect("thread");
+            assert!(
+                registered,
+                "MMCSS registration as {name:?} failed; the thread would silently fall back to \
+                 a plain priority bump and keep losing CPU under load"
+            );
+        }
+    }
+
+    /// cpal 0.16 tries to raise its callback thread and fails (see `AudioPriority`), so the
+    /// first callback finds it at normal priority and has to raise it itself. Pinned, because
+    /// if a cpal upgrade starts doing it properly this test is how anyone will know.
+    #[test]
+    fn the_output_callback_raises_its_own_thread() {
+        let file = r"C:\Windows\Media\Ring05.wav";
+        if !std::path::Path::new(file).exists() {
+            eprintln!("skipped: {file} is not there");
+            return;
+        }
+        let player = match Player::play_on(file, Duration::ZERO, &Output::Default, DEVICE_BUFFER) {
+            Ok(player) => player,
+            Err(e) => {
+                eprintln!("skipped: no output device ({e})");
+                return;
+            }
+        };
+        player.set_volume(0.0);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let thread = loop {
+            if let Some(thread) = player.callback_thread() {
+                break thread;
+            }
+            assert!(Instant::now() < deadline, "the callback never ran");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(
+            thread.found_priority, 0,
+            "cpal now raises its callback thread itself; this registration may be redundant"
+        );
         assert!(
-            registered,
-            "MMCSS registration failed; the decode thread would silently fall back to a plain \
-             priority bump and keep losing CPU under load"
+            thread.mmcss,
+            "MMCSS refused the callback thread as Pro Audio"
         );
     }
 }

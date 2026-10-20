@@ -47,6 +47,7 @@ fn main() {
     let mut last_report = Instant::now();
     let mut drained_at: Option<Instant> = None;
     let mut reopen = reopen_ms.map(Duration::from_millis);
+    let mut thread_shown = false;
     while start.elapsed() < Duration::from_secs(seconds) && !player.is_finished() {
         // Polled finely so the tail can be timed; reported at the old half-second pace.
         std::thread::sleep(Duration::from_millis(2));
@@ -74,6 +75,19 @@ fn main() {
             continue;
         }
         last_report = Instant::now();
+        if let Some(thread) = player.callback_thread().filter(|_| !thread_shown) {
+            thread_shown = true;
+            println!(
+                "callback thread: found at priority {}, now {} (priority {})",
+                thread.found_priority,
+                if thread.mmcss {
+                    "MMCSS Pro Audio"
+                } else {
+                    "a plain priority bump"
+                },
+                thread.priority
+            );
+        }
         let timing = player.take_callback_timing();
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
         println!(

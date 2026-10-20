@@ -320,6 +320,9 @@ impl AudioThread {
             // Per-player, so it resets with each rebuild; the published total does not.
             let mut last_starved = Duration::ZERO;
             let mut last_underruns = 0u64;
+            // Whether the output callback thread's priority has been logged for the current
+            // stream. Once per stream, since it is evidence about the thread, not the song.
+            let mut callback_logged = false;
             // When the live player had handed the device the last of its track. Per-player, like
             // the two above. See TAIL_GRACE.
             let mut drained_at: Option<Instant> = None;
@@ -549,6 +552,7 @@ impl AudioThread {
                                 last_decode = Instant::now();
                                 last_starved = Duration::ZERO;
                                 last_underruns = 0;
+                                callback_logged = false;
                                 drained_at = None;
                                 built_with = device_buffer.size();
                                 recovered_at = new_player.started_at();
@@ -645,6 +649,21 @@ impl AudioThread {
                     last_underruns = underruns;
                     // Taken every poll so that each line describes only its own moment.
                     let timing = active.take_callback_timing();
+                    if !callback_logged {
+                        if let Some(thread) = active.callback_thread() {
+                            callback_logged = true;
+                            eprintln!(
+                                "[audio] output callback thread found at priority {}; now {} (priority {})",
+                                thread.found_priority,
+                                if thread.mmcss {
+                                    "MMCSS Pro Audio"
+                                } else {
+                                    "a plain priority bump, MMCSS refused it"
+                                },
+                                thread.priority
+                            );
+                        }
+                    }
                     let mut grew = false;
                     if fresh_underruns > 0 {
                         thread_state
@@ -892,6 +911,7 @@ impl AudioThread {
                         match active.reopen_on(&output, device_buffer.size()) {
                             Ok(()) => {
                                 built_with = device_buffer.size();
+                                callback_logged = false;
                                 last_device_check = Instant::now();
                                 if let Ok(mut slot) = thread_state.device.lock() {
                                     *slot = Some(active.device_name().to_string());

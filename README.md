@@ -74,8 +74,12 @@ anywhere in it.
   the output device's rate, streamed with a lock-free ring buffer. Playback position is measured
   from frames actually delivered to the device, which is what keeps synced lyrics honest — decoding
   runs several seconds ahead of what you hear.
-- **Holds up on a busy machine**: the decoder registers with Windows' multimedia scheduler, and
-  the device buffer adapts. It starts at 30 ms, too short to notice on a pause, and when the
+- **Holds up on a busy machine**: both audio threads register with Windows' multimedia scheduler
+  (MMCSS) — the decoder as `Audio`, and the output callback as `Pro Audio`, because the audio
+  library it runs on (cpal 0.16) means to raise that thread itself but passes a thread id where
+  a handle belongs, and leaves it at normal priority. The debug log is how that was found: every
+  underrun was the callback waiting 30–40 ms for a CPU, with the callback itself taking a tenth
+  of a millisecond. And the device buffer adapts. It starts at 30 ms, too short to notice on a pause, and when the
   machine is busy enough for the sound card to run dry twice in a minute, it doubles, up to
   240 ms. After ten quiet minutes it shrinks back. Growing mid-song reopens only the stream to
   the device, keeping the decoder and the seconds of audio already decoded, so it costs a few
