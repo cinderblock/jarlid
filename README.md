@@ -77,11 +77,16 @@ anywhere in it.
 - **Holds up on a busy machine**: the decoder registers with Windows' multimedia scheduler, and
   the device buffer adapts. It starts at 30 ms, too short to notice on a pause, and when the
   machine is busy enough for the sound card to run dry twice in a minute, it doubles, up to
-  240 ms. After ten quiet minutes it shrinks back. The playhead accounts for audio still waiting
-  in that buffer, so synced lyrics stay on time at any size, and the end of a song plays out of
-  it before the next one starts rather than being cut off with it. The current size is in the
-  technical readout. Both kinds of dropout are counted there and in the issue report: silence
-  from decoding falling behind, and underruns from the output being late.
+  240 ms. After ten quiet minutes it shrinks back. Growing mid-song reopens only the stream to
+  the device, keeping the decoder and the seconds of audio already decoded, so it costs a few
+  tens of milliseconds rather than a reconnect; the same move follows the default output when
+  Windows changes it. The playhead accounts for audio still waiting in that buffer, so synced
+  lyrics stay on time at any size, and the end of a song plays out of it before the next one
+  starts rather than being cut off with it. The current size is in the technical readout. Both
+  kinds of dropout are counted there and in the issue report: silence from decoding falling
+  behind, and underruns from the output being late. With the debug log on, each underrun is
+  logged with how long the output callback waited before it, which tells whether the callback
+  was late or the device had nothing left anyway.
 - **Saved songs (opt-in)**: Pandora repeats songs, and each repeat would otherwise be downloaded
   again. Turn this on and pick a size in Settings (each size shows roughly how many songs it
   holds). The next song is fetched whole while the current one plays and saved, so a first play
@@ -136,7 +141,8 @@ anywhere in it.
   stream we *didn't* ask for; where the source and device rates differ, both are shown, because
   that gap is the resampling that keeps pitch honest. Then the two buffers: decoded audio in
   hand (`buf 4.9 s`) and the device buffer (`out 30 ms`), which shows `out 30 → 60 ms` when it
-  has just grown under load and the next rebuild will pick that up. The three fault counters —
+  has just grown under load and the next song (or a reopen, if the underruns go on) will pick
+  that up. The three fault counters —
   audio lost, audio that arrived too late to play, and device underruns — appear only when they
   are non-zero, so a line that stays quiet means what it says.
 - **Blending between songs** *(experimental, off by default)*: overlap the end of one track with

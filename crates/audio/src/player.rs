@@ -112,6 +112,10 @@ const TARGET_BUFFER: Duration = Duration::from_secs(5);
 /// audio thread.
 pub const DEVICE_BUFFER: Duration = Duration::from_millis(30);
 
+/// How much longer than its buffer [`Player::reopen_on`] waits for the device to play out what
+/// it holds, before giving up on a device that has stopped calling back.
+const REOPEN_DRAIN_GRACE: Duration = Duration::from_millis(250);
+
 /// Which endpoint to play on.
 ///
 /// `Default` is not resolved once and remembered — the owner re-checks it while playing and
@@ -339,8 +343,63 @@ pub struct Player {
     /// The device buffer requested, in frames; zero for the system default. Reported until the
     /// first callback measures the real size.
     asked_buffer_frames: u64,
-    // Dropping the stream stops the device, so it must outlive playback.
-    _stream: cpal::Stream,
+    /// Dropping the stream stops the device, so it must outlive playback. Absent only inside
+    /// [`Player::reopen_on`], between the old stream going and the new one opening.
+    stream: Option<cpal::Stream>,
+    /// Where the callback's state comes back when its stream is dropped; see [`Carried`].
+    live_back: rtrb::Consumer<Live>,
+}
+
+/// Everything the output callback owns that belongs to the *track* rather than to the stream
+/// it happens to be running on: the decoded audio, the voice reading it, a blend in progress,
+/// and the control queues the owner talks to it through.
+///
+/// Kept apart from the per-stream state (the device queue model, the callback clock) so that
+/// the stream can be reopened — on a bigger buffer, or on another device — without losing any
+/// of it. See [`Player::reopen_on`].
+struct Live {
+    consumer: rtrb::Consumer<i16>,
+    /// The track, read through the mixer rather than popped straight out of the queue. At the
+    /// native rate this is arithmetically a wire — see `native_rate_is_a_wire` in `mixer` — so
+    /// ordinary playback is untouched; what it buys is somewhere for a second track to arrive,
+    /// and a rate that can move.
+    voice: Voice,
+    /// The incoming track, once there is one. Absent for all of ordinary playback.
+    blend: Option<(Voice, Prefetch)>,
+    blend_rx: rtrb::Consumer<Handoff>,
+    retire_tx: rtrb::Producer<rtrb::Consumer<i16>>,
+    /// The volume ramp's current value, carried between callbacks (and between streams, so a
+    /// reopen does not restart it).
+    gain: f32,
+}
+
+/// Carries a [`Live`] into a stream's callback, and hands it back when the callback is dropped.
+///
+/// cpal owns the callback once the stream is built, and drops it on its own thread when the
+/// stream goes (or on the caller's, when building it fails). Either way this is the only way
+/// the state comes back out: the drop pushes it through a one-slot lock-free queue, which is a
+/// move and nothing more, so it is as allowed on the audio thread as anything else there.
+struct Carried {
+    live: Option<Live>,
+    back: rtrb::Producer<Live>,
+}
+
+impl Drop for Carried {
+    fn drop(&mut self) {
+        if let Some(live) = self.live.take() {
+            // The slot is empty by construction: one queue per stream, taken once. If the
+            // receiver has already gone, nothing is waiting for this and it is freed here.
+            let _ = self.back.push(live);
+        }
+    }
+}
+
+/// A stream that is running, with what a [`Player`] needs to keep of it.
+struct Opened {
+    stream: cpal::Stream,
+    /// The buffer size the stream was opened with, in frames; zero for the system default.
+    asked_frames: u64,
+    back: rtrb::Consumer<Live>,
 }
 
 /// How the output callback kept time over some stretch; see [`Player::take_callback_timing`].
@@ -441,6 +500,335 @@ fn fixed_buffer_frames(config: &cpal::SupportedStreamConfig, want: Duration) -> 
         cpal::SupportedBufferSize::Range { min, max } => frames.clamp(min, max.max(min)),
         cpal::SupportedBufferSize::Unknown => frames,
     })
+}
+
+/// Open a stream on `device` for `live` to play through, with `device_buffer` of audio queued
+/// ahead of the speaker (clamped to what the device permits, and the system default if it
+/// refuses the size outright). The stream is built, not yet started.
+///
+/// On failure `live` is lost with the closure that held it; a [`Player`] has nothing left to
+/// play then, and its owner builds a new one.
+fn open_stream(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    device_buffer: Duration,
+    shared: &Arc<Shared>,
+    mut live: Live,
+) -> Result<Opened> {
+    let channels = config.channels() as u64;
+    let channel_count = config.channels() as usize;
+
+    // A volume change arrives as a step: the callback reads a new target between one buffer
+    // and the next, and moving a waveform's amplitude discontinuously is heard as a click.
+    // Ramping to the target with a one-pole filter over roughly 15 ms makes any change —
+    // including a slider dragged as fast as the UI can send events — inaudible as anything
+    // but a change in level. Derived from the device's own rate so the ramp is 15 ms of
+    // sound rather than 15 ms at some assumed 48 kHz. The ramp advances once per *sample*
+    // and the stream is interleaved, so the rate it is derived from has to include the
+    // channel count — using the frame rate would make it 7.5 ms on stereo.
+    const VOLUME_RAMP: f32 = 0.015;
+    let samples_per_second = config.sample_rate().0 as f32 * config.channels() as f32;
+    let gain_step = 1.0 - (-1.0 / (VOLUME_RAMP * samples_per_second)).exp();
+
+    // The buffer size asked for first, then the system default if the device refuses it. An
+    // unusual size is the one thing here that a working device might reject, and refusing to
+    // play over a tuning preference would turn a crackle into silence.
+    let asked = fixed_buffer_frames(config, device_buffer);
+    let mut sizes = asked
+        .map(cpal::BufferSize::Fixed)
+        .into_iter()
+        .chain(std::iter::once(cpal::BufferSize::Default));
+    let mut stream_config = config.config();
+    loop {
+        stream_config.buffer_size = sizes.next().expect("Default is tried last, and once");
+
+        // The closure takes the track state with it. A closure that failed to become a stream
+        // is dropped, and `Carried` hands the state back for the next attempt.
+        let (back_tx, mut back_rx) = rtrb::RingBuffer::<Live>::new(1);
+        let mut carried = Carried {
+            live: Some(live),
+            back: back_tx,
+        };
+        let callback_shared = Arc::clone(shared);
+        let error_callback = device_error_callback(Arc::clone(shared));
+
+        // Runs on the audio thread: no allocation, no locks, no blocking.
+        macro_rules! callback {
+            ($sample:ty, $convert:expr) => {{
+                // Mixing happens in `f32`, which needs somewhere to put it. On the closure rather
+                // than the stack per call, and fixed-size, because the callback must never
+                // allocate. Whatever the device asks for is processed in frame-aligned passes of
+                // at most this size.
+                let mut scratch = [0.0f32; MIX_BLOCK];
+                let mut device = DeviceQueue::default();
+                // The previous callback's start. Reading the clock is a counter read on Windows:
+                // no allocation, no lock, nothing that can block.
+                let mut last_called: Option<Instant> = None;
+                move |output: &mut [$sample], _: &cpal::OutputCallbackInfo| {
+                    let Live {
+                        consumer,
+                        voice,
+                        blend,
+                        blend_rx,
+                        retire_tx,
+                        gain,
+                    } = carried
+                        .live
+                        .as_mut()
+                        .expect("the state stays with the callback until its stream is dropped");
+                    let called = Instant::now();
+                    let gap_us = last_called.map_or(0, |at| (called - at).as_micros() as u64);
+                    if last_called.is_some() {
+                        callback_shared
+                            .longest_gap_us
+                            .fetch_max(gap_us, Ordering::Relaxed);
+                        callback_shared
+                            .shortest_gap_us
+                            .fetch_min(gap_us, Ordering::Relaxed);
+                    }
+                    last_called = Some(called);
+
+                    let paused = callback_shared.paused.load(Ordering::Relaxed);
+                    let target = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
+
+                    // Counted only while playing: a late callback during a pause glitches into
+                    // silence, which nobody hears.
+                    if device.requested(output.len() / channel_count) && !paused {
+                        callback_shared
+                            .device_underruns
+                            .fetch_add(1, Ordering::Relaxed);
+                        callback_shared
+                            .underrun_gap_us
+                            .fetch_max(gap_us, Ordering::Relaxed);
+                    }
+                    callback_shared
+                        .device_capacity
+                        .store(device.capacity as u64, Ordering::Relaxed);
+
+                    // A blend that has been handed over starts on this callback. Popping a queue
+                    // is the whole cost here; the voice and the `Arc` were built by the sender.
+                    match blend_rx.pop() {
+                        Ok(Handoff::Blend {
+                            source,
+                            voice: incoming,
+                            fade_frames,
+                        }) => {
+                            voice.fade_to(0.0, fade_frames, crate::Curve::EqualPower);
+                            *blend = Some((incoming, source));
+                        }
+                        Ok(Handoff::Primary {
+                            consumer: fresh,
+                            voice: primary,
+                            cross_frames,
+                        }) => {
+                            // The spent queue must leave by the other door. `rtrb` frees the
+                            // shared buffer when both halves are gone, and the producer half went
+                            // with the decode thread that finished the outgoing track — so
+                            // dropping this here would deallocate megabytes on the audio thread.
+                            let spent = std::mem::replace(consumer, fresh);
+                            let _ = retire_tx.push(spent);
+                            *voice = primary;
+                            // Hand over from memory to the live stream. Both are the same track at
+                            // the same instant, so this is only wide enough to cover a seek that
+                            // landed a little off.
+                            if let Some((incoming, _)) = blend.as_mut() {
+                                incoming.fade_to(0.0, cross_frames, crate::Curve::EqualPower);
+                            }
+                            callback_shared.blend_done.store(false, Ordering::Relaxed);
+                        }
+                        Err(_) => {}
+                    }
+
+                    // Once the incoming voice has gone quiet its buffer is finished with. Dropping
+                    // it here is only an `Arc` decrement — the player holds the last reference —
+                    // and leaving it in place would keep mixing a source that has run dry.
+                    if let Some((incoming, _)) = blend.as_ref() {
+                        if incoming.faded() && incoming.gain() <= 0.0 {
+                            *blend = None;
+                        }
+                    }
+
+                    let read_before = voice.frames_read();
+                    let mut written = 0usize;
+                    if !paused {
+                        // Trim to whole frames so a pass boundary can never split one.
+                        let pass = MIX_BLOCK - (MIX_BLOCK % channel_count);
+                        for block in output.chunks_mut(pass) {
+                            let usable = block.len() - (block.len() % channel_count);
+                            if usable == 0 {
+                                break;
+                            }
+                            let mix = &mut scratch[..usable];
+                            mix.fill(0.0);
+
+                            // A voice that runs dry stops early and starves the rest of the
+                            // block, so what it produced is always a prefix.
+                            let starved_before = voice.starved();
+                            voice.mix_into(consumer, mix);
+                            let dry = (voice.starved() - starved_before) as usize * channel_count;
+                            let mut produced = usable - dry;
+
+                            // The incoming track mixes on top, and the longer of the two decides
+                            // how much of the block was filled. Taking the outgoing track's
+                            // length would truncate the blend at exactly the moment it matters:
+                            // the outgoing song is *ending*, so it runs dry first by design.
+                            if let Some((incoming, source)) = blend.as_mut() {
+                                let starved_before = incoming.starved();
+                                incoming.mix_into(source, mix);
+                                let dry =
+                                    (incoming.starved() - starved_before) as usize * channel_count;
+                                produced = produced.max(usable - dry);
+                                callback_shared
+                                    .blend_frames
+                                    .store(incoming.frames_read(), Ordering::Relaxed);
+                                // Faded fully in: the blend is over. The owner completes the
+                                // handover; the callback's only job is to say so, before the
+                                // prefetched buffer this is playing from runs out.
+                                //
+                                // Deliberately does not ask anything of the *outgoing* voice. It
+                                // is ending, so it is the one thing here guaranteed to run dry
+                                // partway through, and making the handover wait on it is what
+                                // stopped the first working blend from ever completing.
+                                if incoming.faded() {
+                                    callback_shared.blend_done.store(true, Ordering::Relaxed);
+                                }
+                            }
+
+                            for (slot, mixed) in block.iter_mut().zip(mix.iter()).take(produced) {
+                                // A one-pole approaches its target without ever arriving; snap
+                                // when the remainder is below a 16-bit LSB so that "muted" is
+                                // really zero and the filter isn't left grinding on denormals
+                                // forever.
+                                *gain += (target - *gain) * gain_step;
+                                if (target - *gain).abs() < 1.0 / 65536.0 {
+                                    *gain = target;
+                                }
+                                *slot = $convert(*mixed * *gain);
+                            }
+                            written += produced;
+                            if produced < usable {
+                                break;
+                            }
+                        }
+                    }
+
+                    // Anything unfilled must be explicit silence, or the device replays stale
+                    // memory as a buzz.
+                    for slot in output.iter_mut().skip(written) {
+                        *slot = $convert(0.0f32);
+                    }
+
+                    device.filled(written / channel_count);
+                    callback_shared
+                        .device_audio
+                        .store(device.audio as u64, Ordering::Relaxed);
+
+                    // Silence we were forced to invent because the queue ran dry: the dropout,
+                    // counted. Two exclusions, both cases where an empty queue is expected rather
+                    // than a fault — the end of a track, and the priming gap before the first
+                    // sample of one (which also covers the gap after a stall rebuild).
+                    // A completely filled buffer is the definition of keeping up; from the first
+                    // one onwards, any shortfall is a real dropout. Partial fills are the common
+                    // case of one, so the two branches must not be exclusive on `written`.
+                    let short = output.len() - written;
+                    if short == 0 && written > 0 {
+                        callback_shared.delivered.store(true, Ordering::Relaxed);
+                    }
+                    if short > 0
+                        && !paused
+                        && callback_shared.delivered.load(Ordering::Relaxed)
+                        && !callback_shared.decoder_finished.load(Ordering::Relaxed)
+                    {
+                        callback_shared
+                            .starved
+                            .fetch_add(short as u64, Ordering::Relaxed);
+                    }
+
+                    // Both counters follow frames *taken from the queue*, not frames handed to
+                    // the device. They are the same number at the native rate, and they must not
+                    // be conflated once a voice can play at another one: at 1.04 the device eats
+                    // 4% more input than it emits output, and the queue has to be debited for
+                    // what was actually consumed or `drift` would accuse the pipeline of losing
+                    // audio. Position wants the same figure for a different reason — it is a
+                    // position *within the track*, and synced lyrics are timed against the
+                    // track's own clock rather than the device's.
+                    let consumed = voice.frames_read() - read_before;
+                    callback_shared
+                        .queued
+                        .fetch_sub(consumed * channels, Ordering::Relaxed);
+                    callback_shared
+                        .frames_played
+                        .fetch_add(consumed, Ordering::Relaxed);
+                    callback_shared
+                        .longest_callback_us
+                        .fetch_max(called.elapsed().as_micros() as u64, Ordering::Relaxed);
+                }
+            }};
+        }
+
+        // Attenuation happens in `f32`, before the sample is quantised to whatever the device
+        // takes. On the usual Windows path — WASAPI shared mode, which is `f32` — that means
+        // turning the volume down costs no resolution at all. Doing the multiply in the old
+        // 16-bit fixed point instead threw away roughly a bit per halving, so a comfortable
+        // listening level would have been played back as 11- or 12-bit audio.
+        let built = match config.sample_format() {
+            cpal::SampleFormat::F32 => device.build_output_stream(
+                &stream_config,
+                callback!(f32, |s: f32| (s / 32768.0).clamp(-1.0, 1.0)),
+                error_callback,
+                None,
+            ),
+            cpal::SampleFormat::I16 => device.build_output_stream(
+                &stream_config,
+                callback!(i16, |s: f32| s.round().clamp(-32768.0, 32767.0) as i16),
+                error_callback,
+                None,
+            ),
+            cpal::SampleFormat::U16 => device.build_output_stream(
+                &stream_config,
+                callback!(
+                    u16,
+                    |s: f32| (s.round().clamp(-32768.0, 32767.0) as i32 + 32768) as u16
+                ),
+                error_callback,
+                None,
+            ),
+            other => {
+                return Err(Error::Device(format!(
+                    "unsupported output sample format {other:?}"
+                )))
+            }
+        };
+        match built {
+            Ok(stream) => {
+                let asked_frames = match stream_config.buffer_size {
+                    cpal::BufferSize::Fixed(frames) => frames as u64,
+                    cpal::BufferSize::Default => 0,
+                };
+                return Ok(Opened {
+                    stream,
+                    asked_frames,
+                    back: back_rx,
+                });
+            }
+            Err(e) => {
+                // The refused closure has been dropped, and the state is back in the queue.
+                let Ok(returned) = back_rx.pop() else {
+                    return Err(Error::Device(format!(
+                        "could not open output stream ({e}), and the track state was lost"
+                    )));
+                };
+                live = returned;
+                if stream_config.buffer_size == cpal::BufferSize::Default {
+                    return Err(Error::Device(format!("could not open output stream: {e}")));
+                }
+                eprintln!(
+                    "device refused a {:?} buffer ({e}); using its default",
+                    stream_config.buffer_size
+                );
+            }
+        }
+    }
 }
 
 /// Spawn the thread that keeps the queue topped up for one track.
@@ -633,7 +1021,7 @@ impl Player {
         let capacity = format.sample_rate as usize
             * format.channels as usize
             * TARGET_BUFFER.as_secs() as usize;
-        let (mut producer, mut consumer) = rtrb::RingBuffer::<i16>::new(capacity);
+        let (producer, consumer) = rtrb::RingBuffer::<i16>::new(capacity);
 
         // Seed both counters, not just the position: `drift()` is `decoded - position - buffered`,
         // so seeding the position alone would leave it saturated at zero and silently retire the
@@ -667,316 +1055,24 @@ impl Player {
             blend_done: AtomicBool::new(false),
         });
 
-        // Everything the callback takes ownership of is declared `mut`, so a refused buffer size
-        // can be retried with a fresh set. The closure moves them, and a closure that failed to
-        // become a stream is dropped along with them. See the loop below.
-        let mut callback_shared = Arc::clone(&shared);
-        let channels = config.channels() as u64;
-        let channel_count = config.channels() as usize;
-
         // One slot, because one blend at a time is all that means anything. `rtrb` carries any
         // type, so this moves a whole prepared voice across without the callback waiting on a
         // lock or building anything itself.
-        let (mut blend_tx, mut blend_rx) = rtrb::RingBuffer::<Handoff>::new(1);
+        let (blend_tx, blend_rx) = rtrb::RingBuffer::<Handoff>::new(1);
         // Spent queues travel back out. Two slots so a handover never blocks on the control
         // thread not having drained yet.
-        let (mut retire_tx, mut retire_rx) = rtrb::RingBuffer::<rtrb::Consumer<i16>>::new(2);
-
-        let mut error_callback = device_error_callback(Arc::clone(&shared));
-
-        // A volume change arrives as a step: the callback reads a new target between one buffer
-        // and the next, and moving a waveform's amplitude discontinuously is heard as a click.
-        // Ramping to the target with a one-pole filter over roughly 15 ms makes any change —
-        // including a slider dragged as fast as the UI can send events — inaudible as anything
-        // but a change in level. Derived from the device's own rate so the ramp is 15 ms of
-        // sound rather than 15 ms at some assumed 48 kHz. The ramp advances once per *sample*
-        // and the stream is interleaved, so the rate it is derived from has to include the
-        // channel count — using the frame rate would make it 7.5 ms on stereo.
-        const VOLUME_RAMP: f32 = 0.015;
-        let samples_per_second = config.sample_rate().0 as f32 * config.channels() as f32;
-        let gain_step = 1.0 - (-1.0 / (VOLUME_RAMP * samples_per_second)).exp();
-
-        // Runs on the audio thread: no allocation, no locks, no blocking.
-        macro_rules! callback {
-            ($sample:ty, $convert:expr) => {{
-                // The ramp's current value, owned by the callback and carried between calls.
-                // Seeded at the target so opening a stream — including the rebuild after a stall
-                // — starts at the right level instead of fading up from silence.
-                let mut gain = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
-                // The track, read through the mixer rather than popped straight out of the queue.
-                // At the native rate this is arithmetically a wire — see `native_rate_is_a_wire`
-                // in `mixer` — so ordinary playback is untouched; what it buys is somewhere for a
-                // second track to arrive, and a rate that can move.
-                let mut voice = Voice::new(channel_count, 1.0);
-                // The incoming track, once there is one. Absent for all of ordinary playback.
-                let mut blend: Option<(Voice, Prefetch)> = None;
-                // Mixing happens in `f32`, which needs somewhere to put it. On the closure rather
-                // than the stack per call, and fixed-size, because the callback must never
-                // allocate. Whatever the device asks for is processed in frame-aligned passes of
-                // at most this size.
-                let mut scratch = [0.0f32; MIX_BLOCK];
-                let mut device = DeviceQueue::default();
-                // The previous callback's start. Reading the clock is a counter read on Windows:
-                // no allocation, no lock, nothing that can block.
-                let mut last_called: Option<Instant> = None;
-                move |output: &mut [$sample], _: &cpal::OutputCallbackInfo| {
-                    let called = Instant::now();
-                    let gap_us = last_called.map_or(0, |at| (called - at).as_micros() as u64);
-                    if last_called.is_some() {
-                        callback_shared
-                            .longest_gap_us
-                            .fetch_max(gap_us, Ordering::Relaxed);
-                        callback_shared
-                            .shortest_gap_us
-                            .fetch_min(gap_us, Ordering::Relaxed);
-                    }
-                    last_called = Some(called);
-
-                    let paused = callback_shared.paused.load(Ordering::Relaxed);
-                    let target = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
-
-                    // Counted only while playing: a late callback during a pause glitches into
-                    // silence, which nobody hears.
-                    if device.requested(output.len() / channel_count) && !paused {
-                        callback_shared
-                            .device_underruns
-                            .fetch_add(1, Ordering::Relaxed);
-                        callback_shared
-                            .underrun_gap_us
-                            .fetch_max(gap_us, Ordering::Relaxed);
-                    }
-                    callback_shared
-                        .device_capacity
-                        .store(device.capacity as u64, Ordering::Relaxed);
-
-                    // A blend that has been handed over starts on this callback. Popping a queue
-                    // is the whole cost here; the voice and the `Arc` were built by the sender.
-                    match blend_rx.pop() {
-                        Ok(Handoff::Blend {
-                            source,
-                            voice: incoming,
-                            fade_frames,
-                        }) => {
-                            voice.fade_to(0.0, fade_frames, crate::Curve::EqualPower);
-                            blend = Some((incoming, source));
-                        }
-                        Ok(Handoff::Primary {
-                            consumer: fresh,
-                            voice: primary,
-                            cross_frames,
-                        }) => {
-                            // The spent queue must leave by the other door. `rtrb` frees the
-                            // shared buffer when both halves are gone, and the producer half went
-                            // with the decode thread that finished the outgoing track — so
-                            // dropping this here would deallocate megabytes on the audio thread.
-                            let spent = std::mem::replace(&mut consumer, fresh);
-                            let _ = retire_tx.push(spent);
-                            voice = primary;
-                            // Hand over from memory to the live stream. Both are the same track at
-                            // the same instant, so this is only wide enough to cover a seek that
-                            // landed a little off.
-                            if let Some((incoming, _)) = blend.as_mut() {
-                                incoming.fade_to(0.0, cross_frames, crate::Curve::EqualPower);
-                            }
-                            callback_shared.blend_done.store(false, Ordering::Relaxed);
-                        }
-                        Err(_) => {}
-                    }
-
-                    // Once the incoming voice has gone quiet its buffer is finished with. Dropping
-                    // it here is only an `Arc` decrement — the player holds the last reference —
-                    // and leaving it in place would keep mixing a source that has run dry.
-                    if let Some((incoming, _)) = blend.as_ref() {
-                        if incoming.faded() && incoming.gain() <= 0.0 {
-                            blend = None;
-                        }
-                    }
-
-                    let read_before = voice.frames_read();
-                    let mut written = 0usize;
-                    if !paused {
-                        // Trim to whole frames so a pass boundary can never split one.
-                        let pass = MIX_BLOCK - (MIX_BLOCK % channel_count);
-                        for block in output.chunks_mut(pass) {
-                            let usable = block.len() - (block.len() % channel_count);
-                            if usable == 0 {
-                                break;
-                            }
-                            let mix = &mut scratch[..usable];
-                            mix.fill(0.0);
-
-                            // A voice that runs dry stops early and starves the rest of the
-                            // block, so what it produced is always a prefix.
-                            let starved_before = voice.starved();
-                            voice.mix_into(&mut consumer, mix);
-                            let dry = (voice.starved() - starved_before) as usize * channel_count;
-                            let mut produced = usable - dry;
-
-                            // The incoming track mixes on top, and the longer of the two decides
-                            // how much of the block was filled. Taking the outgoing track's
-                            // length would truncate the blend at exactly the moment it matters:
-                            // the outgoing song is *ending*, so it runs dry first by design.
-                            if let Some((incoming, source)) = blend.as_mut() {
-                                let starved_before = incoming.starved();
-                                incoming.mix_into(source, mix);
-                                let dry =
-                                    (incoming.starved() - starved_before) as usize * channel_count;
-                                produced = produced.max(usable - dry);
-                                callback_shared
-                                    .blend_frames
-                                    .store(incoming.frames_read(), Ordering::Relaxed);
-                                // Faded fully in: the blend is over. The owner completes the
-                                // handover; the callback's only job is to say so, before the
-                                // prefetched buffer this is playing from runs out.
-                                //
-                                // Deliberately does not ask anything of the *outgoing* voice. It
-                                // is ending, so it is the one thing here guaranteed to run dry
-                                // partway through, and making the handover wait on it is what
-                                // stopped the first working blend from ever completing.
-                                if incoming.faded() {
-                                    callback_shared.blend_done.store(true, Ordering::Relaxed);
-                                }
-                            }
-
-                            for (slot, mixed) in block.iter_mut().zip(mix.iter()).take(produced) {
-                                // A one-pole approaches its target without ever arriving; snap
-                                // when the remainder is below a 16-bit LSB so that "muted" is
-                                // really zero and the filter isn't left grinding on denormals
-                                // forever.
-                                gain += (target - gain) * gain_step;
-                                if (target - gain).abs() < 1.0 / 65536.0 {
-                                    gain = target;
-                                }
-                                *slot = $convert(*mixed * gain);
-                            }
-                            written += produced;
-                            if produced < usable {
-                                break;
-                            }
-                        }
-                    }
-
-                    // Anything unfilled must be explicit silence, or the device replays stale
-                    // memory as a buzz.
-                    for slot in output.iter_mut().skip(written) {
-                        *slot = $convert(0.0f32);
-                    }
-
-                    device.filled(written / channel_count);
-                    callback_shared
-                        .device_audio
-                        .store(device.audio as u64, Ordering::Relaxed);
-
-                    // Silence we were forced to invent because the queue ran dry: the dropout,
-                    // counted. Two exclusions, both cases where an empty queue is expected rather
-                    // than a fault — the end of a track, and the priming gap before the first
-                    // sample of one (which also covers the gap after a stall rebuild).
-                    // A completely filled buffer is the definition of keeping up; from the first
-                    // one onwards, any shortfall is a real dropout. Partial fills are the common
-                    // case of one, so the two branches must not be exclusive on `written`.
-                    let short = output.len() - written;
-                    if short == 0 && written > 0 {
-                        callback_shared.delivered.store(true, Ordering::Relaxed);
-                    }
-                    if short > 0
-                        && !paused
-                        && callback_shared.delivered.load(Ordering::Relaxed)
-                        && !callback_shared.decoder_finished.load(Ordering::Relaxed)
-                    {
-                        callback_shared
-                            .starved
-                            .fetch_add(short as u64, Ordering::Relaxed);
-                    }
-
-                    // Both counters follow frames *taken from the queue*, not frames handed to
-                    // the device. They are the same number at the native rate, and they must not
-                    // be conflated once a voice can play at another one: at 1.04 the device eats
-                    // 4% more input than it emits output, and the queue has to be debited for
-                    // what was actually consumed or `drift` would accuse the pipeline of losing
-                    // audio. Position wants the same figure for a different reason — it is a
-                    // position *within the track*, and synced lyrics are timed against the
-                    // track's own clock rather than the device's.
-                    let consumed = voice.frames_read() - read_before;
-                    callback_shared
-                        .queued
-                        .fetch_sub(consumed * channels, Ordering::Relaxed);
-                    callback_shared
-                        .frames_played
-                        .fetch_add(consumed, Ordering::Relaxed);
-                    callback_shared
-                        .longest_callback_us
-                        .fetch_max(called.elapsed().as_micros() as u64, Ordering::Relaxed);
-                }
-            }};
-        }
-
-        // Attenuation happens in `f32`, before the sample is quantised to whatever the device
-        // takes. On the usual Windows path — WASAPI shared mode, which is `f32` — that means
-        // turning the volume down costs no resolution at all. Doing the multiply in the old
-        // 16-bit fixed point instead threw away roughly a bit per halving, so a comfortable
-        // listening level would have been played back as 11- or 12-bit audio.
-        //
-        // The buffer size asked for first, then the system default if the device refuses it.
-        // An unusual size is the one thing here that a working device might reject, and refusing
-        // to play over a tuning preference would turn a crackle into silence.
-        let asked = fixed_buffer_frames(&config, device_buffer);
-        let mut sizes = asked
-            .map(cpal::BufferSize::Fixed)
-            .into_iter()
-            .chain(std::iter::once(cpal::BufferSize::Default));
-        let mut stream_config = config.config();
-        let stream = loop {
-            stream_config.buffer_size = sizes.next().expect("Default is tried last, and once");
-            let built = match config.sample_format() {
-                cpal::SampleFormat::F32 => device.build_output_stream(
-                    &stream_config,
-                    callback!(f32, |s: f32| (s / 32768.0).clamp(-1.0, 1.0)),
-                    error_callback,
-                    None,
-                ),
-                cpal::SampleFormat::I16 => device.build_output_stream(
-                    &stream_config,
-                    callback!(i16, |s: f32| s.round().clamp(-32768.0, 32767.0) as i16),
-                    error_callback,
-                    None,
-                ),
-                cpal::SampleFormat::U16 => device.build_output_stream(
-                    &stream_config,
-                    callback!(
-                        u16,
-                        |s: f32| (s.round().clamp(-32768.0, 32767.0) as i32 + 32768) as u16
-                    ),
-                    error_callback,
-                    None,
-                ),
-                other => {
-                    return Err(Error::Device(format!(
-                        "unsupported output sample format {other:?}"
-                    )))
-                }
-            };
-            match built {
-                Ok(stream) => break stream,
-                Err(e) if stream_config.buffer_size != cpal::BufferSize::Default => {
-                    eprintln!(
-                        "device refused a {:?} buffer ({e}); using its default",
-                        stream_config.buffer_size
-                    );
-                    // The refused closure took these with it. Nothing has been decoded into the
-                    // queue yet, so a fresh one loses nothing.
-                    (producer, consumer) = rtrb::RingBuffer::<i16>::new(capacity);
-                    (blend_tx, blend_rx) = rtrb::RingBuffer::<Handoff>::new(1);
-                    (retire_tx, retire_rx) = rtrb::RingBuffer::<rtrb::Consumer<i16>>::new(2);
-                    callback_shared = Arc::clone(&shared);
-                    error_callback = device_error_callback(Arc::clone(&shared));
-                }
-                Err(e) => return Err(Error::Device(format!("could not open output stream: {e}"))),
-            }
+        let (retire_tx, retire_rx) = rtrb::RingBuffer::<rtrb::Consumer<i16>>::new(2);
+        let live = Live {
+            consumer,
+            voice: Voice::new(config.channels() as usize, 1.0),
+            blend: None,
+            blend_rx,
+            retire_tx,
+            // Seeded at the target so the stream starts at the right level rather than fading
+            // up from silence.
+            gain: f32::from_bits(shared.volume.load(Ordering::Relaxed)),
         };
-        let asked = match stream_config.buffer_size {
-            cpal::BufferSize::Fixed(frames) => frames as u64,
-            cpal::BufferSize::Default => 0,
-        };
+        let opened = open_stream(&device, &config, device_buffer, &shared, live)?;
 
         // Decode thread: keep the queue topped up, backing off when full so a track is streamed
         // rather than pulled wholly into memory. Started only once the stream exists, because the
@@ -988,7 +1084,8 @@ impl Player {
         // it. Anything that doesn't fit stays in `pending` until there is room.
         spawn_decode(decoder, first_chunk, Arc::clone(&shared), producer, format);
 
-        stream
+        opened
+            .stream
             .play()
             .map_err(|e| Error::Device(format!("could not start playback: {e}")))?;
 
@@ -1004,10 +1101,86 @@ impl Player {
             base_decoded: 0,
             track_start: Duration::ZERO,
             heard_floor: start_frames,
-            asked_buffer_frames: asked,
+            asked_buffer_frames: opened.asked_frames,
             device_name,
-            _stream: stream,
+            stream: Some(opened.stream),
+            live_back: opened.back,
         })
+    }
+
+    /// Move playback to `output`, with `device_buffer` of audio queued ahead of the speaker,
+    /// without losing the track.
+    ///
+    /// The decoder, the seconds of decoded audio in hand and the voice reading them all carry
+    /// over; only the stream to the device is reopened. Whatever Windows was still holding is
+    /// played out first (dropping a stream discards its queue), so nothing is skipped, and the
+    /// gap is the time it takes to open a stream — tens of milliseconds — rather than the second
+    /// a fresh player spends reconnecting to the CDN and seeking. The underrun count, the
+    /// position and every other counter continue.
+    ///
+    /// Refused, with playback untouched, if `output` runs at a different rate or channel count:
+    /// the audio in hand was decoded for this device's format. If the new stream cannot be
+    /// opened the player is left silent with [`Player::device_error`] set; build a new one.
+    pub fn reopen_on(&mut self, output: &Output, device_buffer: Duration) -> Result<()> {
+        let device = resolve_device(output)?;
+        let device_name = device.name().unwrap_or_else(|_| "unknown".into());
+        let config = device
+            .default_output_config()
+            .map_err(|e| Error::Device(format!("no output config: {e}")))?;
+        if config.sample_rate().0 != self.format.sample_rate
+            || config.channels() != self.format.channels
+        {
+            return Err(Error::Unsupported(format!(
+                "{device_name:?} runs at {} Hz x {}; this track is decoded for {} Hz x {}",
+                config.sample_rate().0,
+                config.channels(),
+                self.format.sample_rate,
+                self.format.channels
+            )));
+        }
+
+        // Let the device finish what it holds. A pause keeps the callback from taking more
+        // while the queue plays down; bounded, because a device that has stopped calling back
+        // never reports itself empty, and that is one of the reasons to be here.
+        let was_paused = self.is_paused();
+        self.shared.paused.store(true, Ordering::Relaxed);
+        let deadline = Instant::now() + self.device_buffer() + REOPEN_DRAIN_GRACE;
+        while self.shared.device_audio.load(Ordering::Relaxed) > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        // Dropping the stream joins cpal's thread, and the callback hands its state back on the
+        // way out.
+        drop(self.stream.take());
+        let Ok(live) = self.live_back.pop() else {
+            self.shared.device_error.store(true, Ordering::Relaxed);
+            return Err(Error::Device(
+                "the output callback did not hand its state back".into(),
+            ));
+        };
+        // Per-stream facts, learned again from the new one. Anything that was still in the old
+        // device's queue is gone with it.
+        self.shared.device_capacity.store(0, Ordering::Relaxed);
+        self.shared.device_audio.store(0, Ordering::Relaxed);
+        self.shared.device_error.store(false, Ordering::Relaxed);
+
+        let opened = match open_stream(&device, &config, device_buffer, &self.shared, live) {
+            Ok(opened) => opened,
+            Err(e) => {
+                self.shared.device_error.store(true, Ordering::Relaxed);
+                return Err(e);
+            }
+        };
+        if let Err(e) = opened.stream.play() {
+            self.shared.device_error.store(true, Ordering::Relaxed);
+            return Err(Error::Device(format!("could not start playback: {e}")));
+        }
+        self.asked_buffer_frames = opened.asked_frames;
+        self.device_name = device_name;
+        self.stream = Some(opened.stream);
+        self.live_back = opened.back;
+        self.shared.paused.store(was_paused, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Callbacks that found the device's own queue empty: the crackle a busy machine makes,

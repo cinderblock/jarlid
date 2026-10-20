@@ -861,36 +861,56 @@ impl AudioThread {
                             }
                         }
                         player = None; // rebuilt on the next pass, or dropped for good
-                    } else if default_moved {
-                        // Not a fault, so it spends no recovery budget — switching output
-                        // devices four times in an evening must not retire the song. Handled
-                        // after `reason` so a genuinely broken device still wins.
-                        eprintln!(
-                            "default output moved to {:?}; following it at {:.1}s",
-                            audio::default_output_name().unwrap_or_default(),
-                            position.as_secs_f64()
-                        );
-                        if let Some(track) = &mut current {
-                            track.resume_at = position;
+                    } else if default_moved || (undersized && !paused && blending.is_none()) {
+                        // Neither is a fault, so neither spends recovery budget — switching
+                        // output devices four times in an evening must not retire the song,
+                        // and nor must a busy machine. Handled after `reason` so a genuinely
+                        // broken device still wins.
+                        //
+                        // The track carries over: only the stream to the device is reopened,
+                        // which costs tens of milliseconds, where a fresh player spends about a
+                        // second reconnecting to the CDN and seeking. That full rebuild is the
+                        // fallback, for a device whose format the audio in hand was not decoded
+                        // for, or a stream that would not open.
+                        if default_moved {
+                            eprintln!(
+                                "default output moved to {:?}; following it at {:.1}s",
+                                audio::default_output_name().unwrap_or_default(),
+                                position.as_secs_f64()
+                            );
+                        } else {
+                            eprintln!(
+                                "still underrunning a {} ms device buffer; reopening at {:.1}s \
+                                 with {} ms",
+                                built_with.as_millis(),
+                                position.as_secs_f64(),
+                                device_buffer.size().as_millis()
+                            );
                         }
                         recoveries = 0;
                         recovered_at = position;
-                        player = None;
-                    } else if undersized && !paused && blending.is_none() {
-                        // Not a fault either: the track is fine, the machine is busy. Same
-                        // rebuild, same zero cost to the recovery budget.
-                        eprintln!(
-                            "still underrunning a {} ms device buffer; rebuilding at {:.1}s with {} ms",
-                            built_with.as_millis(),
-                            position.as_secs_f64(),
-                            device_buffer.size().as_millis()
-                        );
-                        if let Some(track) = &mut current {
-                            track.resume_at = position;
+                        match active.reopen_on(&output, device_buffer.size()) {
+                            Ok(()) => {
+                                built_with = device_buffer.size();
+                                last_device_check = Instant::now();
+                                if let Ok(mut slot) = thread_state.device.lock() {
+                                    *slot = Some(active.device_name().to_string());
+                                }
+                                eprintln!(
+                                    "[audio] reopened {:?} at {:.1}s, {} ms device buffer",
+                                    active.device_name(),
+                                    active.position().as_secs_f64(),
+                                    active.device_buffer().as_millis()
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("could not reopen the stream ({e}); rebuilding");
+                                if let Some(track) = &mut current {
+                                    track.resume_at = position;
+                                }
+                                player = None;
+                            }
                         }
-                        recoveries = 0;
-                        recovered_at = position;
-                        player = None;
                     } else if paused
                         && (active.device_error()
                             || paused_since
