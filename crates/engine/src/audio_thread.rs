@@ -643,16 +643,22 @@ impl AudioThread {
                     let underruns = active.device_underruns();
                     let fresh_underruns = underruns.saturating_sub(last_underruns);
                     last_underruns = underruns;
+                    // Taken every poll so that each line describes only its own moment.
+                    let timing = active.take_callback_timing();
                     let mut grew = false;
                     if fresh_underruns > 0 {
                         thread_state
                             .device_underruns
                             .fetch_add(fresh_underruns, Ordering::Relaxed);
+                        // The timing is what says whose fault it was. A wait before the callback
+                        // as long as the buffer: the callback was not run in time. A wait of one
+                        // period: it was on time, and the device still had nothing left.
                         eprintln!(
-                            "[audio] {fresh_underruns} device underrun{} at {:.1}s ({} ms buffer)",
+                            "[audio] {fresh_underruns} device underrun{} at {:.1}s ({} ms buffer); {}",
                             if fresh_underruns == 1 { "" } else { "s" },
                             position.as_secs_f64(),
-                            active.device_buffer().as_millis()
+                            active.device_buffer().as_millis(),
+                            describe_timing(&timing, timing.underrun_gap)
                         );
                         grew = device_buffer.underran(fresh_underruns, Instant::now());
                         if grew {
@@ -662,11 +668,24 @@ impl AudioThread {
                                 device_buffer.size().as_millis()
                             );
                         }
-                    } else if device_buffer.relax(Instant::now()) {
-                        eprintln!(
-                            "no device underruns for a while; the next player gets a {} ms buffer",
-                            device_buffer.size().as_millis()
-                        );
+                    } else {
+                        if near_miss(&timing, active.device_buffer()) {
+                            // Late, but not quite too late. How close these get is the evidence
+                            // for whether a bigger buffer would have helped.
+                            eprintln!(
+                                "[audio] late callback at {:.1}s ({} ms buffer); {}",
+                                position.as_secs_f64(),
+                                active.device_buffer().as_millis(),
+                                describe_timing(&timing, timing.longest_gap)
+                            );
+                        }
+                        if device_buffer.relax(Instant::now()) {
+                            eprintln!(
+                                "no device underruns for a while; the next player gets a {} ms \
+                                 buffer",
+                                device_buffer.size().as_millis()
+                            );
+                        }
                     }
                     thread_state
                         .device_buffer_us
@@ -1104,6 +1123,27 @@ fn next_device_retry(backoff: &mut Duration) -> Instant {
     Instant::now() + *backoff
 }
 
+/// `gap` (the wait that matters for this line) and the callback's period and slowest run, for
+/// the debug log.
+fn describe_timing(timing: &audio::CallbackTiming, gap: Duration) -> String {
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let period = timing
+        .shortest_gap
+        .map_or_else(|| "unknown".to_string(), |p| format!("{:.1} ms", ms(p)));
+    format!(
+        "the callback came {:.1} ms after the one before (period {period}, slowest callback {:.2} ms)",
+        ms(gap),
+        ms(timing.longest_callback)
+    )
+}
+
+/// A callback that waited for more than three quarters of the buffer: one bad moment from an
+/// underrun. Rare by construction, since any longer is an underrun instead, so it can be logged
+/// every time.
+fn near_miss(timing: &audio::CallbackTiming, buffer: Duration) -> bool {
+    !buffer.is_zero() && timing.longest_gap > buffer * 3 / 4
+}
+
 fn millis(d: Duration) -> u64 {
     d.as_millis() as u64
 }
@@ -1117,6 +1157,24 @@ impl Drop for AudioThread {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn waited(longest_gap: Duration) -> audio::CallbackTiming {
+        audio::CallbackTiming {
+            longest_gap,
+            shortest_gap: Some(Duration::from_millis(10)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_a_wait_close_to_the_buffer_is_a_near_miss() {
+        let buffer = Duration::from_millis(240);
+        assert!(!near_miss(&waited(Duration::from_millis(10)), buffer));
+        assert!(!near_miss(&waited(Duration::from_millis(180)), buffer));
+        assert!(near_miss(&waited(Duration::from_millis(181)), buffer));
+        // Before the device has said how big its buffer is, nothing is close to it.
+        assert!(!near_miss(&waited(Duration::from_secs(1)), Duration::ZERO));
+    }
 
     #[test]
     fn one_underrun_does_not_grow_the_buffer() {

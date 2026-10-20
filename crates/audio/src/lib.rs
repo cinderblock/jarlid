@@ -24,7 +24,10 @@ mod mixer;
 pub use media_foundation::Decoder;
 pub use mixer::{Curve, Pcm, Voice, MAX_CHANNELS};
 #[cfg(windows)]
-pub use player::{default_output_name, output_devices, output_ready, Output, Player, DEVICE_BUFFER};
+pub use player::{
+    default_output_name, output_devices, output_ready, CallbackTiming, Output, Player,
+    DEVICE_BUFFER,
+};
 #[cfg(windows)]
 pub use prefetch::{prefetch, Prefetched};
 pub use tempo::{Tempo, TempoTracker};

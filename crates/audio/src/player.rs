@@ -16,7 +16,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use windows::core::w;
@@ -205,6 +205,17 @@ struct Shared {
     /// handed to Windows had already played. That is a glitch, or the closest possible miss, and
     /// it happens with a full ring. So it is the crackle that `starved` cannot see.
     device_underruns: AtomicU64,
+    /// When the callbacks arrived, in microseconds, each the extreme seen since the owner last
+    /// took them (see [`Player::take_callback_timing`]). An underrun alone cannot say whose
+    /// fault it was: a long wait before it means the callback was not run in time, while a
+    /// callback that came on schedule and still found the device empty means Windows played,
+    /// or threw away, a whole buffer in one period.
+    longest_gap_us: AtomicU64,
+    /// `u64::MAX` when nothing has been seen yet.
+    shortest_gap_us: AtomicU64,
+    longest_callback_us: AtomicU64,
+    /// The wait before the worst callback that found the device empty. Zero if none did.
+    underrun_gap_us: AtomicU64,
     /// Size of the device buffer in frames, learned from the first callback, which is always
     /// asked to fill the whole thing. Zero until then.
     device_capacity: AtomicU64,
@@ -330,6 +341,20 @@ pub struct Player {
     asked_buffer_frames: u64,
     // Dropping the stream stops the device, so it must outlive playback.
     _stream: cpal::Stream,
+}
+
+/// How the output callback kept time over some stretch; see [`Player::take_callback_timing`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CallbackTiming {
+    /// The longest wait from the start of one callback to the start of the next.
+    pub longest_gap: Duration,
+    /// The shortest such wait, which is the device's period when anything is normal. `None` if
+    /// fewer than two callbacks ran.
+    pub shortest_gap: Option<Duration>,
+    /// The longest a single callback took to run.
+    pub longest_callback: Duration,
+    /// The wait before the worst callback that found the device empty, or zero if none did.
+    pub underrun_gap: Duration,
 }
 
 /// The device's buffer, as seen from the output callback.
@@ -624,6 +649,10 @@ impl Player {
             decode_error: AtomicBool::new(false),
             starved: AtomicU64::new(0),
             device_underruns: AtomicU64::new(0),
+            longest_gap_us: AtomicU64::new(0),
+            shortest_gap_us: AtomicU64::new(u64::MAX),
+            longest_callback_us: AtomicU64::new(0),
+            underrun_gap_us: AtomicU64::new(0),
             device_capacity: AtomicU64::new(0),
             device_audio: AtomicU64::new(0),
             delivered: AtomicBool::new(false),
@@ -687,7 +716,22 @@ impl Player {
                 // at most this size.
                 let mut scratch = [0.0f32; MIX_BLOCK];
                 let mut device = DeviceQueue::default();
+                // The previous callback's start. Reading the clock is a counter read on Windows:
+                // no allocation, no lock, nothing that can block.
+                let mut last_called: Option<Instant> = None;
                 move |output: &mut [$sample], _: &cpal::OutputCallbackInfo| {
+                    let called = Instant::now();
+                    let gap_us = last_called.map_or(0, |at| (called - at).as_micros() as u64);
+                    if last_called.is_some() {
+                        callback_shared
+                            .longest_gap_us
+                            .fetch_max(gap_us, Ordering::Relaxed);
+                        callback_shared
+                            .shortest_gap_us
+                            .fetch_min(gap_us, Ordering::Relaxed);
+                    }
+                    last_called = Some(called);
+
                     let paused = callback_shared.paused.load(Ordering::Relaxed);
                     let target = f32::from_bits(callback_shared.volume.load(Ordering::Relaxed));
 
@@ -697,6 +741,9 @@ impl Player {
                         callback_shared
                             .device_underruns
                             .fetch_add(1, Ordering::Relaxed);
+                        callback_shared
+                            .underrun_gap_us
+                            .fetch_max(gap_us, Ordering::Relaxed);
                     }
                     callback_shared
                         .device_capacity
@@ -856,6 +903,9 @@ impl Player {
                     callback_shared
                         .frames_played
                         .fetch_add(consumed, Ordering::Relaxed);
+                    callback_shared
+                        .longest_callback_us
+                        .fetch_max(called.elapsed().as_micros() as u64, Ordering::Relaxed);
                 }
             }};
         }
@@ -966,6 +1016,24 @@ impl Player {
     /// over was late.
     pub fn device_underruns(&self) -> u64 {
         self.shared.device_underruns.load(Ordering::Relaxed)
+    }
+
+    /// How the output callback has kept time since this was last called, and starts the count
+    /// again. Read it on every poll, or one bad moment will be blamed on the next poll too.
+    pub fn take_callback_timing(&self) -> CallbackTiming {
+        let us = |slot: &AtomicU64, reset: u64| {
+            Duration::from_micros(slot.swap(reset, Ordering::Relaxed))
+        };
+        let shortest = self
+            .shared
+            .shortest_gap_us
+            .swap(u64::MAX, Ordering::Relaxed);
+        CallbackTiming {
+            longest_gap: us(&self.shared.longest_gap_us, 0),
+            shortest_gap: (shortest != u64::MAX).then(|| Duration::from_micros(shortest)),
+            longest_callback: us(&self.shared.longest_callback_us, 0),
+            underrun_gap: us(&self.shared.underrun_gap_us, 0),
+        }
     }
 
     /// How much audio Windows holds between the callback and the speaker: the size measured from
