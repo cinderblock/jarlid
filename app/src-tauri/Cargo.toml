@@ -46,6 +46,7 @@ pandora = { path = "../../crates/pandora" }
 audio = { path = "../../crates/audio" }
 autosync = { path = "../../crates/autosync" }
 tauri-plugin-single-instance = "2.4.3"
+serde_yaml = "0.9"
 
 # The LRCLIB publish token costs ~2^24 SHA-256 hashes. Unoptimised that is minutes
 # rather than seconds, which would make publishing unusable in a `tauri dev` build.

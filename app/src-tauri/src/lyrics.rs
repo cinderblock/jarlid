@@ -61,6 +61,11 @@ pub struct Lyrics {
     /// Output only, like `stale`.
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub no_draft: Option<String>,
+    /// What `synced` can't hold: where each word starts and where lines end, line by line
+    /// (pauses included as lines with no text). From an LRCLIB record's Lyricsfile, or a local
+    /// edit timed in the editor's timeline; `None` when `synced` says it all. See `lyricsfile`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<Vec<crate::lyricsfile::TimedLine>>,
 }
 
 /// What a reviewer needs to know about a draft, line by line (by index into its lines, blank
@@ -559,6 +564,10 @@ fn from_lrclib(v: &serde_json::Value, source: &str) -> Lyrics {
         auto: false,
         draft: None,
         no_draft: None,
+        timing: v
+            .get("lyricsfile")
+            .and_then(|x| x.as_str())
+            .and_then(crate::lyricsfile::parse),
     }
 }
 
@@ -810,6 +819,10 @@ pub struct Publication {
     pub duration: f64,
     pub plain: Option<String>,
     pub synced: Option<String>,
+    /// Word timings and line ends, when there are any: published as a Lyricsfile, from which
+    /// LRCLIB derives the plain and synced lyrics older players read.
+    #[serde(default)]
+    pub timing: Option<Vec<crate::lyricsfile::TimedLine>>,
     /// How Pandora names this track, so the disk cache entry that this publication
     /// supersedes can be dropped.
     pub artist: String,
@@ -921,20 +934,41 @@ pub async fn publish_lyrics(app: tauri::AppHandle, publication: Publication) -> 
         return Err("Every line of a draft has to be reviewed before it can be published".into());
     }
 
+    // Built, and checked to read back as LRCLIB will read it, before any proof-of-work: a
+    // Lyricsfile LRCLIB can't parse would leave the record with no lyrics for older players.
+    let lyricsfile = match publication.timing.as_deref() {
+        Some(lines) if crate::lyricsfile::beyond_lrc(lines) => Some(crate::lyricsfile::build(
+            &crate::lyricsfile::Track {
+                title: &publication.track_name,
+                artist: &publication.artist_name,
+                album: &publication.album_name,
+                duration: publication.duration,
+            },
+            lines,
+            publication.plain.as_deref(),
+        )?),
+        _ => None,
+    };
+
     let client = lrclib_client()?;
     let token = publish_token(&client).await?;
 
+    let mut body = serde_json::json!({
+        "trackName": publication.track_name,
+        "artistName": publication.artist_name,
+        "albumName": publication.album_name,
+        "duration": publication.duration,
+        "plainLyrics": publication.plain.clone().unwrap_or_default(),
+        "syncedLyrics": publication.synced.clone().unwrap_or_default(),
+    });
+    // With a Lyricsfile, LRCLIB derives the two above from it and ignores what was sent.
+    if let Some(yaml) = lyricsfile {
+        body["lyricsfile"] = serde_json::Value::String(yaml);
+    }
     let resp = client
         .post("https://lrclib.net/api/publish")
         .header("X-Publish-Token", token)
-        .json(&serde_json::json!({
-            "trackName": publication.track_name,
-            "artistName": publication.artist_name,
-            "albumName": publication.album_name,
-            "duration": publication.duration,
-            "plainLyrics": publication.plain.clone().unwrap_or_default(),
-            "syncedLyrics": publication.synced.clone().unwrap_or_default(),
-        }))
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("Could not reach LRCLIB: {e}"))?;

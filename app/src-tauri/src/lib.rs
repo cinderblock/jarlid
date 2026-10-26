@@ -7,6 +7,7 @@ mod focus;
 mod import;
 mod lyric_flags;
 mod lyrics;
+mod lyricsfile;
 mod native;
 mod settings;
 #[cfg(windows)]
