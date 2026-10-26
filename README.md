@@ -35,6 +35,16 @@ anywhere in it.
   build was released with. Nothing is published on its own: auto-synced lyrics are marked as
   such, and once you've watched them line up, **Looks right? Publish** beside the lyrics (or the
   timing editor, to fix them first) sends them to LRCLIB after asking.
+- **Draft lyrics for songs with none** *(with auto-sync)*: when LRCLIB has no lyrics for a song
+  at all, the same speech engine writes a timed draft from what it heard, broken into lines at
+  the singer's pauses. A draft is never passed off as lyrics: it shows in italics, with the
+  words the engine wasn't sure of underlined, and the status line says it is a draft. Across
+  the 56 test songs, 81% of drafted words are right, 72% of lines start within 1 s of where they
+  should, and the underlines catch 63% of the wrong words. Songs with no singing, or singing too
+  unclear to be worth a draft, say so instead. The pencil opens it for review: read along as the
+  playing line is marked, fix what's wrong (Enter splits a line, Backspace at its start joins it
+  to the one above), and tick each line once it's right. Publish stays locked until every line
+  is ticked, and a review saved partway carries on next time.
 - **Flag lyrics as wrong**: press `F` while a song plays to flag the line being sung, without
   stopping anything (the line before comes too if this one has only just started). The flag
   button above the lyrics opens flag mode: click a line to flag it, shift-click to flag a
@@ -244,9 +254,10 @@ Auto-synced lyrics add two more, kept apart so the large speech engine is never 
 - **`crates/autosync`** — pure Rust. Lines up a lyric's words with timed words a speech model
   heard (a sequence alignment over normalised words, in which lyric words the model missed still
   need time to be sung), cuts a song into the overlapping windows the model is fed, and scores
-  results against known-good synced lyrics. Its `bench` example and `engine`'s `autosync-corpus`
-  example are the measurement harness behind every number in `plans/auto-synced-lyrics.md` and
-  `plans/autosync-lyrics-first.md`.
+  results against known-good synced lyrics. When there are no words to line up, `draft` turns the
+  heard words themselves into timed lines. Its `bench` and `draft` examples and `engine`'s
+  `autosync-corpus` example are the measurement harness behind every number in
+  `plans/auto-synced-lyrics.md`, `plans/autosync-lyrics-first.md` and `plans/draft-lyrics.md`.
 - **`crates/autosync-sidecar`** — `jarlid-autosync.exe`, the downloadable sidecar. It loads
   whisper.cpp's Parakeet runtime from DLLs at run time and answers a JSON-lines protocol on stdio
   with timed words, a window at a time. `build-engine.ps1` builds the DLLs from a pinned
