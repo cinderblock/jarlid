@@ -88,11 +88,13 @@ Related: `plans/draft-lyrics.md` (draft review, which this makes faster),
 7. [x] README, plan.
 8. [ ] **First real use**: time a song on the timeline in the real app, and publish one with
    word timings, then check LRCLIB serves both the Lyricsfile and line-level LRC. ← current
-9. [ ] Release — Cameron's call.
+9. [x] Released in **v1.17.0** (`d8016a9`, CI run 40408240403, 3:00 PM PDT (22:00Z) 2026-10-26):
+   installer, signature and `latest.json`; `releases/latest` serves 1.17.0.
 
 ## Open questions for the user
 
-1. Try it in the real app, and say when to release. The timeline is in the editor's bar.
+1. Try it in the real app (v1.17.0): time a song on the timeline, and publish one with word
+   timings. The timeline is in the editor's bar.
 
 ## Possible follow-ups (not started)
 
