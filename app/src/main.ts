@@ -872,7 +872,7 @@ function applyLyrics(res: Lyrics) {
     const parsed = res.synced ? parseLrc(res.synced) : null;
     syncedLines = parsed && (res.draft ? parsed : (detectDual(parsed)?.lines ?? parsed));
     lyricsStatus.textContent = res.draft
-      ? draftStatus(res.draft)
+      ? draftStatus(res)
       : `${res.synced ? "Synced lyrics" : "Lyrics"}${note}`;
     return;
   }
@@ -900,7 +900,7 @@ function paintLyrics(res: Lyrics, note: string) {
     noteDual(dual);
     syncedLines = dual?.lines ?? parsed;
     renderSyncedLyrics(syncedLines, lastMeta, res.draft?.doubt);
-    lyricsStatus.textContent = res.draft ? draftStatus(res.draft) : `Synced lyrics${note}`;
+    lyricsStatus.textContent = res.draft ? draftStatus(res) : `Synced lyrics${note}`;
     activeLineIdx = NO_LINE;
     highlightLine(lastPlayhead.position);
   } else if (res.plain) {
@@ -925,11 +925,18 @@ function paintLyrics(res: Lyrics, note: string) {
   }
 }
 
-/// The status line for a draft: whose words they are, and how far the review has got.
-function draftStatus(draft: NonNullable<Lyrics["draft"]>) {
-  const done = draft.reviewed.filter(Boolean).length;
+/// The status line for a draft: whose words they are, and how far the review has got. Only
+/// lines with words count; a blank one has nothing to review. The review is indexed by the
+/// file's lines as written, which is how the editor reads them.
+function draftStatus(res: Lyrics) {
+  const reviewed = res.draft?.reviewed ?? [];
+  const worded = (res.synced ?? "")
+    .split(/\r?\n/)
+    .map((raw, i) => ({ words: !!raw.replace(/\[[^\]]*\]/g, "").trim(), ok: !!reviewed[i] }))
+    .filter((l) => l.words);
+  const done = worded.filter((l) => l.ok).length;
   return done
-    ? `Draft lyrics · ${done} of ${draft.reviewed.length} lines reviewed`
+    ? `Draft lyrics · ${done} of ${worded.length} lines reviewed`
     : "Draft lyrics · heard by the speech engine, not yet reviewed";
 }
 
@@ -1378,8 +1385,11 @@ interface UpdateStatus {
   staged: boolean;
   armed: boolean;
   policy: Policy;
+  /// This version was handed to its installer once already and the app came back as the old
+  /// one, so it waits to be asked rather than exiting the app at every song for nothing.
+  failed: boolean;
 }
-let status: UpdateStatus = { available: null, staged: false, armed: false, policy: "afterSong" };
+let status: UpdateStatus = { available: null, staged: false, armed: false, policy: "afterSong", failed: false };
 
 /// Whether the login card is up — which is exactly "there is no engine to ask what playback
 /// is doing", the frontend's version of the updater's `Playback::Unknown`.
@@ -1404,8 +1414,8 @@ function renderVersion() {
     return;
   }
   if (!status.armed) {
-    // Downloaded and waiting to be asked.
-    versionEl.textContent = `v${v} ready to install`;
+    // Downloaded and waiting to be asked — or held back because it failed to install before.
+    versionEl.textContent = status.failed ? `v${v} didn't install` : `v${v} ready to install`;
     return;
   }
   // Armed: say when. The three cases match the updater's own, and the third is the one this
@@ -1435,7 +1445,10 @@ attachTip(versionEl, () => {
   if (!v) return "Click to check for updates";
   if (!status.staged) return `Click to download v${v}`;
   if (!status.armed) {
-    return isSignedOut() ? "Click to install now" : "Click to install after this song";
+    const when = isSignedOut() ? "Click to install now" : "Click to install after this song";
+    return status.failed
+      ? `The last try at installing v${v} didn't work, so it won't try again on its own. ${when}, or download the installer from GitHub.`
+      : when;
   }
   return "Click to install now instead of waiting";
 });
