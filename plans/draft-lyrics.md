@@ -85,7 +85,7 @@ has the engine, sidecar, corpus and bench background.
    Only the frontend was exercised in a browser with a stubbed Tauri bridge (see Findings);
    the Rust path from hearing to a stored draft is covered by unit tests, not yet by a real
    song.
-7. [ ] Release — only when Cameron says so (per the project's version-bump rules).
+7. [x] Released in **v1.16.0** (`54eb108`, cut by another session).
 
 ## Findings / gotchas
 
@@ -139,15 +139,14 @@ has the engine, sidecar, corpus and bench background.
 - [x] 2026-10-26 — App, pane, editor review, settings (`032c89c`); status count fix
       (`dda07e3`); README.
 - [ ] First live run on a real song with no LRCLIB lyrics.
-- [ ] Release (Cameron's call).
+- [x] Released in v1.16.0 (`54eb108`).
 
 ## Open questions for the user
 
 1. **First live run is yours**: with auto-sync on, play songs LRCLIB has nothing for (or wait
    for one) and review a draft. Worth noting which songs end up "too unclear", especially
    non-English ones.
-2. **Release?** Nothing is bumped. Say when, and whether it's a minor (new feature → 1.16.0
-   is my recommendation).
+2. ~~Release?~~ Out in v1.16.0.
 
 ## Possible follow-ups (not started)
 
