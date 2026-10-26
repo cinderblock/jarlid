@@ -1189,9 +1189,16 @@ function togglePlayback() {
   }
 }
 $("play").addEventListener("click", togglePlayback);
-// Space toggles playback (unless typing in the station search)
+// Space toggles playback, unless it is typing (the station search, a lyric line being
+// edited) or something already took it. A timing pass marks lines with Space and claims
+// the key with preventDefault; its listener runs first because lyric-editor.ts registers
+// on import. Checking the flag rather than "is a pass running" matters on the last line:
+// marking it ends the pass before this listener sees the key.
 window.addEventListener("keydown", (e) => {
-  if (e.code === "Space" && (e.target as HTMLElement).tagName !== "INPUT") {
+  if (e.defaultPrevented) return;
+  const el = e.target as HTMLElement;
+  if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) return;
+  if (e.code === "Space") {
     e.preventDefault();
     togglePlayback();
   }
