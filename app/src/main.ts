@@ -13,7 +13,8 @@ import { publicationFor } from "./lyric-publish";
 import type { Row } from "./flags";
 import { parseLrc, type LyricLine } from "./lrc";
 import { detectDual, type Dual } from "./dual-lyrics";
-import { fillMarked } from "./draft-marks";
+import { fillMarked, fillWords } from "./draft-marks";
+import { wordTimesFor } from "./edit-lines";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
 import * as stationStats from "./station-stats";
 
@@ -220,7 +221,8 @@ function paintEmpty(text: string, meta: { title: string; artist: string }) {
 function renderSyncedLyrics(
   lines: LyricLine[],
   meta: { title: string; artist: string },
-  doubt?: number[][]
+  doubt?: number[][],
+  wordTimes?: (number[] | undefined)[]
 ) {
   clearPane(meta);
   stopPlainFollow();
@@ -235,7 +237,11 @@ function renderSyncedLyrics(
     lyricsEl.appendChild(introEl);
   }
 
-  paneLines = lines.map((ln, i) => (doubt ? { ...ln, doubt: doubt[i] } : ln));
+  paneLines = lines.map((ln, i) => ({
+    ...ln,
+    ...(doubt ? { doubt: doubt[i] } : {}),
+    ...(wordTimes?.[i] ? { wordTimes: wordTimes[i] } : {}),
+  }));
   paneLines.forEach((ln, i) => {
     const div = document.createElement("div");
     div.className = doubt ? "line draft" : "line";
@@ -269,7 +275,7 @@ function renderPlainLyrics(lines: PaneLine[], meta: { title: string; artist: str
 // both, the second smaller and dimmer beneath the first, and a chip in the pane's head names
 // the two and cycles: both, swapped, the first alone, the second alone. The choice is per
 // track, like the sync offset.
-type PaneLine = { text: string; alt?: string; doubt?: number[] };
+type PaneLine = { text: string; alt?: string; doubt?: number[]; wordTimes?: number[] };
 type DualMode = "both" | "swap" | "first" | "second";
 const DUAL_MODES: DualMode[] = ["both", "swap", "first", "second"];
 const lyricsDualBtn = $<HTMLButtonElement>("lyrics-dual");
@@ -282,7 +288,8 @@ let paneLines: PaneLine[] = [];
 function fillLine(div: HTMLElement, ln: PaneLine) {
   div.classList.toggle("dual", false);
   if (!ln.alt || dualMode === "first") {
-    fillMarked(div, ln.text || " ", ln.doubt ?? []);
+    if (ln.wordTimes) fillWords(div, ln.text, ln.doubt ?? []);
+    else fillMarked(div, ln.text || " ", ln.doubt ?? []);
   } else if (dualMode === "second") {
     div.textContent = ln.alt;
   } else {
@@ -442,6 +449,34 @@ function followLyrics(position: number, duration: number) {
 
 // Manual lyric sync offset (seconds), per-track, persisted. Nudge with [ and ].
 let syncOffset = 0;
+
+// ---- word by word -----------------------------------------------------------------------
+// Where words are timed (a Lyricsfile from LRCLIB, a draft, or an edit timed on the
+// timeline), the playing line lights each word as it is sung. Playhead updates come a few
+// times a second, too coarse for words, so between them the position is carried forward by
+// the clock, every frame, while the line has words to light.
+
+let playheadAt = performance.now();
+let wordFrame = 0;
+
+function startWordFollow() {
+  if (!wordFrame) wordFrame = requestAnimationFrame(followWords);
+}
+
+function followWords() {
+  wordFrame = 0;
+  const line = activeLineIdx >= 0 ? paneLines[activeLineIdx] : undefined;
+  if (!paneLines.some((l) => l.wordTimes)) return;
+  if (line?.wordTimes && !lyricEditor.isEditing()) {
+    const ahead = lastPlayhead.paused ? 0 : Math.min(0.5, (performance.now() - playheadAt) / 1000);
+    const p = lastPlayhead.position + ahead + syncOffset;
+    const row = lyricsEl.querySelector(`:scope > .line[data-idx="${activeLineIdx}"]`);
+    row?.querySelectorAll<HTMLElement>(".w").forEach((w, k) => {
+      w.classList.toggle("sung", line.wordTimes![k] <= p + 0.05);
+    });
+  }
+  wordFrame = requestAnimationFrame(followWords);
+}
 
 function highlightLine(position: number) {
   // Edit mode owns the pane: rows may have no timestamp yet, so the ascending-order
@@ -899,7 +934,10 @@ function paintLyrics(res: Lyrics, note: string) {
     const dual = res.draft ? null : detectDual(parsed);
     noteDual(dual);
     syncedLines = dual?.lines ?? parsed;
-    renderSyncedLyrics(syncedLines, lastMeta, res.draft?.doubt);
+    // Word by word where the lyrics are timed that finely (not for two languages at once).
+    const wordTimes = res.timing && !dual ? wordTimesFor(syncedLines, res.timing) : undefined;
+    renderSyncedLyrics(syncedLines, lastMeta, res.draft?.doubt, wordTimes);
+    if (wordTimes?.some(Boolean)) startWordFollow();
     lyricsStatus.textContent = res.draft ? draftStatus(res) : `Synced lyrics${note}`;
     activeLineIdx = NO_LINE;
     highlightLine(lastPlayhead.position);
@@ -1195,6 +1233,7 @@ let lastMoveAt = 0;
 function onPlayhead(ph: Playhead) {
   const wasPaused = lastPlayhead.paused;
   lastPlayhead = ph;
+  playheadAt = performance.now();
   // A staged update says "after this song" or "while paused" depending on this, so the
   // badge has to follow it.
   if (wasPaused !== ph.paused && status.armed) renderVersion();

@@ -15,6 +15,7 @@ import {
   toTiming,
   unreviewed,
   wordStarts,
+  wordTimesFor,
   type Line,
 } from "./edit-lines";
 
@@ -261,4 +262,15 @@ describe("merging a Lyricsfile's timing onto the LRC's lines", () => {
     );
     expect(merged).toHaveLength(3);
   });
+});
+
+test("the pane's lines find their word times by start and text", () => {
+  const times = wordTimesFor(
+    [{ t: 1, text: "One two" }, { t: 3, text: "" }, { t: 5, text: "Three" }],
+    [
+      { text: "One two", start: 1.004, words: [{ text: "One", start: 1 }, { text: "two", start: 1.5 }] },
+      { text: "Three", start: 5 },
+    ]
+  );
+  expect(times).toEqual([[1, 1.5], undefined, undefined]);
 });

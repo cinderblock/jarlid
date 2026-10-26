@@ -1208,6 +1208,15 @@ body.remote #remote-vol-wrap {
   transform-origin: left center;
   text-shadow: 0 2px 30px var(--accent-glow);
 }
+/* Timed word by word: in the playing line, the words still to come wait a step back and
+   light up as they are sung. */
+.line.active .w {
+  opacity: 0.45;
+  transition: opacity 0.12s ease-out;
+}
+.line.active .w.sung {
+  opacity: 1;
+}
 .line.plain {
   color: var(--dim);
   font-weight: 500;

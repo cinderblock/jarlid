@@ -1,4 +1,5 @@
-// Marking the words of a draft line the speech engine was unsure of.
+// Marking up the words of a lyric line: the ones the speech engine was unsure of, in a
+// draft, and each word on its own, for lyrics timed word by word.
 //
 // A draft is lyrics the engine wrote for a song LRCLIB has nothing for (see
 // plans/draft-lyrics.md). Its mistakes cluster in the words it heard with low confidence,
@@ -21,5 +22,21 @@ export function fillMarked(el: HTMLElement, text: string, doubt: readonly number
       span.textContent = word;
       return [...sep, span];
     })
+  );
+}
+
+/// Fill `el` with `text` one `<span class="w">` per word, for lyrics timed word by word: the
+/// pane lights each as it is sung. Words at positions `doubt` are marked as well.
+export function fillWords(el: HTMLElement, text: string, doubt: readonly number[]) {
+  el.replaceChildren(
+    ...text
+      .trim()
+      .split(/\s+/)
+      .flatMap((word, i) => {
+        const span = document.createElement("span");
+        span.className = doubt.includes(i) ? "w doubt" : "w";
+        span.textContent = word;
+        return i ? [document.createTextNode(" "), span] : [span];
+      })
   );
 }

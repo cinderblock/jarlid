@@ -316,3 +316,18 @@ export function mergeTiming(lines: Line[], timing: TimedLine[]): Line[] {
   }
   return out;
 }
+
+/// For each of `shown` (the pane's timed lines), its words' start times from `timing`, when a
+/// timing line has the same start and text and times every word; otherwise undefined.
+export function wordTimesFor(
+  shown: { t: number; text: string }[],
+  timing: TimedLine[]
+): (number[] | undefined)[] {
+  return shown.map((l) => {
+    const tl = timing.find(
+      (x) => Math.abs(x.start - l.t) < 0.011 && x.text.trim() === l.text.trim()
+    );
+    const n = wordsOf(l.text).length;
+    return tl?.words?.length && tl.words.length === n ? tl.words.map((w) => w.start) : undefined;
+  });
+}
