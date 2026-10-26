@@ -10,11 +10,13 @@
 //!
 //! - [`text`] — the one normalisation both sides are compared in.
 //! - [`align`] — lyric words ↔ heard words, then line start times.
+//! - [`draft`] — when there are no lyric words to align, the heard words as timed lines.
 //! - [`lrc`] — reading and writing LRC.
 //! - [`score`] — how close a result is to a known-good synced copy.
 //! - [`window`] — cutting a track into overlapping windows for the model, and stitching back.
 
 pub mod align;
+pub mod draft;
 pub mod lrc;
 pub mod score;
 pub mod text;
