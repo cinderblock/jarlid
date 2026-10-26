@@ -4,6 +4,7 @@ import {
   endsInPause,
   fromTiming,
   lineEnd,
+  mergeTiming,
   joinLine,
   retext,
   reviewState,
@@ -226,5 +227,38 @@ describe("the timeline's edits", () => {
   test("words between timed ones are spread between them", () => {
     const lines: Line[] = [{ t: 0, text: "a b c d e", words: [0, null, null, 6, null] }, { t: 10, text: "x" }];
     expect(wordStarts(lines, 0, 99)).toEqual([0, 2, 4, 6, 8]);
+  });
+});
+
+describe("merging a Lyricsfile's timing onto the LRC's lines", () => {
+  test("words attach by start and text; untimed lines keep their places", () => {
+    const lrc: Line[] = [
+      { t: 10, text: "I took a walk" },
+      { t: null, text: "an untimed line" },
+      { t: 14, text: "around the world" },
+    ];
+    const merged = mergeTiming(lrc, [
+      { text: "I took a walk", start: 10.004, end: 12, words: [
+        { text: "I", start: 10 }, { text: "took", start: 10.4 }, { text: "a", start: 10.7 }, { text: "walk", start: 11 },
+      ] },
+      { text: "around the world", start: 14 },
+    ]);
+    expect(merged.map((l) => [l.t, l.text])).toEqual([
+      [10, "I took a walk"],
+      [12, ""],
+      [null, "an untimed line"],
+      [14, "around the world"],
+    ]);
+    expect(merged[0].words).toEqual([10, 10.4, 10.7, 11]);
+    // The input is left alone.
+    expect(lrc[0].words).toBeUndefined();
+  });
+
+  test("an end that is already an empty line isn't doubled", () => {
+    const merged = mergeTiming(
+      [{ t: 1, text: "One" }, { t: 2, text: "" }, { t: 5, text: "Two" }],
+      [{ text: "One", start: 1, end: 2 }, { text: "", start: 2 }, { text: "Two", start: 5 }]
+    );
+    expect(merged).toHaveLength(3);
   });
 });

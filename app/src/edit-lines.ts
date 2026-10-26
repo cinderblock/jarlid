@@ -293,3 +293,26 @@ export function setWordStart(
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+
+/// `lines` (from the LRC, which keeps every line, timed or not) with what `timing` adds: word
+/// times on the lines it matches by start and text, and an empty line where a line ends
+/// before the next begins. The LRC stays the authority on which lines there are, so anything
+/// indexed by them — a draft's review — still lines up.
+export function mergeTiming(lines: Line[], timing: TimedLine[]): Line[] {
+  const out = lines.map((l) => ({ ...l }));
+  for (const tl of timing) {
+    if (!tl.text.trim()) continue;
+    // LRC keeps hundredths; timing keeps milliseconds.
+    const i = out.findIndex(
+      (l) => l.t !== null && Math.abs(l.t - tl.start) < 0.011 && l.text.trim() === tl.text.trim()
+    );
+    if (i < 0) continue;
+    if (tl.words?.length && tl.words.length === wordsOf(out[i].text).length) {
+      out[i].words = tl.words.map((w) => w.start);
+    }
+    if (tl.end != null && !endsInPause(out, i) && tl.end < lineEnd(out, i, Infinity) - 0.005) {
+      out.splice(i + 1, 0, { t: tl.end, text: "" });
+    }
+  }
+  return out;
+}

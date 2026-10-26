@@ -416,6 +416,7 @@ fn finish_draft(
     let mut stored = StoredDraft {
         lrc: None,
         doubt: Vec::new(),
+        timing: Vec::new(),
         none: None,
         engine: installed.manifest.version.clone(),
         created: unix_now(),
@@ -439,6 +440,9 @@ pub struct Draft {
     pub lrc: String,
     /// Per line of `lrc`, the positions of the words the engine was unsure of.
     pub doubt: Vec<Vec<usize>>,
+    /// The same lines with each word's start: the engine heard every word, so a draft comes
+    /// word-timed. A line whose words don't survive into its text one for one has none.
+    pub timing: Vec<crate::lyricsfile::TimedLine>,
 }
 
 impl From<Draft> for Shown {
@@ -465,7 +469,44 @@ fn draft_of(heard: &[autosync::Heard]) -> Result<Draft, &'static str> {
             .trim_end()
             .to_string(),
         doubt: lines.iter().map(|l| l.doubtful(&params)).collect(),
+        timing: timing_of(&lines, params.lead),
     })
+}
+
+/// Draft lines with their words' starts. Each word starts `lead` ahead of where the engine
+/// heard it, as the line does, kept in order; the first word is the line's own start.
+fn timing_of(lines: &[autosync::draft::Line], lead: f64) -> Vec<crate::lyricsfile::TimedLine> {
+    use crate::lyricsfile::{TimedLine, TimedWord};
+    lines
+        .iter()
+        .map(|l| {
+            let text = l.text();
+            let shown: Vec<&str> = text.split_whitespace().collect();
+            let mut words = Vec::new();
+            if !shown.is_empty() && shown.len() == l.words.len() {
+                let mut prev = l.t;
+                for (k, (w, heard)) in shown.iter().zip(&l.words).enumerate() {
+                    let start = if k == 0 {
+                        l.t
+                    } else {
+                        (heard.start - lead).max(prev + 0.01)
+                    };
+                    prev = start;
+                    words.push(TimedWord {
+                        text: w.to_string(),
+                        start,
+                        end: None,
+                    });
+                }
+            }
+            TimedLine {
+                text,
+                start: l.t,
+                end: None,
+                words,
+            }
+        })
+        .collect()
 }
 
 /// Run the job, showing what `shown` makes of the words so far after every window. Everything
@@ -756,6 +797,9 @@ struct StoredDraft {
     lrc: Option<String>,
     /// Per line of `lrc`, the positions of the words the engine was unsure of.
     doubt: Vec<Vec<usize>>,
+    /// Each line's words with their starts (see [`Draft::timing`]).
+    #[serde(default)]
+    timing: Vec<crate::lyricsfile::TimedLine>,
     /// Why there is no draft, when there isn't: `noSinging` or `unclear`.
     none: Option<String>,
     engine: String,
@@ -770,9 +814,9 @@ struct StoredDraft {
 
 impl StoredDraft {
     fn set(&mut self, drafted: Result<Draft, &str>) {
-        (self.lrc, self.doubt, self.none) = match drafted {
-            Ok(d) => (Some(d.lrc), d.doubt, None),
-            Err(why) => (None, Vec::new(), Some(why.to_string())),
+        (self.lrc, self.doubt, self.timing, self.none) = match drafted {
+            Ok(d) => (Some(d.lrc), d.doubt, d.timing, None),
+            Err(why) => (None, Vec::new(), Vec::new(), Some(why.to_string())),
         };
     }
 }
@@ -787,7 +831,8 @@ fn drafts_dir(app: &AppHandle) -> Option<PathBuf> {
 fn current_draft(app: &AppHandle, key: &str) -> Option<StoredDraft> {
     let path = crate::lyrics::hashed_file(drafts_dir(app)?, key)?;
     let mut s: StoredDraft = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    if s.drafter == autosync::draft::VERSION {
+    // Drafts stored before word timings were kept are redone too, from the words they kept.
+    if s.drafter == autosync::draft::VERSION && (s.lrc.is_none() || !s.timing.is_empty()) {
         return Some(s);
     }
     let heard: Vec<autosync::Heard> = s
@@ -814,6 +859,7 @@ pub fn stored_draft(app: &AppHandle, key: &str) -> Option<Result<Draft, String>>
         Some(lrc) => Ok(Draft {
             lrc,
             doubt: s.doubt,
+            timing: s.timing,
         }),
         None => Err(s.none.unwrap_or_default()),
     })
@@ -954,6 +1000,32 @@ mod tests {
         let s: Stored = serde_json::from_str(old).unwrap();
         assert_ne!(s.aligner, autosync::align::VERSION);
         assert!(s.heard.is_empty());
+    }
+
+    #[test]
+    fn a_draft_comes_word_timed_in_order() {
+        // Thirty words in three phrases, a second apart, the engine sure of them all.
+        let heard: Vec<autosync::Heard> = (0..30)
+            .map(|i| {
+                let start = 10.0 + i as f64 * 0.3 + (i / 10) as f64;
+                autosync::Heard {
+                    text: format!("w{i}"),
+                    start,
+                    end: start + 0.25,
+                    p: 0.95,
+                }
+            })
+            .collect();
+        let d = draft_of(&heard).unwrap();
+        assert_eq!(d.timing.len(), d.lrc.lines().count());
+        for line in &d.timing {
+            let words: Vec<&str> = line.text.split_whitespace().collect();
+            assert_eq!(line.words.len(), words.len(), "{}", line.text);
+            assert_eq!(line.words[0].start, line.start);
+            assert!(line.words.windows(2).all(|w| w[0].start < w[1].start));
+        }
+        // Later words lead by what the line does: heard at 10.3, shown from 10.05.
+        assert!((d.timing[0].words[1].start - 10.05).abs() < 1e-9);
     }
 
     #[test]

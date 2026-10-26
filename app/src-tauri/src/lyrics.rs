@@ -88,6 +88,7 @@ impl Lyrics {
     fn show_draft(&mut self, draft: crate::autosync::Draft) {
         self.synced = Some(draft.lrc);
         self.source = "draft".into();
+        self.timing = Some(draft.timing).filter(|t| crate::lyricsfile::beyond_lrc(t));
         self.draft = Some(DraftReview {
             reviewed: vec![false; draft.doubt.len()],
             doubt: draft.doubt,

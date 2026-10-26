@@ -31,6 +31,7 @@ import {
   splitLine,
   unreviewed as unreviewedIn,
   fromTiming,
+  mergeTiming,
   retext,
   toTiming,
   type Line,
@@ -193,12 +194,13 @@ export function begin(context: EditorContext) {
 /// Take `l` as the lines to edit, with a draft's review state when it is one.
 function load(l: Lyrics) {
   const src = l.synced || l.plain || "";
-  // Word timings come with their lines; otherwise the LRC is the whole story.
-  lines = l.timing?.length
-    ? fromTiming(l.timing)
-    : src
-      ? parseLines(src)
-      : [{ t: null, text: "" }];
+  // The LRC says which lines there are; a Lyricsfile's timing adds their words' times and
+  // line ends. With no LRC at all, the timing is all there is.
+  if (src) {
+    lines = l.timing?.length ? mergeTiming(parseLines(src), l.timing) : parseLines(src);
+  } else {
+    lines = l.timing?.length ? fromTiming(l.timing) : [{ t: null, text: "" }];
+  }
   const draft = l.draft;
   reviewing = !!draft;
   if (draft) applyReview(lines, draft);
