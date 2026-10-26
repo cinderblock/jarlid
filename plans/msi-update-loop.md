@@ -54,23 +54,19 @@ again: an update that fails must not kill the app on every song boundary.
 4. [x] Release config (`5783a85`): stop shipping the MSI (`bundle.targets: ["nsis"]`), so `latest.json` only
    has NSIS entries. MSI-marked 1.14.1 then falls back to generic `windows-x86_64` → NSIS.
    This is what un-sticks already-installed MSI copies without touching them.
-5. [ ] This machine: remove the MSI product (needs one UAC click), install the 1.15.x NSIS
-   setup. **Needs the user's go-ahead** — interrupts playback.
-6. [ ] Cut a release carrying 2–4. **Waiting on the user.** Unreleased on master besides
-   this: a peer's draft-lyrics feature (`5b73775`, `032c89c`, `dda07e3`, `c630c80`), so the
-   next version is a minor (1.16.0), not a patch.
+5. [x] This machine (2026-10-26 2:24 PM PDT): data backed up to
+   `%TEMP%\jarlid-reinstall\data-backup`; `msiexec /x {9E0E5BEA-…}` elevated (exit 0); NSIS
+   1.15.0 setup `/S` (exit 0). Now one registration (NSIS 1.15.0), exe marker `_NSS`, running.
+   `jarlid.exe.prev` (the Oct 19 unmarked build) left in the install dir untouched.
+6. [x] Released v1.16.0 (`54eb108`), carrying 2–4 plus a peer's draft-lyrics feature.
+7. [ ] Confirm: CI result, `latest.json` lists only the NSIS setup, and the running 1.15.0
+   updates itself to 1.16.0 at a song end and comes back.
 
-## Open questions for the user
+## Findings during the fix
 
-1. Release now as 1.16.0, including the peer's draft-lyrics work? (Recommended, if that
-   work is finished: it's committed with README and plan updates.)
-2. Until a fixed release is out, the running 1.14.1 exits at the end of every song (it
-   keeps trying the 1.15.0 MSI). Stopgap: rewrite v1.15.0's `latest.json` so the generic
-   entry is the NSIS setup and the `-msi` entry is gone. Takes effect at its next check, no
-   new build.
-3. Machine cleanup: the stale MSI registration (`Jarlid 1.14.1`). Once NSIS has updated over
-   it, uninstalling that entry from Apps would delete the NSIS-installed files. Clean way:
-   `msiexec /x {9E0E5BEA-…}` (one UAC click), then run the NSIS setup.
+- C: ran out of space mid-way (0 bytes free; `~/.cargo/build` was 269 GB, 127 GB of it
+  `debug\incremental`). Symptoms: `LNK1318 Unexpected PDB error; LIMIT (12)`, then
+  `os error 112` / `LNK1180`. The user freed space themselves.
 
 ## Things not to do
 
