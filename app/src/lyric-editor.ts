@@ -29,7 +29,11 @@ import {
   reviewState,
   splitLine,
   unreviewed as unreviewedIn,
+  fromTiming,
+  retext,
+  toTiming,
   type Line,
+  type TimedLine,
 } from "./edit-lines";
 
 export interface Lyrics {
@@ -58,6 +62,9 @@ export interface Lyrics {
   draft?: { doubt: number[][]; reviewed: boolean[] } | null;
   /// Why there is no draft for a song LRCLIB has nothing for.
   noDraft?: "noSinging" | "unclear" | null;
+  /// What `synced` can't hold: word timings and line ends, line by line (see `lyricsfile` in
+  /// Rust). Present when the record or the saved edit has any.
+  timing?: TimedLine[] | null;
 }
 
 export interface EditorContext {
@@ -180,7 +187,12 @@ export function begin(context: EditorContext) {
 /// Take `l` as the lines to edit, with a draft's review state when it is one.
 function load(l: Lyrics) {
   const src = l.synced || l.plain || "";
-  lines = src ? parseLines(src) : [{ t: null, text: "" }];
+  // Word timings come with their lines; otherwise the LRC is the whole story.
+  lines = l.timing?.length
+    ? fromTiming(l.timing)
+    : src
+      ? parseLines(src)
+      : [{ t: null, text: "" }];
   const draft = l.draft;
   reviewing = !!draft;
   if (draft) applyReview(lines, draft);
@@ -259,7 +271,7 @@ function render() {
     text.spellcheck = false;
     fillMarked(text, line.text, line.doubt ?? []);
     text.addEventListener("input", () => {
-      lines[i].text = text.textContent ?? "";
+      retext(lines[i], text.textContent ?? "");
       // The reviewer has been at this line: the engine's doubts about it are answered.
       if (lines[i].doubt?.length) {
         lines[i].doubt = [];
@@ -633,10 +645,14 @@ const keyArgs = () => ({
 /// still belong in the plain form.
 function edited() {
   const body = serialize(lines).trim();
-  if (!body) return { synced: null, plain: null };
+  if (!body) return { synced: null, plain: null, timing: null };
   return anyTimed()
-    ? { synced: body, plain: lines.map((l) => l.text).join("\n").trim() }
-    : { synced: null, plain: body };
+    ? {
+        synced: body,
+        plain: lines.map((l) => l.text).join("\n").trim(),
+        timing: toTiming(lines),
+      }
+    : { synced: null, plain: body, timing: null };
 }
 
 async function saveOverride(): Promise<Lyrics> {
@@ -733,6 +749,18 @@ publishBtn.addEventListener("click", () => {
 
 /// Once LRCLIB serves the correction itself the local copy is redundant — drop it, so the
 /// pane stops calling itself an edit. If LRCLIB hasn't caught up, keep ours.
+/// Whether two LRC texts time the same lines alike. Not a string comparison: LRCLIB rewrites
+/// the LRC it derives from a published Lyricsfile in its own spacing (`[00:12.00]Line`, no
+/// space), so the text it serves back differs from what was sent while saying the same thing.
+function sameLrc(a: string | null, b: string | null) {
+  const norm = (lrc: string | null) =>
+    parseLines(lrc ?? "")
+      .filter((l) => l.t !== null)
+      .map((l) => `${Math.round(l.t! * 100)}|${l.text.trim()}`)
+      .join("\n");
+  return norm(a) === norm(b);
+}
+
 async function settle(saved: Lyrics) {
   if (!ctx) return;
   try {
@@ -741,10 +769,7 @@ async function settle(saved: Lyrics) {
       ...keyArgs(),
       duration: trackDuration(),
     });
-    if (
-      (fresh.synced ?? null) === (saved.synced ?? null) &&
-      (fresh.plain ?? null) === (saved.plain ?? null)
-    ) {
+    if (sameLrc(fresh.synced, saved.synced) && (fresh.plain ?? null) === (saved.plain ?? null)) {
       ctx.lyrics = fresh;
       ctx.onApplied(fresh);
       refreshBar();

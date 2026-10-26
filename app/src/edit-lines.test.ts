@@ -1,5 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { applyReview, joinLine, reviewState, splitLine, unreviewed, type Line } from "./edit-lines";
+import {
+  applyReview,
+  fromTiming,
+  joinLine,
+  retext,
+  reviewState,
+  splitLine,
+  toTiming,
+  unreviewed,
+  type Line,
+} from "./edit-lines";
 
 const draft = (): Line[] => {
   const lines: Line[] = [
@@ -84,5 +94,75 @@ describe("outside a draft", () => {
     const lines: Line[] = [{ t: 100, text: "abcd efgh" }];
     splitLine(lines, 0, lines[0].text, 5, false);
     expect(lines[1].t).toBeCloseTo(100 + (4 * 4) / 8, 6);
+  });
+});
+
+describe("word timings", () => {
+  const timed = (): Line[] => [
+    { t: 10, text: "I took a walk", words: [10, 10.4, 10.7, 11] },
+    { t: 13, text: "around the world", words: [13, 13.5, 13.9] },
+  ];
+
+  test("a split keeps each word's time, and the second half starts at its first word", () => {
+    const lines = timed();
+    splitLine(lines, 0, lines[0].text, "I took".length, false);
+    expect(lines[0]).toEqual({ t: 10, text: "I took", words: [10, 10.4] });
+    expect(lines[1]).toEqual({ t: 10.7, text: "a walk", words: [10.7, 11] });
+  });
+
+  test("a join keeps both lines' word times", () => {
+    const lines = timed();
+    joinLine(lines, 1, lines[1].text, false);
+    expect(lines[0].words).toEqual([10, 10.4, 10.7, 11, 13, 13.5, 13.9]);
+  });
+
+  test("a spelling fix keeps them; a different number of words drops them", () => {
+    const lines = timed();
+    retext(lines[0], "I took a wlak");
+    expect(lines[0].words).toHaveLength(4);
+    retext(lines[0], "I took a long walk");
+    expect(lines[0].words).toBeUndefined();
+  });
+
+  test("to and from a Lyricsfile's timing, with a pause between the lines", () => {
+    const lines: Line[] = [...timed()];
+    lines.splice(1, 0, { t: 12, text: "" });
+    const timing = toTiming(lines)!;
+    expect(timing[0]).toEqual({
+      text: "I took a walk",
+      start: 10,
+      end: 12,
+      words: [
+        { text: "I", start: 10 },
+        { text: "took", start: 10.4 },
+        { text: "a", start: 10.7 },
+        { text: "walk", start: 11 },
+      ],
+    });
+    expect(timing[1]).toEqual({ text: "", start: 12 });
+    expect(fromTiming(timing)).toEqual(lines);
+  });
+
+  test("an end with no empty line after it becomes one", () => {
+    const back = fromTiming([
+      { text: "One", start: 1, end: 2 },
+      { text: "Two", start: 5 },
+    ]);
+    expect(back.map((l) => [l.t, l.text])).toEqual([
+      [1, "One"],
+      [2, ""],
+      [5, "Two"],
+    ]);
+  });
+
+  test("no word times means the LRC says it all", () => {
+    expect(toTiming([{ t: 1, text: "One" }, { t: 2, text: "" }])).toBeNull();
+    // A line with an untimed word is published without words; the others keep theirs.
+    const t = toTiming([
+      { t: 1, text: "One two", words: [1, null] },
+      { t: 3, text: "Three", words: [3] },
+    ])!;
+    expect(t[0].words).toBeUndefined();
+    expect(t[1].words).toEqual([{ text: "Three", start: 3 }]);
   });
 });
