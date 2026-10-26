@@ -44,7 +44,20 @@ anywhere in it.
   unclear to be worth a draft, say so instead. The pencil opens it for review: read along as the
   playing line is marked, fix what's wrong (Enter splits a line, Backspace at its start joins it
   to the one above), and tick each line once it's right. Publish stays locked until every line
-  is ticked, and a review saved partway carries on next time.
+  is ticked, and a review saved partway carries on next time. Drafts come timed word by word,
+  from when the engine heard each word.
+- **Timeline for timing lyrics**: in the editor, the **Timeline** button shows the song's
+  waveform with the lyrics laid on it, and under it the words the speech engine heard. Each
+  line is a block: drag its left edge to where it starts and its right edge to where it ends.
+  Dragged short of the next line, the end becomes a pause, so the end of a verse clears the
+  display until the next one. The selected line's words each have a handle, to time it word by
+  word. Edges snap to the heard words (hold Alt to move freely); click to seek, drag the
+  background to scroll, Ctrl+wheel to zoom.
+- **Word-by-word lyrics**: where lyrics are timed word by word, from LRCLIB, a draft or the
+  timeline, the playing line lights each word as it is sung. They are published to LRCLIB as a
+  [Lyricsfile](https://github.com/tranxuanthang/lyricsfile), LRCLIB's format for word timing.
+  LRCLIB derives ordinary line-synced lyrics from it, so players that don't know word timing
+  still get the lines, pauses included.
 - **Flag lyrics as wrong**: press `F` while a song plays to flag the line being sung, without
   stopping anything (the line before comes too if this one has only just started). The flag
   button above the lyrics opens flag mode: click a line to flag it, shift-click to flag a

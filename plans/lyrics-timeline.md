@@ -76,22 +76,54 @@ Related: `plans/draft-lyrics.md` (draft review, which this makes faster),
 ## Plan / steps
 
 1. [x] Word-timing question: publish via Lyricsfile (above).
-2. [ ] Envelope + heard-words commands, tests.
-3. [ ] Timeline panel: waveform, playhead, seek, zoom, line blocks with start/end dragging.
-4. [ ] Lyricsfile in Rust (`serde_yaml`): parse what LRCLIB serves into `Lyrics.timing`
-   (lines with ends and words, as JSON to the frontend); build one from the editor's lines
-   for saving and publishing; validate by re-parsing it the way LRCLIB does before sending.
-5. [ ] Word lane in the timeline; drafts seeded with the engine's word times.
-6. [ ] Pane: word-by-word highlight where words are timed.
-7. [ ] README, plan.
+2. [x] Envelope + heard-words commands, tests (`704d5d9`).
+3. [x] Timeline panel: waveform, heard words, playhead, seek, pan, zoom, line blocks with
+   start/end dragging, word lane, snapping to heard words (`fad27c9`).
+4. [x] Lyricsfile in Rust (`app/src-tauri/src/lyricsfile.rs`, `serde_yaml` 0.9 like LRCLIB):
+   parse into `Lyrics.timing`; build for publishing, checked to read back (`1f9556c`). Editor
+   carries word times through edits, saves and publishes (`a7b5221`).
+5. [x] Drafts seeded with the engine's word times; editor merges timing onto the LRC's lines
+   (`d2034c2`).
+6. [x] Pane: word-by-word highlight (`f951fd8`).
+7. [x] README, plan.
+8. [ ] **First real use**: time a song on the timeline in the real app, and publish one with
+   word timings, then check LRCLIB serves both the Lyricsfile and line-level LRC. ← current
+9. [ ] Release — Cameron's call.
 
 ## Open questions for the user
 
-(none)
+1. Try it in the real app, and say when to release. The timeline is in the editor's bar.
+
+## Possible follow-ups (not started)
+
+- A tap-to-time pass for words (Space marks each word of the selected line as it is sung).
+- Undo for timeline drags.
+- The action bar wraps to two rows with the Timeline button added; it could be tidied.
 
 ## Findings / gotchas
 
-(none yet)
+- **LRCLIB writes a Lyricsfile for every record**, including ones published as LRC, with every
+  line's `end_ms` set to the next line's start (seen on *Blinding Lights*, 2026-10-26). Those
+  ends carry nothing; `lyricsfile::parse` drops any end at or past the next line's start, and
+  returns `None` unless something beyond LRC is left (words, or a real pause).
+- **Word-synced records are rare so far**: none of five popular songs searched had any.
+- **A pause written as `end_ms` + an empty line reads back as just the empty line**: the editor
+  holds pauses as empty lines anyway, so the redundant end is dropped on reading.
+- **LRCLIB rewrites the derived LRC as `[mm:ss.xx]text`** (no space): the editor's
+  post-publish check compares parsed lines, not text (`sameLrc`).
+- **A shared boundary has two handles on one pixel**: the left side grabs the earlier line's
+  end, the right side the next line's start. Before this, a line's end could never be dragged
+  back from the next line to open a pause (found in the browser check).
+- **The editor's lines come from the LRC, with timing laid over them** (`mergeTiming`), not
+  from the timing: the LRC keeps untimed lines and a draft's review is indexed by its lines.
+- **Envelope**: real songs are loud (Yellow: p10 156, p90 192 of 255 on a 60 dB scale), so the
+  panel stretches each song's range from its 10th percentile. Decoding a song took ~4 s here.
+- **UI checked in the browser stub** (see `plans/draft-lyrics.md`; data now also includes
+  `envelope-data.js`, made from the corpus's Kryptonite audio and its heard words): timeline
+  draws and follows; end-drag makes and removes a pause; word drag times words; Save carries
+  timing for every line; pane lights words as sung.
+- **Not yet exercised against LRCLIB itself**: the publish path is covered by unit tests that
+  parse our Lyricsfile the way LRCLIB does, but no real publish has been made.
 
 ## Things not to do
 
