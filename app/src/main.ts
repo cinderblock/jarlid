@@ -136,8 +136,85 @@ const INTRO_MIN = 2;
 let introEl: HTMLElement | null = null;
 let introBar: HTMLElement | null = null;
 
-function renderSyncedLyrics(lines: LyricLine[]) {
-  lyricsEl.innerHTML = "";
+// ---- one song into the next --------------------------------------------------
+// Wiping the pane for each new track sent it back to its top: a rewind, in a pane that
+// otherwise only ever moves down. Instead the last track's rows stay where they are, a
+// break naming the new track goes under them, and the new rows go under that, so the
+// scroll to the new first line carries on downward. The break is exactly as tall as the
+// pane's top padding, so once the old rows and the break have scrolled out of sight they
+// can be dropped, and the scroll moved back by their height, without anything on screen
+// moving: what's left is the layout the new track would have had on its own.
+/// `title|artist` of the track whose rows the pane holds; "" when there is nothing to
+/// carry on from (first paint, or the editor's rows).
+let paneSong = "";
+
+/// Empty the pane for `meta`'s rows. Returns whether the last track's rows were kept above.
+function clearPane(meta: { title: string; artist: string }): boolean {
+  const song = `${meta.title}|${meta.artist}`;
+  // A carried-over block still on screen is left alone: it is a track further back.
+  const rows = [...lyricsEl.children].filter((c) => !c.classList.contains("lyric-outgoing"));
+  const carry = !!paneSong && song !== paneSong && !lyricsEl.hidden && rows.length > 0;
+  paneSong = song;
+  if (!carry) {
+    rows.forEach((c) => c.remove());
+    return false;
+  }
+  const out = document.createElement("div");
+  out.className = "lyric-outgoing";
+  out.setAttribute("aria-hidden", "true");
+  for (const row of rows) {
+    // No longer a row of this track: the highlighter and the flags address rows by index.
+    row.removeAttribute("data-idx");
+    row.classList.remove("active");
+    out.appendChild(row);
+  }
+  const brk = document.createElement("div");
+  brk.className = "lyric-break";
+  const label = document.createElement("span");
+  label.textContent = meta.artist ? `${meta.title} · ${meta.artist}` : meta.title;
+  brk.appendChild(label);
+  out.appendChild(brk);
+  lyricsEl.appendChild(out);
+  return true;
+}
+
+/// Where the pane's own rows begin: below any carried-over blocks. Scrolled to here, the
+/// pane looks as it would with them gone.
+const songTop = () =>
+  [...lyricsEl.querySelectorAll<HTMLElement>(":scope > .lyric-outgoing")].reduce((h, o) => h + o.offsetHeight, 0);
+
+/// Drop carried-over blocks that have scrolled out of sight above, keeping the view still.
+function dropOutgoing() {
+  const top = lyricsEl.getBoundingClientRect().top;
+  const gone = [...lyricsEl.querySelectorAll<HTMLElement>(":scope > .lyric-outgoing")].filter(
+    (o) => o.getBoundingClientRect().bottom <= top
+  );
+  if (gone.length === 0) return;
+  const h = gone.reduce((sum, o) => sum + o.offsetHeight, 0);
+  // Read before removing: the shorter pane clamps scrollTop the moment they go.
+  const was = lyricsEl.scrollTop;
+  gone.forEach((o) => o.remove());
+  lyricsEl.scrollTo({ top: was - h, behavior: "instant" });
+  // The plain-lyrics glide works in the same coordinates.
+  plainPos = Math.max(0, plainPos - h);
+  if (plainTarget >= 0) plainTarget = Math.max(0, plainTarget - h);
+}
+// After the scroll has settled, so a smooth scroll in progress is not cut short.
+lyricsEl.addEventListener("scrollend", dropOutgoing);
+
+/// A one-line message in place of rows. Nothing drives the scroll for it, so a carry-over
+/// from the last track scrolls down to it here.
+function paintEmpty(text: string, meta: { title: string; artist: string }) {
+  const carried = clearPane(meta);
+  const div = document.createElement("div");
+  div.className = "line empty";
+  div.textContent = text;
+  lyricsEl.appendChild(div);
+  if (carried) lyricsEl.scrollTo({ top: songTop(), behavior: "smooth" });
+}
+
+function renderSyncedLyrics(lines: LyricLine[], meta: { title: string; artist: string }) {
+  clearPane(meta);
   stopPlainFollow();
   lyricsEl.classList.add("synced");
   introEl = introBar = null;
@@ -160,9 +237,9 @@ function renderSyncedLyrics(lines: LyricLine[]) {
   });
 }
 
-function renderPlainLyrics(lines: PaneLine[]) {
+function renderPlainLyrics(lines: PaneLine[], meta: { title: string; artist: string }) {
   lyricsEl.classList.remove("synced");
-  lyricsEl.innerHTML = "";
+  const carried = clearPane(meta);
   introEl = introBar = null;
   paneLines = lines;
   lines.forEach((ln, i) => {
@@ -173,9 +250,10 @@ function renderPlainLyrics(lines: PaneLine[]) {
     fillLine(div, ln);
     lyricsEl.appendChild(div);
   });
-  // A new song starts at its first verse, wherever the last one's pane was left.
+  // A new song starts at its first verse, wherever the last one's pane was left. Carried on
+  // from the last track, the follow glides down to it instead.
   stopPlainFollow();
-  lyricsEl.scrollTo({ top: 0, behavior: "instant" });
+  if (!carried) lyricsEl.scrollTo({ top: 0, behavior: "instant" });
 }
 
 // ---- two languages in one file ----------------------------------------------
@@ -242,12 +320,12 @@ lyricsDualBtn.addEventListener("click", () => {
   else localStorage.setItem(`dual:${currentKey}`, dualMode);
   refreshDualChip();
   // Redraw in place: the rows, their indexes and the highlight all stay put.
-  lyricsEl.querySelectorAll<HTMLElement>(".line").forEach((div, i) => {
+  lyricsEl.querySelectorAll<HTMLElement>(":scope > .line").forEach((div, i) => {
     const ln = paneLines[i];
     if (ln) fillLine(div, ln);
   });
   // Rows change height; keep the playing one centred.
-  lyricsEl.querySelector<HTMLElement>(".line.active")?.scrollIntoView({ block: "center", behavior: "smooth" });
+  lyricsEl.querySelector<HTMLElement>(":scope > .line.active")?.scrollIntoView({ block: "center", behavior: "smooth" });
 });
 attachTip(lyricsDualBtn, () => {
   const [a, b] = [langName(0), langName(1)];
@@ -297,14 +375,15 @@ function plainFraction(position: number, duration: number): number {
 function followPlainLyrics(position: number, duration: number) {
   if (lyricEditor.isEditing()) return;
   if (Date.now() - plainUserAt < PLAIN_HOLD_MS) return;
-  const lines = lyricsEl.querySelectorAll<HTMLElement>(".line.plain");
+  const lines = lyricsEl.querySelectorAll<HTMLElement>(":scope > .line.plain");
   if (lines.length === 0) return;
   const paneTop = lyricsEl.getBoundingClientRect().top;
   const first = lines[0].getBoundingClientRect().top - paneTop + lyricsEl.scrollTop;
   const last = lines[lines.length - 1].getBoundingClientRect().bottom - paneTop + lyricsEl.scrollTop;
   const want = first + plainFraction(position, duration) * (last - first) - lyricsEl.clientHeight / 2;
   const max = Math.max(0, lyricsEl.scrollHeight - lyricsEl.clientHeight);
-  plainTarget = Math.max(0, Math.min(max, want));
+  // Never back up into a carried-over track: this song begins below it.
+  plainTarget = Math.max(songTop(), Math.min(max, want));
   if (!plainRaf) {
     // The glide was idle, so the pane's real position is the truth — it may have been
     // scrolled by hand while we held off.
@@ -378,7 +457,7 @@ function highlightLine(position: number) {
 
   if (idx === activeLineIdx) return;
   activeLineIdx = idx;
-  const nodes = lyricsEl.querySelectorAll<HTMLElement>(".line");
+  const nodes = lyricsEl.querySelectorAll<HTMLElement>(":scope > .line");
   nodes.forEach((n) => {
     const i = Number(n.dataset.idx);
     n.classList.toggle("past", i < idx);
@@ -711,7 +790,7 @@ async function loadLyricsFor(
     syncedLines = null;
     introEl = introBar = null;
     stopPlainFollow();
-    lyricsEl.innerHTML = `<div class="line empty">Lyrics unavailable</div>`;
+    paintEmpty("Lyrics unavailable", meta);
     const delay = LYRICS_RETRY_DELAYS_MS[attempt];
     if (delay === undefined) {
       lyricsStatus.textContent = "Lyrics";
@@ -806,7 +885,7 @@ function paintLyrics(res: Lyrics, note: string) {
     const dual = detectDual(parsed);
     noteDual(dual);
     syncedLines = dual?.lines ?? parsed;
-    renderSyncedLyrics(syncedLines);
+    renderSyncedLyrics(syncedLines, lastMeta);
     lyricsStatus.textContent = `Synced lyrics${note}`;
     activeLineIdx = NO_LINE;
     highlightLine(lastPlayhead.position);
@@ -815,14 +894,14 @@ function paintLyrics(res: Lyrics, note: string) {
     const lines = res.plain.split(/\r?\n/).map((text) => ({ t: null, text }));
     const dual = detectDual(lines);
     noteDual(dual);
-    renderPlainLyrics(dual?.lines ?? lines);
+    renderPlainLyrics(dual?.lines ?? lines, lastMeta);
     lyricsStatus.textContent = `Lyrics${note}`;
   } else {
     syncedLines = null;
     introEl = introBar = null;
     stopPlainFollow();
     noteDual(null);
-    lyricsEl.innerHTML = `<div class="line empty">No lyrics found</div>`;
+    paintEmpty("No lyrics found", lastMeta);
     lyricsStatus.textContent = "Lyrics";
   }
 }
@@ -880,6 +959,8 @@ lyricsEditBtn.addEventListener("click", () => {
   // The editor shows each line as stored, both languages together; the chip means nothing there.
   lyricsDualBtn.hidden = true;
   const key = currentKey;
+  // The editor's rows are its own, with controls in them: nothing to carry into the next track.
+  paneSong = "";
   lyricEditor.begin({
     meta: lastMeta,
     lyrics: lastLyrics,

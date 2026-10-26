@@ -1173,7 +1173,9 @@ body.remote #remote-vol-wrap {
      padding is exactly that growth, so a full-width line still ends inside the
      pane once it is the one playing. */
   --line-grow: 1.02;
-  padding: 32vh calc((var(--line-grow) - 1) * 100%) 32vh 0;
+  /* The break between one track and the next (.lyric-break) is this tall too. */
+  --lyrics-pad: 32vh;
+  padding: var(--lyrics-pad) calc((var(--line-grow) - 1) * 100%) var(--lyrics-pad) 0;
   scroll-behavior: smooth;
   /* fade the top/bottom edges so lines ease in and out */
   -webkit-mask-image: linear-gradient(transparent, #000 14%, #000 86%, transparent);
@@ -1243,6 +1245,41 @@ body.remote #remote-vol-wrap {
 /* Once the words start, the countdown has said everything it has to say. */
 .lyric-intro.past {
   opacity: 0;
+}
+
+/* The last track's rows, kept above the new one's so the pane scrolls on down into it
+   rather than rewinding (see clearPane in main.ts). All of it is behind the playhead now. */
+.lyric-outgoing .line {
+  color: var(--dim);
+}
+.lyric-outgoing .lyric-intro {
+  opacity: 0;
+}
+/* Takes the place of the old track's bottom padding, at the same height, so dropping the
+   old rows once they are out of sight leaves the view exactly where it was. The name of
+   the new track sits at its foot, just above the new first line. */
+.lyric-break {
+  height: var(--lyrics-pad);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding-bottom: 18px;
+  box-sizing: border-box;
+}
+.lyric-break span {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.7rem;
+  color: var(--faint);
+}
+.lyric-break span::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(var(--wash), 0.14);
 }
 
 /* ---- history detail modal ---- */
@@ -1455,7 +1492,14 @@ body.remote #remote-vol-wrap {
     margin-inline: auto;
   }
   #lyrics {
-    padding: 22vh 0;
+    --lyrics-pad: 22vh;
+    padding: var(--lyrics-pad) 0;
+  }
+  .lyric-break span::before {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: rgba(var(--wash), 0.14);
   }
   .line.active {
     transform: none;
