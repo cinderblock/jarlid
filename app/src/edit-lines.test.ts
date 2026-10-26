@@ -1,13 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import {
   applyReview,
+  endsInPause,
   fromTiming,
+  lineEnd,
   joinLine,
   retext,
   reviewState,
+  setEnd,
+  setStart,
+  setWordStart,
   splitLine,
   toTiming,
   unreviewed,
+  wordStarts,
   type Line,
 } from "./edit-lines";
 
@@ -164,5 +170,61 @@ describe("word timings", () => {
     ])!;
     expect(t[0].words).toBeUndefined();
     expect(t[1].words).toEqual([{ text: "Three", start: 3 }]);
+  });
+});
+
+describe("the timeline's edits", () => {
+  const song = (): Line[] => [
+    { t: 10, text: "I took a walk" },
+    { t: 14, text: "around the world" },
+    { t: 20, text: "" },
+    { t: 30, text: "to ease my mind" },
+  ];
+
+  test("a start moves only between its neighbours", () => {
+    const lines = song();
+    expect(setStart(lines, 1, 12)).toBe(12);
+    expect(setStart(lines, 1, 5)).toBeCloseTo(10.05, 6);
+    expect(setStart(lines, 1, 25)).toBeCloseTo(19.95, 6);
+  });
+
+  test("dragging an end before the next line makes a pause; up to it removes one", () => {
+    const lines = song();
+    expect(endsInPause(lines, 0)).toBe(false);
+    expect(setEnd(lines, 0, 12.5)).toBe(1);
+    expect(lines[1]).toEqual({ t: 12.5, text: "" });
+    expect(lineEnd(lines, 0, 999)).toBe(12.5);
+    // Moving it again moves the same pause, not a second one.
+    expect(setEnd(lines, 0, 13)).toBe(1);
+    expect(lines).toHaveLength(5);
+    // Up against the next line: no pause any more.
+    expect(setEnd(lines, 0, 14)).toBe(-1);
+    expect(lines.map((l) => l.text)).toEqual(song().map((l) => l.text));
+  });
+
+  test("an existing pause moves, bounded by the line after it", () => {
+    const lines = song();
+    expect(setEnd(lines, 1, 18)).toBe(2);
+    expect(lines[2].t).toBe(18);
+    expect(setEnd(lines, 1, 40)).toBe(-1);
+    expect(lines.some((l, i) => i > 0 && l.text === "" && l.t === 20)).toBe(false);
+  });
+
+  test("untimed words share the line evenly; dragging one keeps what was shown", () => {
+    const lines = song();
+    expect(wordStarts(lines, 0, 999)).toEqual([10, 11, 12, 13]);
+    setWordStart(lines, 0, 2, 12.5, 999);
+    expect(lines[0].words).toEqual([10, 11, 12.5, 13]);
+    // Not past the next word.
+    expect(setWordStart(lines, 0, 2, 20, 999)).toBeCloseTo(12.95, 6);
+    // Word 0 is the line's start.
+    setWordStart(lines, 0, 0, 9, 999);
+    expect(lines[0].t).toBe(9);
+    expect(lines[0].words![0]).toBe(9);
+  });
+
+  test("words between timed ones are spread between them", () => {
+    const lines: Line[] = [{ t: 0, text: "a b c d e", words: [0, null, null, 6, null] }, { t: 10, text: "x" }];
+    expect(wordStarts(lines, 0, 99)).toEqual([0, 2, 4, 6, 8]);
   });
 });

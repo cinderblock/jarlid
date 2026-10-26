@@ -20,6 +20,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import * as confirm from "./lyric-confirm";
+import * as timeline from "./lyric-timeline";
 import { publicationFor } from "./lyric-publish";
 import { fillMarked } from "./draft-marks";
 import {
@@ -112,6 +113,7 @@ const revertBtn = $<HTMLButtonElement>("lyric-revert");
 const publishBtn = $<HTMLButtonElement>("lyric-publish");
 const flagBtn = $<HTMLButtonElement>("lyric-flag");
 const doneBtn = $<HTMLButtonElement>("lyric-done");
+const timelineBtn = $<HTMLButtonElement>("lyric-timeline-btn");
 
 let ctx: EditorContext | null = null;
 let lines: Line[] = [];
@@ -119,6 +121,8 @@ let editing = false;
 /// The lyrics are a draft (see `Lyrics.draft`): every line carries a ✓ to check it off, and
 /// Publish waits until all of them are.
 let reviewing = false;
+/// The line selected in the list and on the timeline, or -1.
+let selected = -1;
 /// The line the next mark lands on, during a timestamp pass.
 let cursor = 0;
 let stamping = false;
@@ -182,6 +186,8 @@ export function begin(context: EditorContext) {
     );
   }
   followTimer = window.setInterval(followPlayhead, 250);
+  selected = -1;
+  if (localStorage.getItem(TIMELINE_KEY) === "open") openTimeline();
 }
 
 /// Take `l` as the lines to edit, with a draft's review state when it is one.
@@ -202,6 +208,7 @@ export function end() {
   editing = false;
   stamping = false;
   window.clearInterval(followTimer);
+  timeline.close();
   nowRow = -1;
   lyricsEl.classList.remove("editing", "stamping");
   bar.hidden = true;
@@ -258,6 +265,7 @@ function render() {
     if (isBlank(line)) row.classList.add("blank");
     if (line.t !== null) row.classList.add("timed");
     if (i === nowRow) row.classList.add("now");
+    if (i === selected) row.classList.add("selected");
     if (reviewing) row.classList.add("draft");
 
     const time = document.createElement("button");
@@ -281,6 +289,7 @@ function render() {
     });
     text.addEventListener("paste", (e) => onPaste(e, i));
     text.addEventListener("keydown", (e) => onLineKey(e, i, text));
+    text.addEventListener("focus", () => selectLine(i, false));
 
     const check = document.createElement("button");
     check.className = "ln-check";
@@ -318,6 +327,55 @@ function reviewButton(line: Line, i: number, row: HTMLElement) {
   });
   paint();
   return ok;
+}
+
+// ---- the timeline -----------------------------------------------------------
+// The song's waveform with the lines laid on it (lyric-timeline.ts). Its edits go straight
+// into `lines`; the list is repainted to match.
+
+const TIMELINE_KEY = "lyrics.timeline";
+
+function openTimeline() {
+  timelineBtn.classList.add("on");
+  timelineBtn.setAttribute("aria-pressed", "true");
+  timeline.open({
+    meta: () => ctx!.meta,
+    lines: () => lines,
+    selected: () => selected,
+    select: (i) => selectLine(i, true),
+    changed: () => {
+      markDirty();
+      render();
+    },
+    playhead: () => ctx!.playhead(),
+    duration: () => trackDuration(),
+    canSeek: () => !!ctx?.canTransport && !stale,
+    seek: (t) => ctx?.seek(t),
+  });
+}
+
+timelineBtn.addEventListener("click", () => {
+  if (timeline.isOpen()) {
+    timeline.close();
+    timelineBtn.classList.remove("on");
+    timelineBtn.setAttribute("aria-pressed", "false");
+    localStorage.setItem(TIMELINE_KEY, "closed");
+  } else {
+    openTimeline();
+    localStorage.setItem(TIMELINE_KEY, "open");
+  }
+});
+
+/// Select line `i` in the list and on the timeline. From the timeline, the list scrolls to the
+/// row; from the list, the timeline scrolls to the block.
+function selectLine(i: number, fromTimeline: boolean) {
+  if (i === selected) return;
+  lyricsEl.querySelector(`.line[data-idx="${selected}"]`)?.classList.remove("selected");
+  selected = i;
+  const row = lyricsEl.querySelector<HTMLElement>(`.line[data-idx="${i}"]`);
+  row?.classList.add("selected");
+  if (fromTimeline) row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  else timeline.reveal(i);
 }
 
 // ---- following the song ----------------------------------------------------

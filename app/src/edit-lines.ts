@@ -172,3 +172,124 @@ export function toTiming(lines: Line[]): TimedLine[] | null {
     return out;
   });
 }
+
+// ---- the timeline's edits -------------------------------------------------------------------
+// What dragging on the timeline does to the lines. Every move is clamped so lines stay in
+// order: a line can't start before the one above it or after the one below.
+
+/// The smallest gap kept between neighbouring starts, seconds.
+const MIN_GAP = 0.05;
+
+/// The nearest timed line after `i` (blank or not), or -1.
+const nextTimed = (lines: Line[], i: number) =>
+  lines.findIndex((l, k) => k > i && l.t !== null);
+/// The nearest timed line before `i`, or -1.
+const prevTimed = (lines: Line[], i: number) => {
+  for (let k = i - 1; k >= 0; k--) if (lines[k].t !== null) return k;
+  return -1;
+};
+
+/// Where line `i` stops showing: the next timed line's start, which is its pause (an empty
+/// line) when it has one. `fallback` past the last line.
+export function lineEnd(lines: Line[], i: number, fallback: number): number {
+  const n = nextTimed(lines, i);
+  return n >= 0 ? lines[n].t! : fallback;
+}
+
+/// Whether line `i` ends in a pause: the next timed line is an empty one.
+export function endsInPause(lines: Line[], i: number) {
+  const n = nextTimed(lines, i);
+  return n >= 0 && isBlank(lines[n]);
+}
+
+/// Each word's start as the timeline draws it: its own time, or for words not yet timed, an
+/// even share of the time between the timed words around it (or the line's start and end).
+export function wordStarts(lines: Line[], i: number, fallbackEnd: number): number[] {
+  const line = lines[i];
+  const n = wordsOf(line.text).length;
+  if (!n || line.t === null) return [];
+  const own = line.words?.length === n ? line.words : Array<number | null>(n).fill(null);
+  const end = lineEnd(lines, i, fallbackEnd);
+  const known = own.map((w, k) => (k === 0 ? (w ?? line.t!) : w));
+  const out: number[] = [];
+  for (let k = 0; k < n; k++) {
+    if (known[k] !== null) {
+      out.push(known[k]!);
+      continue;
+    }
+    let j = k + 1;
+    while (j < n && known[j] === null) j++;
+    const from = out[k - 1];
+    const to = j < n ? known[j]! : end;
+    // An even share: the untimed run k..j-1 splits the time between its timed neighbours.
+    out.push(from + (to - from) / (j - k + 1));
+    known[k] = out[k];
+  }
+  return out;
+}
+
+/// Move line `i`'s start to `t`, between its neighbours. Its first word moves with it.
+export function setStart(lines: Line[], i: number, t: number): number {
+  const p = prevTimed(lines, i);
+  const n = nextTimed(lines, i);
+  const lo = p >= 0 ? lines[p].t! + MIN_GAP : 0;
+  let hi = n >= 0 ? lines[n].t! - MIN_GAP : Infinity;
+  // Not past its own second word either.
+  const w = lines[i].words;
+  if (w && w.length > 1 && w[1] !== null) hi = Math.min(hi, w[1] - MIN_GAP);
+  const at = clamp(t, lo, hi);
+  lines[i].t = at;
+  if (w?.length) w[0] = at;
+  return at;
+}
+
+/// Move line `i`'s end to `t`. An end before the next line starts is a pause: the empty line
+/// after it moves, or one is put there. Dragged up to the next line, the pause goes. Returns
+/// the index of the pause line, or -1 if there is none now.
+export function setEnd(lines: Line[], i: number, t: number): number {
+  const line = lines[i];
+  if (line.t === null) return -1;
+  const n = nextTimed(lines, i);
+  // The line whose start bounds the pause: past an existing pause, the one after it.
+  const pause = n >= 0 && isBlank(lines[n]) ? n : -1;
+  const after = pause >= 0 ? nextTimed(lines, pause) : n;
+  const timedWords = line.words?.filter((w): w is number => w !== null) ?? [];
+  const lastWord = timedWords.length ? timedWords[timedWords.length - 1] : line.t;
+  const lo = lastWord + MIN_GAP * 2;
+  const hi = after >= 0 ? lines[after].t! : Infinity;
+  const at = clamp(t, lo, hi);
+  if (after >= 0 && at > hi - MIN_GAP) {
+    if (pause >= 0) lines.splice(pause, 1);
+    return -1;
+  }
+  if (pause >= 0) {
+    lines[pause].t = at;
+    return pause;
+  }
+  lines.splice(i + 1, 0, { t: at, text: "" });
+  return i + 1;
+}
+
+/// Move word `k` of line `i` to `t`, between its neighbours. Untimed words around it take the
+/// times the timeline shows for them, so what was on screen is what is kept; word 0 is the
+/// line's start, so it moves the line.
+export function setWordStart(
+  lines: Line[],
+  i: number,
+  k: number,
+  t: number,
+  fallbackEnd: number
+): number {
+  if (k === 0) return setStart(lines, i, t);
+  const shown = wordStarts(lines, i, fallbackEnd);
+  const line = lines[i];
+  line.words = shown.slice();
+  const end = lineEnd(lines, i, fallbackEnd);
+  const lo = shown[k - 1] + MIN_GAP;
+  const hi = (k + 1 < shown.length ? shown[k + 1] : end) - MIN_GAP;
+  const at = clamp(t, lo, hi);
+  line.words[k] = at;
+  return at;
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));

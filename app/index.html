@@ -669,6 +669,11 @@
 
         <!-- Edit mode's action bar. Lives in the pane rather than in a dialog: fixing a
              line is meant to happen while the song plays, not in a layer on top of it. -->
+        <!-- Edit mode's timeline: the song's waveform with the lines laid on it, their edges
+             dragged into place (lyric-timeline.ts). Shown from the bar's Timeline button. -->
+        <div id="lyric-timeline" hidden>
+          <canvas id="lyric-timeline-canvas"></canvas>
+        </div>
         <div id="lyric-bar" hidden>
           <div id="lyric-bar-status"></div>
           <label id="lyric-autocheck-wrap" class="lyric-check" hidden>
@@ -676,6 +681,7 @@
             <span>Check after each change</span>
           </label>
           <button id="lyric-rewind" class="btn" hidden>Back 5s</button>
+          <button id="lyric-timeline-btn" class="btn" aria-pressed="false">Timeline</button>
           <button id="lyric-timestamp" class="btn">Add timings…</button>
           <button id="lyric-flag" class="btn">Report…</button>
           <button id="lyric-revert" class="btn" hidden>Discard my edit</button>

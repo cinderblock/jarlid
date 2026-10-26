@@ -2913,6 +2913,27 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
   display: none;
 }
 
+/* ---- the timeline --------------------------------------------------------------
+   Under the line list in edit mode: the song's waveform, what the speech engine heard,
+   the lines as blocks and the selected line's words (lyric-timeline.ts draws it all). */
+#lyric-timeline {
+  flex: none;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(var(--wash), 0.1);
+  touch-action: none;
+}
+#lyric-timeline-canvas {
+  display: block;
+}
+#lyrics.editing .line.selected {
+  background: rgba(var(--wash), 0.08);
+}
+#lyric-bar .btn.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 /* A timing pass is a rhythm game: the only thing that matters is knowing which
    line the next press lands on, so the cursor is loud and everything else is
    quiet. */
