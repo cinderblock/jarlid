@@ -11,6 +11,7 @@ mod native;
 mod settings;
 #[cfg(windows)]
 mod thumbbar;
+mod timeline;
 mod updates;
 mod upnp;
 
@@ -570,6 +571,7 @@ pub fn run() {
         .manage(settings::SettingsCtl::default())
         .manage(diagnostics::Diagnostics::default())
         .manage(autosync::AutoSyncCtl::default())
+        .manage(timeline::TimelineCtl::default())
         // Remember main-window position/size across launches.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
@@ -619,6 +621,8 @@ pub fn run() {
             autosync::autosync_status,
             autosync::autosync_install,
             autosync::autosync_remove,
+            timeline::track_envelope,
+            timeline::heard_words,
             player_cmd,
             remote_cmd,
             remote_presets,

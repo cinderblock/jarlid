@@ -819,6 +819,24 @@ pub fn stored_draft(app: &AppHandle, key: &str) -> Option<Result<Draft, String>>
     })
 }
 
+/// Everything the engine heard in a track, as `(text, start, end, p)`, if it has heard it: from
+/// its draft, or from the timings it made for LRCLIB's words (which kept no confidence, so `p`
+/// is 1). For the lyric timeline, which shows it under the waveform.
+pub fn heard(app: &AppHandle, key: &str) -> Option<Vec<(String, f64, f64, f32)>> {
+    if let Some(d) = current_draft(app, key).filter(|d| !d.heard.is_empty()) {
+        return Some(d.heard);
+    }
+    // Whatever words it was timed for: what was heard doesn't depend on them.
+    let path = crate::lyrics::hashed_file(results_dir(app)?, key)?;
+    let s: Stored = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    (!s.heard.is_empty()).then(|| {
+        s.heard
+            .into_iter()
+            .map(|(text, start, end)| (text, start, end, 1.0))
+            .collect()
+    })
+}
+
 fn store_draft(app: &AppHandle, key: &str, draft: &StoredDraft) {
     let Some(path) = drafts_dir(app).and_then(|d| crate::lyrics::hashed_file(d, key)) else {
         return;
@@ -835,22 +853,9 @@ fn work_dir(app: &AppHandle) -> Option<PathBuf> {
     Some(app.path().app_cache_dir().ok()?.join("autosync-work"))
 }
 
-/// Decode `src` (a file or a URL) to the 16 kHz mono 16-bit WAV the sidecar reads. Media
-/// Foundation does the resampling.
+/// Decode `src` (a file or a URL) to the 16 kHz mono 16-bit WAV the sidecar reads.
 fn decode_to_wav(src: &str, wav: &Path) -> Result<(), String> {
-    let want = audio::Format {
-        sample_rate: 16_000,
-        channels: 1,
-        bits_per_sample: 16,
-    };
-    let mut decoder = audio::Decoder::open_at(src, Some(want)).map_err(|e| e.to_string())?;
-    if decoder.format() != want {
-        return Err(format!(
-            "decoder gave {:?}, not 16 kHz mono",
-            decoder.format()
-        ));
-    }
-    let pcm = decoder.decode_all().map_err(|e| e.to_string())?;
+    let pcm = decode_16k(src)?;
     let mut out = Vec::with_capacity(44 + pcm.len());
     let len = pcm.len() as u32;
     out.extend_from_slice(b"RIFF");
@@ -867,6 +872,24 @@ fn decode_to_wav(src: &str, wav: &Path) -> Result<(), String> {
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(&pcm);
     std::fs::write(wav, out).map_err(|e| e.to_string())
+}
+
+/// The whole of `src` (a file or a URL) as 16 kHz mono 16-bit little-endian PCM. What the speech
+/// engine hears, and what the lyric timeline draws. Media Foundation does the resampling.
+pub(crate) fn decode_16k(src: &str) -> Result<Vec<u8>, String> {
+    let want = audio::Format {
+        sample_rate: 16_000,
+        channels: 1,
+        bits_per_sample: 16,
+    };
+    let mut decoder = audio::Decoder::open_at(src, Some(want)).map_err(|e| e.to_string())?;
+    if decoder.format() != want {
+        return Err(format!(
+            "decoder gave {:?}, not 16 kHz mono",
+            decoder.format()
+        ));
+    }
+    decoder.decode_all().map_err(|e| e.to_string())
 }
 
 /// A file name for a Pandora id like `TR:12345`.
