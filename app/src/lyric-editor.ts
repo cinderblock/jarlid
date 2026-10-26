@@ -21,6 +21,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import * as confirm from "./lyric-confirm";
 import { publicationFor } from "./lyric-publish";
+import { fillMarked } from "./draft-marks";
+import {
+  applyReview,
+  isBlank,
+  joinLine,
+  reviewState,
+  splitLine,
+  unreviewed as unreviewedIn,
+  type Line,
+} from "./edit-lines";
 
 export interface Lyrics {
   synced: string | null;
@@ -42,6 +52,12 @@ export interface Lyrics {
   /// Set when `synced` was worked out on this machine from LRCLIB's plain lyrics, because
   /// LRCLIB had no timings (see `autosync` in Rust). Never published unless the listener does.
   auto?: boolean;
+  /// Set while these lyrics are a draft the speech engine wrote, for a song LRCLIB has nothing
+  /// for, and not every line has been reviewed. Kept in a saved edit until the review is done;
+  /// until then it can't be published. Indexed by line, blank lines included.
+  draft?: { doubt: number[][]; reviewed: boolean[] } | null;
+  /// Why there is no draft for a song LRCLIB has nothing for.
+  noDraft?: "noSinging" | "unclear" | null;
 }
 
 export interface EditorContext {
@@ -90,14 +106,12 @@ const publishBtn = $<HTMLButtonElement>("lyric-publish");
 const flagBtn = $<HTMLButtonElement>("lyric-flag");
 const doneBtn = $<HTMLButtonElement>("lyric-done");
 
-interface Line {
-  t: number | null;
-  text: string;
-}
-
 let ctx: EditorContext | null = null;
 let lines: Line[] = [];
 let editing = false;
+/// The lyrics are a draft (see `Lyrics.draft`): every line carries a ✓ to check it off, and
+/// Publish waits until all of them are.
+let reviewing = false;
 /// The line the next mark lands on, during a timestamp pass.
 let cursor = 0;
 let stamping = false;
@@ -132,10 +146,6 @@ const serialize = (ls: Line[]) =>
 
 const anyTimed = () => lines.some((l) => l.t !== null);
 
-/// Blank lines are the gaps between verses. They have no start of their own to hear, so
-/// a timing pass steps over them.
-const isBlank = (l: Line) => !l.text.trim();
-
 /// The first line at or after `from` that a timing pass should land on, or -1.
 const nextLyric = (from: number) => {
   for (let i = Math.max(0, from); i < lines.length; i++) if (!isBlank(lines[i])) return i;
@@ -153,18 +163,34 @@ export function begin(context: EditorContext) {
   stamping = false;
   cursor = 0;
 
-  const src = context.lyrics.synced || context.lyrics.plain || "";
-  lines = src ? parseLines(src) : [{ t: null, text: "" }];
+  load(context.lyrics);
 
   lyricsEl.classList.add("editing");
   bar.hidden = false;
   render();
   refreshBar();
+  if (reviewing) {
+    setStatus(
+      "A draft the speech engine wrote. Listen along, fix what's wrong, and ✓ each line once it's right. Underlined words are the ones it wasn't sure of."
+    );
+  }
+  followTimer = window.setInterval(followPlayhead, 250);
+}
+
+/// Take `l` as the lines to edit, with a draft's review state when it is one.
+function load(l: Lyrics) {
+  const src = l.synced || l.plain || "";
+  lines = src ? parseLines(src) : [{ t: null, text: "" }];
+  const draft = l.draft;
+  reviewing = !!draft;
+  if (draft) applyReview(lines, draft);
 }
 
 export function end() {
   editing = false;
   stamping = false;
+  window.clearInterval(followTimer);
+  nowRow = -1;
   lyricsEl.classList.remove("editing", "stamping");
   bar.hidden = true;
   confirm.cancel();
@@ -219,6 +245,8 @@ function render() {
     if (stamping && i === cursor) row.classList.add("cursor");
     if (isBlank(line)) row.classList.add("blank");
     if (line.t !== null) row.classList.add("timed");
+    if (i === nowRow) row.classList.add("now");
+    if (reviewing) row.classList.add("draft");
 
     const time = document.createElement("button");
     time.className = "ln-time";
@@ -229,9 +257,14 @@ function render() {
     text.className = "ln-text";
     text.contentEditable = "plaintext-only";
     text.spellcheck = false;
-    text.textContent = line.text;
+    fillMarked(text, line.text, line.doubt ?? []);
     text.addEventListener("input", () => {
       lines[i].text = text.textContent ?? "";
+      // The reviewer has been at this line: the engine's doubts about it are answered.
+      if (lines[i].doubt?.length) {
+        lines[i].doubt = [];
+        row.classList.add("touched");
+      }
       markDirty();
     });
     text.addEventListener("paste", (e) => onPaste(e, i));
@@ -244,8 +277,67 @@ function render() {
     check.addEventListener("click", () => checkLine(i));
 
     row.append(time, text, check);
+    if (reviewing) row.append(reviewButton(line, i, row));
     lyricsEl.appendChild(row);
   });
+}
+
+/// A draft line's ✓: pressed once the line's words and start are right. A line in timed
+/// lyrics needs a start before it can be checked, or it would vanish from the synced copy.
+function reviewButton(line: Line, i: number, row: HTMLElement) {
+  const ok = document.createElement("button");
+  ok.className = "ln-ok";
+  ok.textContent = "✓";
+  if (isBlank(line)) {
+    ok.disabled = true;
+    ok.style.visibility = "hidden";
+    return ok;
+  }
+  const paint = () => {
+    row.classList.toggle("reviewed", !!lines[i].ok);
+    ok.setAttribute("aria-pressed", String(!!lines[i].ok));
+    ok.setAttribute("aria-label", lines[i].ok ? "Reviewed — undo" : "Mark this line reviewed");
+  };
+  ok.disabled = line.t === null && anyTimed();
+  ok.addEventListener("click", () => {
+    lines[i].ok = !lines[i].ok;
+    paint();
+    markDirty();
+  });
+  paint();
+  return ok;
+}
+
+// ---- following the song ----------------------------------------------------
+// Reviewing is reading along: the row now playing is marked, and kept in view unless the
+// reviewer is busy in a line. A timing pass has its own cursor and needs none of this.
+
+let followTimer = 0;
+/// The row marked as playing, or -1.
+let nowRow = -1;
+
+function followPlayhead() {
+  if (!editing || !ctx) return;
+  let at = -1;
+  // Once playback has moved to another song, its playhead says nothing about these lines.
+  if (!stamping && !stale) {
+    const position = ctx.playhead().position;
+    // Mid-edit, times needn't be in order: the latest start already passed wins.
+    let best = -Infinity;
+    lines.forEach((l, i) => {
+      if (l.t !== null && !isBlank(l) && l.t <= position && l.t >= best) {
+        best = l.t;
+        at = i;
+      }
+    });
+  }
+  if (at === nowRow) return;
+  lyricsEl.querySelector(`.line[data-idx="${nowRow}"]`)?.classList.remove("now");
+  nowRow = at;
+  const row = lyricsEl.querySelector<HTMLElement>(`.line[data-idx="${at}"]`);
+  row?.classList.add("now");
+  const typing = (document.activeElement as HTMLElement | null)?.isContentEditable;
+  if (row && reviewing && !typing) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 function focusLine(i: number, toEnd = true) {
@@ -262,18 +354,29 @@ function focusLine(i: number, toEnd = true) {
 
 // ---- line editing ---------------------------------------------------------
 
-/// Enter opens a new line below, Backspace on an empty one removes it. This is what
-/// replaces the old full-page textarea: adding and removing lines has to be possible
-/// without a separate editor, or "no lyrics found" is a dead end.
+/// Enter splits the line at the caret (at the end, that opens a new line below), Backspace
+/// on an empty one removes it, and Backspace at the start of one joins it to the line above.
+/// This is what replaces the old full-page textarea: adding and removing lines has to be
+/// possible without a separate editor, or "no lyrics found" is a dead end — and a draft's
+/// lines are often broken in the wrong place.
 function onLineKey(e: KeyboardEvent, i: number, el: HTMLElement) {
+  const text = el.textContent ?? "";
   if (e.key === "Enter") {
     e.preventDefault();
-    lines[i].text = el.textContent ?? "";
-    lines.splice(i + 1, 0, { t: null, text: "" });
+    const at = caretOffset(el) ?? text.length;
+    splitLine(lines, i, text, at, reviewing);
+    if (cursor > i) cursor++;
     markDirty();
     render();
-    focusLine(i + 1);
-  } else if (e.key === "Backspace" && !el.textContent && lines.length > 1) {
+    focusLine(i + 1, false);
+  } else if (e.key === "Backspace" && text && i > 0 && caretOffset(el) === 0) {
+    e.preventDefault();
+    const at = joinLine(lines, i, text, reviewing);
+    if (cursor >= i) cursor--;
+    markDirty();
+    render();
+    focusLineAt(i - 1, at);
+  } else if (e.key === "Backspace" && !text && lines.length > 1) {
     e.preventDefault();
     lines.splice(i, 1);
     if (cursor > i) cursor--;
@@ -281,6 +384,36 @@ function onLineKey(e: KeyboardEvent, i: number, el: HTMLElement) {
     render();
     focusLine(Math.max(0, i - 1));
   }
+}
+
+/// Characters before the caret in `el`, or null without a caret in it.
+function caretOffset(el: HTMLElement): number | null {
+  const sel = getSelection();
+  if (!sel?.rangeCount || !sel.isCollapsed) return null;
+  const range = sel.getRangeAt(0);
+  if (!el.contains(range.startContainer)) return null;
+  const before = document.createRange();
+  before.selectNodeContents(el);
+  before.setEnd(range.startContainer, range.startOffset);
+  return before.toString().length;
+}
+
+/// Focus line `i` with the caret `at` characters in.
+function focusLineAt(i: number, at: number) {
+  const el = lyricsEl.querySelector<HTMLElement>(`.line[data-idx="${i}"] .ln-text`);
+  if (!el) return;
+  el.focus();
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let left = at;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const len = node.textContent?.length ?? 0;
+    if (left <= len) {
+      getSelection()?.collapse(node, left);
+      return;
+    }
+    left -= len;
+  }
+  focusLine(i);
 }
 
 /// Pasting a whole song into one line splits it across lines rather than jamming it into
@@ -463,8 +596,21 @@ function refreshBar() {
   revertBtn.hidden = !ctx?.lyrics.overridden;
   revertBtn.disabled = busy;
   flagBtn.disabled = busy || !ctx?.lyrics.id;
-  publishBtn.disabled = busy || !publication();
+  // A draft goes out only once a person has checked every line of it.
+  const left = unreviewed();
+  publishBtn.disabled = busy || !publication() || left > 0;
+  publishBtn.textContent = left
+    ? `${left} ${left === 1 ? "line" : "lines"} left to review`
+    : PUBLISH_LABEL;
 }
+
+const PUBLISH_LABEL = publishBtn.textContent;
+
+/// Lines of a draft with words that nobody has checked yet.
+const unreviewed = () => (reviewing ? unreviewedIn(lines) : 0);
+
+/// What a saved edit records of the review (see `reviewState`).
+const draftState = (): Lyrics["draft"] => (reviewing ? reviewState(lines) : null);
 
 function setBusy(on: boolean) {
   busy = on;
@@ -496,7 +642,7 @@ function edited() {
 async function saveOverride(): Promise<Lyrics> {
   const saved = await invoke<Lyrics>("save_lyrics_override", {
     ...keyArgs(),
-    lyrics: { ...ctx!.lyrics, ...edited(), overridden: true },
+    lyrics: { ...ctx!.lyrics, ...edited(), draft: draftState(), overridden: true },
   });
   ctx!.lyrics = saved;
   ctx!.onApplied(saved);
@@ -515,7 +661,13 @@ saveBtn.addEventListener("click", async () => {
   setBusy(true);
   try {
     await saveOverride();
-    setStatus("Saved. These lyrics are yours until you discard them.", "ok");
+    const left = unreviewed();
+    setStatus(
+      left
+        ? `Saved, with ${left} ${left === 1 ? "line" : "lines"} still to review. The review carries on from here next time.`
+        : "Saved. These lyrics are yours until you discard them.",
+      "ok"
+    );
   } catch (e) {
     setStatus(String(e), "err");
   } finally {
@@ -534,12 +686,16 @@ revertBtn.addEventListener("click", async () => {
     });
     ctx.lyrics = fresh;
     ctx.onApplied(fresh);
-    lines = parseLines(fresh.synced || fresh.plain || "");
-    if (!lines.length) lines = [{ t: null, text: "" }];
+    load(fresh);
     dirty = false;
     render();
     refreshBar();
-    setStatus("Your edit is gone; this is what LRCLIB serves.", "ok");
+    setStatus(
+      fresh.draft
+        ? "Your edit is gone; this is the speech engine's draft again."
+        : "Your edit is gone; this is what LRCLIB serves.",
+      "ok"
+    );
   } catch (e) {
     setStatus(String(e), "err");
   } finally {

@@ -5,6 +5,10 @@
 //! is kept on this machine and shown as "auto-synced", and the listener can review it in the
 //! timing editor and publish it to LRCLIB from there. See `plans/auto-synced-lyrics.md`.
 //!
+//! **Drafts.** When LRCLIB has no words at all, what the model heard *is* the lyrics: a draft,
+//! shown as one, for the listener to review line by line before it can be published. See
+//! `plans/draft-lyrics.md`.
+//!
 //! **When.** The engine downloads the next song whole while the current one plays (into the song
 //! cache, or a transient one when that is off) and says so with `NextDownloaded`. That is the
 //! moment to analyse it: the bytes it reads are the bytes that will play, and a typical song
@@ -225,7 +229,7 @@ async fn ensure(app: AppHandle, track: pandora::Track, source: Source) {
         }
         jobs.insert(track.pandora_id.clone(), ());
     }
-    let result = run(&app, &installed, &track, source, setting.gpu).await;
+    let result = run(&app, &installed, &track, source, &setting).await;
     let ctl = app.state::<AutoSyncCtl>();
     ctl.jobs.lock().unwrap().remove(&track.pandora_id);
     *ctl.last_used.lock().unwrap() = Some(Instant::now());
@@ -234,8 +238,16 @@ async fn ensure(app: AppHandle, track: pandora::Track, source: Source) {
             "[autosync] {} — {}: {e}",
             track.artist_name, track.song_title
         );
-        emit_lines(&app, &track, None, 0, 0, true, false);
+        emit_lines(&app, &track, Shown::default(), 0, 0, true, false);
     }
+}
+
+/// What a job is for.
+enum Job {
+    /// Time these words (LRCLIB's plain lyrics).
+    Align(String),
+    /// LRCLIB has no words: write them.
+    Draft,
 }
 
 async fn run(
@@ -243,7 +255,7 @@ async fn run(
     installed: &component::Installed,
     track: &pandora::Track,
     source: Source,
-    gpu: bool,
+    setting: &crate::settings::AutoSync,
 ) -> Result<(), String> {
     let key = crate::lyrics::key_for(
         &track.artist_name,
@@ -260,18 +272,20 @@ async fn run(
         None,
     )
     .await?;
-    // Only words without timings: real timings, and the listener's own edits, always win.
+    // Only words without timings, or no words at all: real timings, and the listener's own
+    // edits, always win.
     if lyrics.overridden || lyrics.synced.is_some() {
         return Ok(());
     }
-    let Some(plain) = lyrics.plain else {
-        return Ok(());
+    let job = match lyrics.plain {
+        // Done before for these words — or tried, and failed the gate. Not again until they
+        // change, or the aligner does and the song has to be heard again to re-time it.
+        Some(plain) if current(app, &key, &plain).is_some() => return Ok(()),
+        Some(plain) => Job::Align(plain),
+        // Drafted before, or found to have nothing worth drafting.
+        None if !setting.drafts || current_draft(app, &key).is_some() => return Ok(()),
+        None => Job::Draft,
     };
-    // Done before for these words — or tried, and failed the gate. Not again until they change,
-    // or the aligner does and the song has to be heard again to re-time it.
-    if current(app, &key, &plain).is_some() {
-        return Ok(());
-    }
 
     let engine = app.state::<crate::native::NativeEngine>().try_engine();
     let (src, from) = match source {
@@ -290,8 +304,13 @@ async fn run(
         }
     };
     eprintln!(
-        "[autosync] {} — {}: syncing from {from:.0}s",
-        track.artist_name, track.song_title
+        "[autosync] {} — {}: {} from {from:.0}s",
+        track.artist_name,
+        track.song_title,
+        match job {
+            Job::Align(_) => "syncing",
+            Job::Draft => "drafting",
+        }
     );
 
     let dir = work_dir(app).ok_or("no cache directory")?;
@@ -304,13 +323,43 @@ async fn run(
             .map_err(|e| e.to_string())??;
     }
 
-    let result = hear_and_align(app, installed, track, &wav, from, &plain, duration, gpu).await;
+    let gpu = setting.gpu;
+    let result = match &job {
+        Job::Align(plain) => {
+            let lines: Vec<&str> = plain.lines().collect();
+            let shown = |heard: &[autosync::Heard], done: usize, of: usize| {
+                let aligned = autosync::align::align(&lines, heard);
+                // Partway through, only part of the song has been heard, so judge coverage
+                // against that part. Below it, show progress but not timings that are guesses.
+                let heard_share = done as f64 / of.max(1) as f64;
+                let lrc = (aligned.coverage() >= GATE * heard_share)
+                    .then(|| lrc_of(&aligned, &lines, duration))
+                    .flatten();
+                Shown { lrc, doubt: None }
+            };
+            hear(app, installed, track, &wav, from, gpu, shown).await
+        }
+        // The draft so far is shown as it grows; while there isn't one yet, nothing is.
+        Job::Draft => {
+            let shown = |heard: &[autosync::Heard], _: usize, _: usize| {
+                draft_of(heard).map(Shown::from).unwrap_or_default()
+            };
+            hear(app, installed, track, &wav, from, gpu, shown).await
+        }
+    };
     let _ = std::fs::remove_file(&wav);
     let Some(heard) = result? else {
         // Cancelled: a skip made it moot. Nothing stored, so it is tried again if it comes back.
         return Ok(());
     };
 
+    let plain = match job {
+        Job::Align(plain) => plain,
+        Job::Draft => {
+            finish_draft(app, installed, track, &key, &heard, duration);
+            return Ok(());
+        }
+    };
     let (lrc, coverage) = time(&plain, &heard, duration);
     let ok = lrc.is_some();
     eprintln!(
@@ -341,40 +390,104 @@ async fn run(
             duration,
         },
     );
-    emit_lines(app, track, lrc, 0, 0, true, ok);
+    emit_lines(app, track, Shown { lrc, doubt: None }, 0, 0, true, ok);
     Ok(())
 }
 
-/// Run the job, showing the timings so far after every window. Everything heard, in order, or
-/// `None` if it was cancelled.
-#[allow(clippy::too_many_arguments)]
-async fn hear_and_align(
+/// Store a finished draft, or why there isn't one, and tell the pane.
+fn finish_draft(
+    app: &AppHandle,
+    installed: &component::Installed,
+    track: &pandora::Track,
+    key: &str,
+    heard: &[autosync::Heard],
+    duration: f64,
+) {
+    let drafted = draft_of(heard);
+    eprintln!(
+        "[autosync] {} — {}: {}",
+        track.artist_name,
+        track.song_title,
+        match &drafted {
+            Ok(d) => format!("drafted {} lines", d.doubt.len()),
+            Err(why) => format!("no draft ({why})"),
+        }
+    );
+    let mut stored = StoredDraft {
+        lrc: None,
+        doubt: Vec::new(),
+        none: None,
+        engine: installed.manifest.version.clone(),
+        created: unix_now(),
+        drafter: autosync::draft::VERSION,
+        heard: heard
+            .iter()
+            .map(|w| (w.text.clone(), w.start, w.end, w.p))
+            .collect(),
+        duration,
+    };
+    stored.set(drafted.clone());
+    store_draft(app, key, &stored);
+    let ok = drafted.is_ok();
+    let shown = drafted.map(Shown::from).unwrap_or_default();
+    emit_lines(app, track, shown, 0, 0, true, ok);
+}
+
+/// A draft, as the pane and editor get it.
+#[derive(Clone)]
+pub struct Draft {
+    pub lrc: String,
+    /// Per line of `lrc`, the positions of the words the engine was unsure of.
+    pub doubt: Vec<Vec<usize>>,
+}
+
+impl From<Draft> for Shown {
+    fn from(d: Draft) -> Self {
+        Shown {
+            lrc: Some(d.lrc),
+            doubt: Some(d.doubt),
+        }
+    }
+}
+
+/// The draft of what was heard, or why there is none: `noSinging` or `unclear`, the names the
+/// pane knows.
+fn draft_of(heard: &[autosync::Heard]) -> Result<Draft, &'static str> {
+    use autosync::draft::{self, NoDraft};
+    let params = draft::Params::default();
+    let lines = draft::draft_with(heard, &params).map_err(|why| match why {
+        NoDraft::NoSinging { .. } => "noSinging",
+        NoDraft::Unclear { .. } => "unclear",
+    })?;
+    Ok(Draft {
+        // Without the final newline, which the editor would show as an empty last line.
+        lrc: autosync::lrc::format(&draft::to_lrc(&lines))
+            .trim_end()
+            .to_string(),
+        doubt: lines.iter().map(|l| l.doubtful(&params)).collect(),
+    })
+}
+
+/// Run the job, showing what `shown` makes of the words so far after every window. Everything
+/// heard, in order, or `None` if it was cancelled.
+async fn hear(
     app: &AppHandle,
     installed: &component::Installed,
     track: &pandora::Track,
     wav: &Path,
     from: f64,
-    plain: &str,
-    duration: f64,
     gpu: bool,
+    shown: impl Fn(&[autosync::Heard], usize, usize) -> Shown,
 ) -> Result<Option<Vec<autosync::Heard>>, String> {
     let sidecar = sidecar(app, installed, gpu).await?;
     let mut rx = sidecar.transcribe(&track.pandora_id, wav, from)?;
-    let lines: Vec<&str> = plain.lines().collect();
     let mut heard = Vec::new();
     loop {
         match rx.recv().await {
             Some(JobEvent::Words { done, of, words }) => {
                 heard.extend(words);
                 heard.sort_by(|a: &autosync::Heard, b| a.start.total_cmp(&b.start));
-                let aligned = autosync::align::align(&lines, &heard);
-                // Partway through, only part of the song has been heard, so judge coverage
-                // against that part. Below it, show progress but not timings that are guesses.
-                let heard_share = done as f64 / of.max(1) as f64;
-                let lrc = (aligned.coverage() >= GATE * heard_share)
-                    .then(|| lrc_of(&aligned, &lines, duration))
-                    .flatten();
-                emit_lines(app, track, lrc, done, of, false, true);
+                emit_lines(app, track, shown(&heard, done, of), done, of, false, true);
             }
             Some(JobEvent::Done) => break,
             Some(JobEvent::Cancelled) => return Ok(None),
@@ -431,13 +544,21 @@ fn threads() -> u32 {
     (n / 4).clamp(1, 4) as u32
 }
 
-/// Tell the lyrics pane. `lrc` is the whole song's timings so far (every line has one), or
-/// `None` while there is nothing worth showing; `last` marks the end, with `ok` saying whether
-/// the result passed the gate.
+/// What the lyrics pane is sent. `lrc` is the whole song's timings so far (every line has one),
+/// or `None` while there is nothing worth showing. `doubt` is set for a draft: the words of each
+/// line the engine was unsure of.
+#[derive(Default)]
+struct Shown {
+    lrc: Option<String>,
+    doubt: Option<Vec<Vec<usize>>>,
+}
+
+/// Tell the lyrics pane. `last` marks the end, with `ok` saying whether the result passed the
+/// gate (or, for a draft, whether there is one).
 fn emit_lines(
     app: &AppHandle,
     track: &pandora::Track,
-    lrc: Option<String>,
+    shown: Shown,
     done: usize,
     of: usize,
     last: bool,
@@ -448,7 +569,9 @@ fn emit_lines(
         json!({
             "title": track.song_title,
             "artist": track.artist_name,
-            "lrc": lrc,
+            "lrc": shown.lrc,
+            "draft": shown.doubt.is_some(),
+            "doubt": shown.doubt,
             "done": done,
             "of": of,
             "final": last,
@@ -541,7 +664,7 @@ pub async fn autosync_remove(app: AppHandle) -> Result<Status, String> {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     component::remove(&app)?;
-    if let Some(dir) = results_dir(&app) {
+    for dir in [results_dir(&app), drafts_dir(&app)].into_iter().flatten() {
         let _ = std::fs::remove_dir_all(dir);
     }
     *ctl.status.lock().unwrap() = None;
@@ -620,6 +743,87 @@ fn store(app: &AppHandle, key: &str, result: &Stored) {
         return;
     };
     if let Ok(json) = serde_json::to_vec_pretty(result) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+// ---- drafts ---------------------------------------------------------------------------------
+
+/// One song's draft, or why it has none, kept so a song is heard once.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredDraft {
+    lrc: Option<String>,
+    /// Per line of `lrc`, the positions of the words the engine was unsure of.
+    doubt: Vec<Vec<usize>>,
+    /// Why there is no draft, when there isn't: `noSinging` or `unclear`.
+    none: Option<String>,
+    engine: String,
+    created: u64,
+    /// The `autosync::draft::VERSION` that wrote it.
+    drafter: u32,
+    /// Everything heard, as `(text, start, end, p)`, so a newer drafter can redo the draft without
+    /// hearing the song again. Unlike [`Stored::heard`] it keeps the confidence: drafting uses it.
+    heard: Vec<(String, f64, f64, f32)>,
+    duration: f64,
+}
+
+impl StoredDraft {
+    fn set(&mut self, drafted: Result<Draft, &str>) {
+        (self.lrc, self.doubt, self.none) = match drafted {
+            Ok(d) => (Some(d.lrc), d.doubt, None),
+            Err(why) => (None, Vec::new(), Some(why.to_string())),
+        };
+    }
+}
+
+/// Beside the aligned results, in the cache dir: a draft can be made again by hearing the song.
+/// The listener's review of one is a saved edit, kept with the other edits instead.
+fn drafts_dir(app: &AppHandle) -> Option<PathBuf> {
+    Some(app.path().app_cache_dir().ok()?.join("lyrics-draft"))
+}
+
+/// The stored draft for a track, redone first if an older drafter wrote it.
+fn current_draft(app: &AppHandle, key: &str) -> Option<StoredDraft> {
+    let path = crate::lyrics::hashed_file(drafts_dir(app)?, key)?;
+    let mut s: StoredDraft = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    if s.drafter == autosync::draft::VERSION {
+        return Some(s);
+    }
+    let heard: Vec<autosync::Heard> = s
+        .heard
+        .iter()
+        .map(|(text, start, end, p)| autosync::Heard {
+            text: text.clone(),
+            start: *start,
+            end: *end,
+            p: *p,
+        })
+        .collect();
+    s.set(draft_of(&heard));
+    s.drafter = autosync::draft::VERSION;
+    store_draft(app, key, &s);
+    Some(s)
+}
+
+/// A track's draft, or why it has none; `None` if it hasn't been heard. Called by
+/// `lyrics::fetch_lyrics` for tracks LRCLIB has nothing for.
+pub fn stored_draft(app: &AppHandle, key: &str) -> Option<Result<Draft, String>> {
+    let s = current_draft(app, key)?;
+    Some(match s.lrc {
+        Some(lrc) => Ok(Draft {
+            lrc,
+            doubt: s.doubt,
+        }),
+        None => Err(s.none.unwrap_or_default()),
+    })
+}
+
+fn store_draft(app: &AppHandle, key: &str, draft: &StoredDraft) {
+    let Some(path) = drafts_dir(app).and_then(|d| crate::lyrics::hashed_file(d, key)) else {
+        return;
+    };
+    if let Ok(json) = serde_json::to_vec_pretty(draft) {
         let _ = std::fs::write(path, json);
     }
 }

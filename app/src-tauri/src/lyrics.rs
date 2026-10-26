@@ -51,11 +51,42 @@ pub struct Lyrics {
     /// pass generated timings off as LRCLIB's.
     #[serde(skip_deserializing, skip_serializing_if = "std::ops::Not::not")]
     pub auto: bool,
+    /// Set when these lyrics are a draft the speech engine wrote for a song LRCLIB has nothing
+    /// for, and a person hasn't yet reviewed every line. Unlike `auto` it is accepted back: a
+    /// saved edit of a half-reviewed draft keeps it, so the review carries on where it stopped
+    /// and the draft can't be published until it is done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<DraftReview>,
+    /// Why there is no draft for a song LRCLIB has nothing for: `noSinging` or `unclear`.
+    /// Output only, like `stale`.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub no_draft: Option<String>,
+}
+
+/// What a reviewer needs to know about a draft, line by line (by index into its lines, blank
+/// ones included).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftReview {
+    /// The words of each line the engine was unsure of, by position in the line.
+    pub doubt: Vec<Vec<usize>>,
+    /// Which lines a person has checked.
+    pub reviewed: Vec<bool>,
 }
 
 impl Lyrics {
     fn is_empty(&self) -> bool {
         self.synced.is_none() && self.plain.is_none()
+    }
+
+    /// Show a fresh draft: its timed lines, with nothing reviewed yet.
+    fn show_draft(&mut self, draft: crate::autosync::Draft) {
+        self.synced = Some(draft.lrc);
+        self.source = "draft".into();
+        self.draft = Some(DraftReview {
+            reviewed: vec![false; draft.doubt.len()],
+            doubt: draft.doubt,
+        });
     }
 }
 
@@ -207,6 +238,14 @@ pub async fn fetch_lyrics(
                 found.synced = Some(lrc);
                 found.auto = true;
             }
+        }
+    }
+    // A draft fills in only where LRCLIB has nothing at all.
+    if found.is_empty() && !found.overridden {
+        match crate::autosync::stored_draft(&app, &key) {
+            Some(Ok(draft)) => found.show_draft(draft),
+            Some(Err(why)) => found.no_draft = Some(why),
+            None => {}
         }
     }
     Ok(found)
@@ -518,6 +557,8 @@ fn from_lrclib(v: &serde_json::Value, source: &str) -> Lyrics {
         stale: false,
         pinned: false,
         auto: false,
+        draft: None,
+        no_draft: None,
     }
 }
 
@@ -869,6 +910,16 @@ pub async fn publish_lyrics(app: tauri::AppHandle, publication: Publication) -> 
         // Empty means "this track is instrumental" to LRCLIB. Never say that by accident.
         return Err("Refusing to publish empty lyrics".into());
     }
+    // The editor saves before it publishes, and a saved draft stops being one only once every
+    // line has been reviewed. The editor won't offer Publish before then; this makes sure.
+    let key = track_key(
+        &undouble(&publication.artist),
+        &undouble(&publication.track),
+        publication.album.as_deref().map(undouble).as_deref(),
+    );
+    if read_override(&app, &key).is_some_and(|l| l.draft.is_some()) {
+        return Err("Every line of a draft has to be reviewed before it can be published".into());
+    }
 
     let client = lrclib_client()?;
     let token = publish_token(&client).await?;
@@ -893,11 +944,6 @@ pub async fn publish_lyrics(app: tauri::AppHandle, publication: Publication) -> 
     }
 
     // What LRCLIB serves for this track has changed; don't keep handing out the old copy.
-    let key = track_key(
-        &undouble(&publication.artist),
-        &undouble(&publication.track),
-        publication.album.as_deref().map(undouble).as_deref(),
-    );
     if let Some(p) = lyrics_cache_path(&app, &key) {
         let _ = std::fs::remove_file(p);
     }
@@ -1051,6 +1097,32 @@ mod tests {
         let back: CacheEntry = serde_json::from_slice(&round).unwrap();
         assert!(back.cached_at.is_some());
         assert_eq!(back.lyrics.plain.as_deref(), Some("words"));
+    }
+
+    /// A saved edit of a half-reviewed draft must stay a draft, or it could be published
+    /// unreviewed; why there is no draft describes one answer, like `stale`.
+    #[test]
+    fn a_draft_survives_a_save_and_no_draft_does_not() {
+        let l = Lyrics {
+            synced: Some("[00:01.00] Heard words".into()),
+            draft: Some(DraftReview {
+                doubt: vec![vec![1]],
+                reviewed: vec![false],
+            }),
+            no_draft: Some("unclear".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&l).unwrap();
+        assert_eq!(json["draft"]["reviewed"], serde_json::json!([false]));
+        assert_eq!(json["noDraft"], "unclear");
+        let back: Lyrics = serde_json::from_value(json).unwrap();
+        assert_eq!(back.draft, l.draft);
+        assert_eq!(back.no_draft, None);
+        // Lyrics that aren't a draft don't say so.
+        assert!(serde_json::to_value(Lyrics::default())
+            .unwrap()
+            .get("draft")
+            .is_none());
     }
 
     /// `stale` describes one answer, not the lyrics. It must not be written to disk or

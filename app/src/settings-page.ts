@@ -47,6 +47,8 @@ const autosyncProgress = $("set-autosync-progress");
 const autosyncProgressFill = $("set-autosync-progress-fill");
 const autosyncGpuItem = $("set-autosync-gpu-item");
 const autosyncGpu = $<HTMLInputElement>("set-autosync-gpu");
+const autosyncDraftsItem = $("set-autosync-drafts-item");
+const autosyncDrafts = $<HTMLInputElement>("set-autosync-drafts");
 const autosyncActionItem = $("set-autosync-remove-item");
 const autosyncActionBtn = $<HTMLButtonElement>("set-autosync-remove");
 const flagsStatus = $("set-flags-status");
@@ -75,6 +77,7 @@ interface AudioCache {
 interface AutoSync {
   enabled: boolean;
   gpu: boolean;
+  drafts: boolean;
 }
 /** Where the downloadable speech engine stands; see `autosync::Status`. */
 type AutoSyncStatus =
@@ -142,7 +145,7 @@ const outputSel = createSelect($("set-output-device"), [{ value: FOLLOW_DEFAULT,
 const CACHE_SIZES_MB = [256, 512, 1024, 2048, 5120, 10240];
 
 /** For a settings file written before auto-sync existed. Matches `AutoSync::default`. */
-const NO_AUTOSYNC: AutoSync = { enabled: false, gpu: true };
+const NO_AUTOSYNC: AutoSync = { enabled: false, gpu: true, drafts: true };
 let autosyncStatus: AutoSyncStatus = { state: "unavailable" };
 
 /** For a settings file written before the cache existed. Matches `AudioCache::default`. */
@@ -286,6 +289,7 @@ function setEnabled(on: boolean) {
   debugLog.disabled = !on;
   autosyncEnabled.disabled = !on;
   autosyncGpu.disabled = !on;
+  autosyncDrafts.disabled = !on;
 }
 
 /** Defaults for a settings file written before blending existed. */
@@ -433,6 +437,8 @@ function render(s: Settings) {
   const autoSync = s.autoSync ?? NO_AUTOSYNC;
   autosyncEnabled.checked = autoSync.enabled;
   autosyncGpu.checked = autoSync.gpu;
+  // Files from before drafts existed lack the field; the backend fills in its default, on.
+  autosyncDrafts.checked = autoSync.drafts ?? true;
   reflectAutosync();
   const sched = s.checkSchedule;
   scheduleSel.setOptions(scheduleOptions(sched));
@@ -521,7 +527,11 @@ async function persist() {
     outputDevice: readOutput(),
     audioCache: readCache(),
     debugLog: debugLog.checked,
-    autoSync: { enabled: autosyncEnabled.checked, gpu: autosyncGpu.checked },
+    autoSync: {
+      enabled: autosyncEnabled.checked,
+      gpu: autosyncGpu.checked,
+      drafts: autosyncDrafts.checked,
+    },
   };
   timeInput.hidden = next.checkSchedule.kind !== "dailyAt";
   // Disabling a control takes focus with it, so a keyboard user would be dropped
@@ -619,6 +629,7 @@ autosyncEnabled.addEventListener("change", () => {
   void persist();
 });
 autosyncGpu.addEventListener("change", () => void persist());
+autosyncDrafts.addEventListener("change", () => void persist());
 
 /**
  * Show the section only where this build can offer it, then say where the engine stands.
@@ -630,6 +641,7 @@ function reflectAutosync() {
   autosyncSection.hidden = st.state === "unavailable";
   const on = autosyncEnabled.checked;
   autosyncGpuItem.hidden = !on;
+  autosyncDraftsItem.hidden = !on;
   autosyncProgress.hidden = st.state !== "downloading";
 
   let text = "";

@@ -13,6 +13,7 @@ import { publicationFor } from "./lyric-publish";
 import type { Row } from "./flags";
 import { parseLrc, type LyricLine } from "./lrc";
 import { detectDual, type Dual } from "./dual-lyrics";
+import { fillMarked } from "./draft-marks";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
 import * as stationStats from "./station-stats";
 
@@ -213,7 +214,14 @@ function paintEmpty(text: string, meta: { title: string; artist: string }) {
   if (carried) lyricsEl.scrollTo({ top: songTop(), behavior: "smooth" });
 }
 
-function renderSyncedLyrics(lines: LyricLine[], meta: { title: string; artist: string }) {
+/// `doubt` is set when the lines are a draft: per line, the words the speech engine was unsure
+/// of. Draft rows are styled as such, row by row, so a draft's look never carries over to the
+/// next song's rows or back to the last one's.
+function renderSyncedLyrics(
+  lines: LyricLine[],
+  meta: { title: string; artist: string },
+  doubt?: number[][]
+) {
   clearPane(meta);
   stopPlainFollow();
   lyricsEl.classList.add("synced");
@@ -227,10 +235,10 @@ function renderSyncedLyrics(lines: LyricLine[], meta: { title: string; artist: s
     lyricsEl.appendChild(introEl);
   }
 
-  paneLines = lines;
-  lines.forEach((ln, i) => {
+  paneLines = lines.map((ln, i) => (doubt ? { ...ln, doubt: doubt[i] } : ln));
+  paneLines.forEach((ln, i) => {
     const div = document.createElement("div");
-    div.className = "line";
+    div.className = doubt ? "line draft" : "line";
     div.dataset.idx = String(i);
     fillLine(div, ln);
     lyricsEl.appendChild(div);
@@ -261,7 +269,7 @@ function renderPlainLyrics(lines: PaneLine[], meta: { title: string; artist: str
 // both, the second smaller and dimmer beneath the first, and a chip in the pane's head names
 // the two and cycles: both, swapped, the first alone, the second alone. The choice is per
 // track, like the sync offset.
-type PaneLine = { text: string; alt?: string };
+type PaneLine = { text: string; alt?: string; doubt?: number[] };
 type DualMode = "both" | "swap" | "first" | "second";
 const DUAL_MODES: DualMode[] = ["both", "swap", "first", "second"];
 const lyricsDualBtn = $<HTMLButtonElement>("lyrics-dual");
@@ -274,7 +282,7 @@ let paneLines: PaneLine[] = [];
 function fillLine(div: HTMLElement, ln: PaneLine) {
   div.classList.toggle("dual", false);
   if (!ln.alt || dualMode === "first") {
-    div.textContent = ln.text || " ";
+    fillMarked(div, ln.text || " ", ln.doubt ?? []);
   } else if (dualMode === "second") {
     div.textContent = ln.alt;
   } else {
@@ -862,8 +870,10 @@ function applyLyrics(res: Lyrics) {
   // and the caret mid-edit, so keep the state current and leave the DOM alone.
   if (lyricEditor.isEditing()) {
     const parsed = res.synced ? parseLrc(res.synced) : null;
-    syncedLines = parsed && (detectDual(parsed)?.lines ?? parsed);
-    lyricsStatus.textContent = `${res.synced ? "Synced lyrics" : "Lyrics"}${note}`;
+    syncedLines = parsed && (res.draft ? parsed : (detectDual(parsed)?.lines ?? parsed));
+    lyricsStatus.textContent = res.draft
+      ? draftStatus(res.draft)
+      : `${res.synced ? "Synced lyrics" : "Lyrics"}${note}`;
     return;
   }
   paintLyrics(res, note);
@@ -873,7 +883,10 @@ function applyLyrics(res: Lyrics) {
 /// Tell the flags which lyrics, and which rows, the track now shows. Not while editing: the
 /// editor's rows aren't these, and leaving it repaints through here anyway.
 function showFlags(res: Lyrics) {
-  const rows: Row[] = syncedLines ?? (res.plain ? paneLines.map((l) => ({ t: null, ...l })) : []);
+  // A draft is reviewed line by line in the editor; flags are for lyrics someone published.
+  const rows: Row[] = res.draft
+    ? []
+    : (syncedLines ?? (res.plain ? paneLines.map((l) => ({ t: null, ...l })) : []));
   lyricFlags.show(lastMeta, lastDuration ?? res.duration, res, rows);
 }
 
@@ -882,11 +895,12 @@ function showFlags(res: Lyrics) {
 function paintLyrics(res: Lyrics, note: string) {
   if (res.synced) {
     const parsed = parseLrc(res.synced);
-    const dual = detectDual(parsed);
+    // A draft is the engine's own words in one language: nothing to pair up.
+    const dual = res.draft ? null : detectDual(parsed);
     noteDual(dual);
     syncedLines = dual?.lines ?? parsed;
-    renderSyncedLyrics(syncedLines, lastMeta);
-    lyricsStatus.textContent = `Synced lyrics${note}`;
+    renderSyncedLyrics(syncedLines, lastMeta, res.draft?.doubt);
+    lyricsStatus.textContent = res.draft ? draftStatus(res.draft) : `Synced lyrics${note}`;
     activeLineIdx = NO_LINE;
     highlightLine(lastPlayhead.position);
   } else if (res.plain) {
@@ -902,8 +916,21 @@ function paintLyrics(res: Lyrics, note: string) {
     stopPlainFollow();
     noteDual(null);
     paintEmpty("No lyrics found", lastMeta);
-    lyricsStatus.textContent = "Lyrics";
+    lyricsStatus.textContent =
+      res.noDraft === "noSinging"
+        ? "Lyrics · no singing heard to draft"
+        : res.noDraft === "unclear"
+          ? "Lyrics · the singing was too unclear to draft"
+          : "Lyrics";
   }
+}
+
+/// The status line for a draft: whose words they are, and how far the review has got.
+function draftStatus(draft: NonNullable<Lyrics["draft"]>) {
+  const done = draft.reviewed.filter(Boolean).length;
+  return done
+    ? `Draft lyrics · ${done} of ${draft.reviewed.length} lines reviewed`
+    : "Draft lyrics · heard by the speech engine, not yet reviewed";
 }
 
 lyricsVersionsBtn.addEventListener("click", () => {
@@ -980,6 +1007,11 @@ lyricsEditBtn.addEventListener("click", () => {
       lyricsEditBtn.classList.remove("on");
       activeLineIdx = NO_LINE;
       if (lastLyrics) applyLyrics(lastLyrics);
+      // Opened on lines still being worked out: the finished ones may have landed meanwhile,
+      // while the editor kept them off the pane.
+      if (lastLyrics && lastLyrics === autoSyncPreview && key === currentKey) {
+        void loadLyricsFor(lastMeta, lastDuration, key);
+      }
       // Closed after a track change but before that track's lyrics arrived: what's
       // painted is still the last track's, so keep the buttons off it until they land.
       if (`${lastMeta.title}|${lastMeta.artist}` !== currentKey) {
@@ -997,9 +1029,11 @@ attachTip(lyricsEditBtn, () =>
     ? "Stop editing"
     : lastLyrics?.overridden
       ? "Edit lyrics (showing your local edit)"
-      : lastLyrics?.auto
-        ? "Check the auto-synced timings, and publish them to LRCLIB if they're right"
-        : "Fix or time these lyrics"
+      : lastLyrics?.draft
+        ? "Review this draft line by line, then publish it to LRCLIB"
+        : lastLyrics?.auto
+          ? "Check the auto-synced timings, and publish them to LRCLIB if they're right"
+          : "Fix or time these lyrics"
 );
 
 /// How long the status line says what was just flagged.
@@ -1042,6 +1076,10 @@ interface AutoSyncLines {
   title: string;
   artist: string;
   lrc: string | null;
+  /// Set when the lines are a draft (LRCLIB has no words for the song), with each line's
+  /// doubtful words.
+  draft: boolean;
+  doubt: number[][] | null;
   done: number;
   of: number;
   final: boolean;
@@ -1052,21 +1090,36 @@ void listen<AutoSyncLines>("autosync://lines", (e) => {
   const p = e.payload;
   const key = `${p.title}|${p.artist}`;
   if (key !== currentKey) return;
-  // Only ever in place of plain lyrics: never over real timings or the listener's own edit.
+  // Only ever in place of plain lyrics, or of nothing at all: never over real timings or the
+  // listener's own edit.
   const shown = lastLyrics;
-  if (!shown?.plain || shown.overridden || (shown.synced && !shown.auto)) return;
+  if (!shown || shown.overridden) return;
+  const replaceable = shown.plain
+    ? !shown.synced || shown.auto
+    : !shown.synced || (!!shown.draft && shown === autoSyncPreview);
+  if (!replaceable) return;
   // The editor and the version picker own the pane while they are open.
   if (lyricEditor.isEditing() || lyricPicker.isOpen()) return;
   if (p.final) {
-    // Ask again: the stored result comes back marked `auto`, or plain lyrics if it failed.
+    // Ask again: the stored result comes back marked `auto` or as a draft, or as it was if
+    // there is none.
     void loadLyricsFor(lastMeta, lastDuration, key);
     return;
   }
   if (p.lrc) {
-    autoSyncPreview = { ...shown, synced: p.lrc, auto: true };
+    autoSyncPreview = p.draft
+      ? {
+          ...shown,
+          synced: p.lrc,
+          source: "draft",
+          draft: { doubt: p.doubt ?? [], reviewed: (p.doubt ?? []).map(() => false) },
+        }
+      : { ...shown, synced: p.lrc, auto: true };
     applyLyrics(autoSyncPreview);
   }
-  lyricsStatus.textContent = `${p.lrc ? "Synced lyrics" : "Lyrics"} · syncing ${p.done} of ${p.of}`;
+  lyricsStatus.textContent = p.draft
+    ? `${p.lrc ? "Draft lyrics" : "Lyrics"} · drafting ${p.done} of ${p.of}`
+    : `${p.lrc ? "Synced lyrics" : "Lyrics"} · syncing ${p.done} of ${p.of}`;
 });
 
 // ---- publishing checked auto-synced timings ------------------------------

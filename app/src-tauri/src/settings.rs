@@ -230,6 +230,10 @@ pub struct AutoSync {
     /// CPU, but it leaves the CPU to playback; off is the escape hatch for a GPU driver that
     /// misbehaves.
     pub gpu: bool,
+    /// For songs LRCLIB has no lyrics for at all, write a draft from what the engine hears, for
+    /// the listener to review. On with auto-sync: it costs nothing more to download, and a draft
+    /// is only ever shown as one (`plans/draft-lyrics.md`).
+    pub drafts: bool,
 }
 
 impl Default for AutoSync {
@@ -237,6 +241,7 @@ impl Default for AutoSync {
         Self {
             enabled: false,
             gpu: true,
+            drafts: true,
         }
     }
 }
@@ -653,7 +658,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false,"autoSync":{"enabled":false,"gpu":true}}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false,"autoSync":{"enabled":false,"gpu":true,"drafts":true}}"#
         );
 
         let daily = Settings {
@@ -679,6 +684,7 @@ mod tests {
             auto_sync: AutoSync {
                 enabled: true,
                 gpu: false,
+                drafts: false,
             },
         };
         let text = serde_json::to_string(&daily).unwrap();
