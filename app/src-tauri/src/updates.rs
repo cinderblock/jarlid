@@ -109,6 +109,20 @@ const RESUME_PAUSED: &str = "resume-paused";
 /// being killed between writing it and installing, where the version would still match.
 const RESUME_PAUSED_TTL: Duration = Duration::from_secs(10 * 60);
 
+/// Marker naming the version an install was just handed to.
+///
+/// `install()` exits this process whether or not the installer goes on to succeed, and an
+/// installer that fails relaunches nothing. Without a record, the old version comes back up
+/// (by hand), finds the same update, and installs it at the next track boundary — exiting
+/// again, every song. That happened for real: an MSI install that needed an administrator
+/// failed silently under `/quiet`, and the app vanished at the end of every track. The next
+/// launch reads this: if it is still not the version named, the install failed.
+const INSTALL_ATTEMPT: &str = "install-attempt";
+
+/// The version whose install is known to have failed. Never installed again on its own —
+/// the badge says so, and a click can still try. A newer release is tried normally.
+const INSTALL_FAILED: &str = "install-failed";
+
 struct Staged {
     version: String,
     bytes: Vec<u8>,
@@ -126,6 +140,9 @@ pub struct UpdateCtl {
     /// Guards the hand-off: `install` exits the process, so a second caller getting
     /// through would launch a second installer.
     firing: AtomicBool,
+    /// A version that was handed to its installer and did not come back (see
+    /// [`INSTALL_ATTEMPT`]).
+    failed: Mutex<Option<String>>,
 }
 
 /// What the badge needs to render itself, and what the next click will do.
@@ -136,6 +153,9 @@ pub struct Status {
     pub staged: bool,
     pub armed: bool,
     pub policy: Policy,
+    /// The available version is one whose install already failed, so nothing will install
+    /// it unless the listener asks.
+    pub failed: bool,
 }
 
 impl UpdateCtl {
@@ -147,6 +167,12 @@ impl UpdateCtl {
     }
     pub fn is_armed(&self) -> bool {
         self.armed.load(Ordering::SeqCst)
+    }
+    fn failed_for(&self, version: &str) -> bool {
+        self.failed
+            .lock()
+            .map(|g| g.as_deref() == Some(version))
+            .unwrap_or(false)
     }
 }
 
@@ -212,6 +238,7 @@ fn status(app: &tauri::AppHandle) -> Status {
         staged: ctl.is_staged(),
         armed: ctl.is_armed(),
         policy: settings::get(app).update_policy,
+        failed: ctl.available().is_some_and(|v| ctl.failed_for(&v)),
     }
 }
 
@@ -255,9 +282,18 @@ pub async fn stage(app: &tauri::AppHandle) -> Result<Option<String>, String> {
         .map_err(|e| e.to_string())?;
 
     let policy = settings::get(app).update_policy;
+    // A version that already failed to install stays staged but waits to be asked: arming it
+    // would exit the app at the next boundary for an install that fails the same way.
+    let failed_before = app.state::<UpdateCtl>().failed_for(&version);
+    let auto = policy.arms_automatically() && !failed_before;
     eprintln!(
-        "[updater] staged v{version} ({} bytes), policy {policy:?}",
-        bytes.len()
+        "[updater] staged v{version} ({} bytes), policy {policy:?}{}",
+        bytes.len(),
+        if failed_before {
+            ", failed before: waiting to be asked"
+        } else {
+            ""
+        }
     );
     {
         let ctl = app.state::<UpdateCtl>();
@@ -267,14 +303,13 @@ pub async fn stage(app: &tauri::AppHandle) -> Result<Option<String>, String> {
             bytes,
             update,
         });
-        ctl.armed
-            .store(policy.arms_automatically(), Ordering::SeqCst);
+        ctl.armed.store(auto, Ordering::SeqCst);
     }
     publish(app);
 
     // "Instant" means exactly that: do not wait for a boundary. It still comes back the way
     // it was left, so "instant" while paused is silent rather than merely fast.
-    if policy == Policy::Instant {
+    if policy == Policy::Instant && auto {
         try_install(app, playback(app).await, true, "instant policy", true);
     }
     Ok(Some(version))
@@ -289,7 +324,17 @@ pub async fn stage(app: &tauri::AppHandle) -> Result<Option<String>, String> {
 fn build_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
     use tauri_plugin_updater::UpdaterExt;
     let handle = app.clone();
-    app.updater_builder()
+    let builder = app.updater_builder();
+    // Always the per-user NSIS installer, whatever kind of install this is. The plugin would
+    // otherwise pick the entry matching the bundle type patched into the exe, falling back
+    // to the generic `windows-x86_64` entry — which tauri-action points at the MSI. The MSI
+    // installs per-machine and needs an administrator to upgrade, which `/quiet` can never
+    // ask for, so it failed silently and the app never came back. NSIS needs no elevation
+    // and relaunches the app itself. The installer kind is read from the downloaded bytes,
+    // so asking for this entry is all it takes.
+    #[cfg(windows)]
+    let builder = builder.target("windows-x86_64-nsis");
+    builder
         .on_before_exit(move || {
             if let Some(engine) = handle.state::<crate::native::NativeEngine>().try_engine() {
                 engine.stop_audio();
@@ -522,11 +567,17 @@ fn try_install(
         return;
     }
 
+    // Also before the install, for the same reason: on success it never returns.
+    note_install_attempt(app, &staged.version);
+
     // No network here: the bytes are downloaded and verified, and the handle is held.
     // On success this never returns — the plugin launches the installer and exits(0).
     if let Err(e) = staged.update.install(&staged.bytes) {
         eprintln!("[updater] install failed: {e}");
         disarm_resume_paused(app);
+        if let Some(path) = marker_path(app, INSTALL_ATTEMPT) {
+            let _ = std::fs::remove_file(path);
+        }
         let _ = app.emit("app://update-failed", staged.version.clone());
         // Put it back so a later boundary can retry rather than losing the download.
         *ctl.staged.lock().unwrap() = Some(staged);
@@ -535,10 +586,58 @@ fn try_install(
     }
 }
 
-fn resume_paused_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+fn marker_path(app: &tauri::AppHandle, name: &str) -> Option<std::path::PathBuf> {
     let dir = app.path().app_config_dir().ok()?;
     std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join(RESUME_PAUSED))
+    Some(dir.join(name))
+}
+
+fn resume_paused_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    marker_path(app, RESUME_PAUSED)
+}
+
+fn note_install_attempt(app: &tauri::AppHandle, version: &str) {
+    if let Some(path) = marker_path(app, INSTALL_ATTEMPT) {
+        if let Err(e) = std::fs::write(&path, version) {
+            // Not fatal: the install goes ahead, but a failure would go unnoticed.
+            eprintln!("[updater] could not record the install attempt: {e}");
+        }
+    }
+}
+
+/// At launch: did the last install we handed off actually happen?
+///
+/// The attempt marker naming the running version means it did. Naming any other version
+/// means we are still the old one, so that install failed: remember the version, so it is
+/// never installed again without being asked (see [`INSTALL_ATTEMPT`]).
+fn note_last_install(app: &tauri::AppHandle) {
+    let running = app.package_info().version.to_string();
+    let read = |name: &str| {
+        let path = marker_path(app, name)?;
+        let v = std::fs::read_to_string(&path).ok()?;
+        Some((path, v.trim().to_string()))
+    };
+
+    if let Some((path, tried)) = read(INSTALL_ATTEMPT) {
+        let _ = std::fs::remove_file(path);
+        if tried != running {
+            eprintln!("[updater] the install of v{tried} did not happen (still v{running})");
+            if let Some(failed) = marker_path(app, INSTALL_FAILED) {
+                let _ = std::fs::write(failed, &tried);
+            }
+        }
+    }
+
+    match read(INSTALL_FAILED) {
+        // Running it now: whatever failed, it has since been installed some other way.
+        Some((path, failed)) if failed == running => {
+            let _ = std::fs::remove_file(path);
+        }
+        Some((_, failed)) => {
+            *app.state::<UpdateCtl>().failed.lock().unwrap() = Some(failed);
+        }
+        None => {}
+    }
 }
 
 /// Tell the next launch to load a track without starting it — but only if that launch is
@@ -711,6 +810,8 @@ fn local_hm() -> (u32, u32) {
 
 /// Background loop: check on the configured schedule, and run the install backstop.
 pub fn spawn(app: &tauri::AppHandle) {
+    // Before the first check, so a version that failed last time is not armed again.
+    note_last_install(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // Settle before the first check.
