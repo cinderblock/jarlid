@@ -1971,11 +1971,13 @@ function marquee(box: HTMLElement, inner: HTMLElement): () => void {
     inner.style.transform = "";
     box.style.removeProperty("--fade-l");
     box.style.removeProperty("--fade-r");
+    // Before the early return: a line that fits must lose the drift the last track
+    // left running, or the animation holds it at --mq-a, clear of its centre.
+    box.classList.remove("drift");
     if (travel <= 0 || hover) return;
     // Re-add on the next frame so a drift already running restarts from the top —
     // a new track should be read from its first word, not from wherever the last
     // one had drifted to.
-    box.classList.remove("drift");
     requestAnimationFrame(() => {
       if (!hover && travel > 0) box.classList.add("drift");
     });

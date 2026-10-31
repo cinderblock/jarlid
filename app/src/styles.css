@@ -278,10 +278,13 @@ body {
   transition: opacity 0.25s ease;
 }
 
+/* The full column, not the width of its text: `.stage` centres its children, so
+   without a width this shrink-wraps to the longer line and each marquee clips at
+   that line's own edge, with the rest of the column empty on either side. */
 .meta {
   text-align: center;
   margin-top: 26px;
-  max-width: 100%;
+  width: 100%;
 }
 /* Where the music plays — this computer or a network player — as the first control in the
    top bar. Two segments in one 34px pill, the same height and wash as the round buttons
