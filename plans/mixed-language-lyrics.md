@@ -29,8 +29,9 @@ one song, just a one-off tool to validate one language or the other on every ver
 2. [x] Score each line against both languages, and mark what can't be told.
 3. [x] Install the mix as a half-reviewed draft: a local edit, in the app's lyrics-overrides.
 4. [ ] **Cameron reviews it in the app's editor.** ← current
-       Play the song, pencil, ✓ each line. Underlined lines are the 21 that need an ear. Saved
-       progress survives, and Publish stays locked until every line is ticked.
+       Listened 2026-11-02: mostly right, a couple of picks corrected, the outro settled by ear
+       (English then French). 65 of 67 ticked. Left: the two `oo-oo-oo` lines at 0:35 and 1:32,
+       which Cameron holds until choosing a spelling.
 5. [ ] Publish from the editor. It files under record 2785399's own name, so it replaces that
        French-only record rather than adding one beside it. Cameron's call.
 
@@ -70,8 +71,14 @@ Not marked but worth a look: the 12 Da-ra-da lines aren't in record 2785399. The
   "You're everything I want" without being told anything. Nothing in `crates/` sets a language.
 - It writes sung French hooks as English nonsense ("two squash your book" for "tout ce que je
   veux"), and the whole-song pass heard nothing after about 2:00.
-- LRCLIB answered 503 ServerOverloaded, then timed out, all of this session, so the English records
-  (2162555, 2162554, 26107595) have not been read. English here comes from 11043109.
+- **LRCLIB wasn't down for the whole first session, as first reported.** It did answer 503
+  ServerOverloaded, and still does intermittently, but the later `000`s were this machine's curl
+  failing (`curl: (43) A libcurl function was given a bad argument`), not timeouts. Python's
+  `urllib` with retries reads it fine (2026-11-02). Use that, not curl.
+- **The vocal at 0:35 and 1:32, across all 22 records** (2026-11-02): `Ooh-ooh-ooh-ooh-ooh` 12,
+  `Ooh-ooh-ooh-ooh` 1, `Ooh-ooh-ooh-ooh (Mmh-mmh-mmh-mmh)` 2, `Hum, hum, hum` 4, no line at all 3.
+  The Hum records are French or French + English; every English and Split Brain record has Ooh.
+  Records saved in `%LOCALAPPDATA%\Temp\dopamine-fr-en\all-records.json`.
 - 11043109's English at 1:25 repeats "And it's nice, but I wonder" against "Bien perdu dans le
   confort", which looks like an upload mistake. The grid has "Now I'm lost in the comfort" until a
   real English record can be checked.
