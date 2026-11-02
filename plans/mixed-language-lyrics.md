@@ -28,12 +28,15 @@ one song, just a one-off tool to validate one language or the other on every ver
 1. [x] Hear the song twice: whole, and each grid line as its own clip. CPU, 5 min.
 2. [x] Score each line against both languages, and mark what can't be told.
 3. [x] Install the mix as a half-reviewed draft: a local edit, in the app's lyrics-overrides.
-4. [ ] **Cameron reviews it in the app's editor.** ← current
-       Listened 2026-11-02: mostly right, a couple of picks corrected, the outro settled by ear
-       (English then French). 65 of 67 ticked. Left: the two `oo-oo-oo` lines at 0:35 and 1:32,
-       which Cameron holds until choosing a spelling.
-5. [ ] Publish from the editor. It files under record 2785399's own name, so it replaces that
-       French-only record rather than adding one beside it. Cameron's call.
+4. [x] Cameron reviewed it in the app's editor, 2026-11-02: a couple of picks corrected, the outro
+       settled by ear (English then French). Then by Cameron's choice: `Ooh-ooh-ooh-ooh-ooh` at
+       0:35 and 1:32, the "ah" at 0:54.86 kept, `My D-O-P-A-M-I-N-E` and `Ma D.O.P.A.M.I.N.E`.
+       Those were written straight into the override, which also cleared its `draft`, so it is
+       now an ordinary local edit. The final text lives there, not in the script's output: a
+       rerun would lose Cameron's corrections. Previous copy:
+       `%LOCALAPPDATA%\Temp\dopamine-fr-en\override-before-final.json`.
+5. [ ] **Publish from the editor.** ← current. It files under record 2785399's own name, so it
+       replaces that French-only record rather than adding one beside it. Cameron's call.
 
 To regenerate (`--hear` only if the grid's times change):
 
@@ -75,6 +78,9 @@ Not marked but worth a look: the 12 Da-ra-da lines aren't in record 2785399. The
   ServerOverloaded, and still does intermittently, but the later `000`s were this machine's curl
   failing (`curl: (43) A libcurl function was given a bad argument`), not timeouts. Python's
   `urllib` with retries reads it fine (2026-11-02). Use that, not curl.
+- **Spelling across the 22 records:** `My D-O-P-A-M-I-N-E` in 15, `My D.O.P.A.M.I.N.E` in none;
+  `Ma D-O-P-A-M-I-N-E` in 10, `Ma D.O.P.A.M.I.N.E` in 4. The dotted form is French only, but
+  hyphens are the more common French spelling too.
 - **The vocal at 0:35 and 1:32, across all 22 records** (2026-11-02): `Ooh-ooh-ooh-ooh-ooh` 12,
   `Ooh-ooh-ooh-ooh` 1, `Ooh-ooh-ooh-ooh (Mmh-mmh-mmh-mmh)` 2, `Hum, hum, hum` 4, no line at all 3.
   The Hum records are French or French + English; every English and Split Brain record has Ooh.
