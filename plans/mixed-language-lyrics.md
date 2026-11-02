@@ -35,8 +35,13 @@ one song, just a one-off tool to validate one language or the other on every ver
        now an ordinary local edit. The final text lives there, not in the script's output: a
        rerun would lose Cameron's corrections. Previous copy:
        `%LOCALAPPDATA%\Temp\dopamine-fr-en\override-before-final.json`.
-5. [ ] **Publish from the editor.** ← current. It files under record 2785399's own name, so it
-       replaces that French-only record rather than adding one beside it. Cameron's call.
+5. [x] Published 2026-11-02, at Cameron's request, by script rather than the editor: the same
+       challenge and `POST /api/publish` as `publish_lyrics`, under record 2785399's own name.
+       201, and `/api/get/2785399` and the track lookup both serve all 67 lines unchanged. As the
+       editor does after a publish, the override and the old cache entry were cleared (moved to
+       `%LOCALAPPDATA%\Temp\dopamine-pub\`). Only 2785399 changed; the Split Brain, English and
+       French records were not touched. LRCLIB keeps the previous revision.
+6. [ ] First play after this: confirm the app shows the published mix, no "edited" label.
 
 To regenerate (`--hear` only if the grid's times change):
 
