@@ -41,7 +41,14 @@ one song, just a one-off tool to validate one language or the other on every ver
        editor does after a publish, the override and the old cache entry were cleared (moved to
        `%LOCALAPPDATA%\Temp\dopamine-pub\`). Only 2785399 changed; the Split Brain, English and
        French records were not touched. LRCLIB keeps the previous revision.
-6. [ ] First play after this: confirm the app shows the published mix, no "edited" label.
+6. [x] First play, 2026-11-05 4:02 PM PST (00:02Z): **the old French was back.** LRCLIB itself
+       serves it again (`/api/get/2785399` and the track lookup, `cf-cache-status: DYNAMIC`, so
+       not a CDN cache), 55 lines, with a matching `lyricsfile`. Our 67 lines are not on any of
+       the 20+ records a search returns. See Findings.
+7. [x] Restored the mix locally, 2026-11-05: `dopamine-pub\override-published.json` copied
+       back to `lyrics-overrides\545b7f6f3922d6ba.json` (copy kept). The app shows it as a local
+       edit ("edited" label) no matter what LRCLIB serves.
+8. [ ] Republish to LRCLIB? Needs Cameron's yes: it's a fresh post. ← current
 
 To regenerate (`--hear` only if the grid's times change):
 
@@ -66,6 +73,13 @@ Not marked but worth a look: the 12 Da-ra-da lines aren't in record 2785399. The
 11043109 with its times moved 0.25 s earlier, so their timing is an estimate, not the record's.
 
 ## Findings / gotchas
+
+- **The 2026-11-02 publish didn't stick.** By 11-05 the record was the old French again. Not the
+  missing `lyricsfile` in our request: LRCLIB builds one from the LRC (`publish_lyrics.rs`,
+  test `legacy_publish_generates_and_persists_lyricsfile`). Not its backfill jobs either: per its
+  `ARCHITECTURE.md` they never move `tracks.last_lyrics_id`. Left: someone republished the old
+  French (a tool that re-uploads, say), or a server restore. The API shows no revision history
+  or dates, so which one is unknown. A republish could be undone the same way.
 
 - **Outro: the engine can't say.** Whole-song pass: nothing. Line clips: nonsense ("I like you, I
   like the me"). Left, right and side channels disagree, with "I want", "I need" and "should be"
