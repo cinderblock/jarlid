@@ -48,7 +48,11 @@ one song, just a one-off tool to validate one language or the other on every ver
 7. [x] Restored the mix locally, 2026-11-05: `dopamine-pub\override-published.json` copied
        back to `lyrics-overrides\545b7f6f3922d6ba.json` (copy kept). The app shows it as a local
        edit ("edited" label) no matter what LRCLIB serves.
-8. [ ] Republish to LRCLIB? Needs Cameron's yes: it's a fresh post. ← current
+8. [x] Republished 2026-11-05 4:48 PM PST (00:48Z), at Cameron's yes: 201, both read-backs
+       match. The local edit stays in place as a safety net.
+9. [ ] Watching every 12 h (T3 scheduled task "Watch dopamine lyrics on LRCLIB", this thread):
+       `dopamine-pub\check.py` logs to `dopamine-pub\check.log`. A revert is reported, never
+       republished without asking. ← current
 
 To regenerate (`--hear` only if the grid's times change):
 
