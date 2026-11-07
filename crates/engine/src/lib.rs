@@ -107,6 +107,11 @@ pub enum Error {
 
     #[error("not signed in")]
     NotSignedIn,
+
+    /// The song asked for is not saved on this station: the cache is off, the song was evicted
+    /// or deleted, or it was saved while another station was playing.
+    #[error("that song is no longer saved for this station")]
+    NotSaved,
 }
 
 impl Error {
@@ -152,7 +157,9 @@ pub enum Event {
 #[derive(Clone)]
 struct Fetched {
     track: Track,
-    at: Instant,
+    /// `None` for a saved song the listener jumped to: no playlist request issued it, so its
+    /// failing to open says nothing about anything in the queue.
+    at: Option<Instant>,
 }
 
 struct State {
@@ -402,7 +409,7 @@ impl Engine {
     }
 
     async fn advance_as(&self, start: Start) -> Result<()> {
-        let track = {
+        let (track, station) = {
             let mut state = self.state.lock().await;
 
             if state.queue.len() < MIN_QUEUED {
@@ -414,9 +421,10 @@ impl Engine {
                         // for equality-or-older: stamping each track as it is pushed would
                         // spread a batch across nanoseconds and let its later members survive.
                         let at = Instant::now();
-                        state
-                            .queue
-                            .extend(tracks.into_iter().map(|track| Fetched { track, at }));
+                        state.queue.extend(tracks.into_iter().map(|track| Fetched {
+                            track,
+                            at: Some(at),
+                        }));
                     }
                     Err(e) if e.is_stream_violation() => {
                         let _ = self.events.send(Event::StreamTaken);
@@ -436,14 +444,15 @@ impl Engine {
             }
             let next = state.queue.remove(0);
             state.current = Some(next.clone());
-            next.track
+            (next.track, state.station_token.clone())
         };
 
         eprintln!(
             "[engine] next: {:?} by {}",
             track.song_title, track.artist_name
         );
-        self.audio.play(&self.source_of(&track), start);
+        self.audio
+            .play(&self.source_of(&track, station.as_deref()), start);
         let _ = self.events.send(Event::TrackStarted(Box::new(track)));
 
         // A `TrackStarted` that did not start anything would otherwise leave the event stream
@@ -477,7 +486,7 @@ impl Engine {
     /// cost of being wrong the other way is the skipping this exists to stop.
     async fn retire_batch_of_current(&self) {
         let mut state = self.state.lock().await;
-        let Some(failed_at) = state.current.as_ref().map(|c| c.at) else {
+        let Some(failed_at) = state.current.as_ref().and_then(|c| c.at) else {
             return;
         };
         retire_no_fresher_than(&mut state.queue, failed_at);
@@ -551,12 +560,64 @@ impl Engine {
 
     /// What to hand the audio thread for `track`: its file in the cache when there is one,
     /// otherwise its stream URL.
-    fn source_of(&self, track: &Track) -> String {
+    ///
+    /// A cache hit also records the song as saved on `station`, which is how songs saved before
+    /// sidecars existed become findable: the next time they come round.
+    fn source_of(&self, track: &Track, station: Option<&str>) -> String {
         self.cache_config()
             .filter(|_| cacheable(track))
-            .and_then(|config| cache::take(&config.dir, &track.pandora_id))
+            .and_then(|config| {
+                let path = cache::take(&config.dir, &track.pandora_id)?;
+                cache::remember(&config.dir, track, station.unwrap_or_default());
+                Some(path)
+            })
             .and_then(|path| path.to_str().map(str::to_string))
             .unwrap_or_else(|| track.audio_url.clone())
+    }
+
+    /// The saved songs known on the station playing now, most recently played first. Empty when
+    /// the cache is off or nothing is playing.
+    pub async fn saved_songs(&self) -> Vec<cache::Listed> {
+        let Some(config) = self.cache_config() else {
+            return Vec::new();
+        };
+        let Some(station) = self.state.lock().await.station_token.clone() else {
+            return Vec::new();
+        };
+        cache::saved_songs(&config.dir, &station)
+    }
+
+    /// Jump to a saved song on the station playing now, straight from disk.
+    ///
+    /// The queue is left exactly as it was, so when the song ends the station carries on with
+    /// what Pandora had already lined up, and nothing is requested from Pandora to make the
+    /// jump. Only a song saved on *this* station is accepted: thumbs go to the station playing
+    /// now, and a song from another one would be rated on the wrong station.
+    pub async fn play_saved(&self, pandora_id: &str) -> Result<()> {
+        let config = self.cache_config().ok_or(Error::NotSaved)?;
+        let track = {
+            let mut state = self.state.lock().await;
+            let station = state.station_token.clone().ok_or(Error::NoStation)?;
+            let song = cache::saved(&config.dir, pandora_id)
+                .filter(|s| s.stations.contains(&station))
+                .ok_or(Error::NotSaved)?;
+            let path = cache::take(&config.dir, pandora_id).ok_or(Error::NotSaved)?;
+            let track = song.to_track(&path);
+            state.current = Some(Fetched {
+                track: track.clone(),
+                at: None,
+            });
+            track
+        };
+
+        eprintln!(
+            "[engine] saved: {:?} by {}",
+            track.song_title, track.artist_name
+        );
+        self.audio.stop();
+        self.audio.play(&track.audio_url, Start::Playing);
+        let _ = self.events.send(Event::TrackStarted(Box::new(track)));
+        Ok(())
     }
 
     /// Download the next track whole, if it is not cached already, so it plays from disk.
@@ -565,15 +626,17 @@ impl Engine {
     /// notices tracks ending. Returns the id it started on (or found already cached), so the
     /// caller tries each track once rather than retrying a failure every tick.
     async fn cache_next(&self, config: &CacheConfig) -> Option<String> {
-        let (next, keep) = {
+        let (next, keep, station) = {
             let state = self.state.lock().await;
             let next = state.queue.first()?.track.clone();
-            (next, cache_pins(&state))
+            let station = state.station_token.clone().unwrap_or_default();
+            (next, cache_pins(&state), station)
         };
         if !cacheable(&next) {
             return Some(next.pandora_id);
         }
         if let Some(path) = cache::find(&config.dir, &next.pandora_id) {
+            cache::remember(&config.dir, &next, &station);
             let id = next.pandora_id.clone();
             let _ = self
                 .events
@@ -588,6 +651,7 @@ impl Engine {
         tokio::spawn(async move {
             match cache::store(&http, &config.dir, &next.pandora_id, &next.audio_url).await {
                 Ok(path) => {
+                    cache::remember(&config.dir, &next, &station);
                     let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
                     cache::evict(&config.dir, config.max_bytes, &keep);
                     let _ = events.send(Event::NextDownloaded(Box::new(next), path));
@@ -610,7 +674,7 @@ impl Engine {
         let outgoing = self.audio.tempo().map(|t| t.bpm);
         let url = {
             let state = self.state.lock().await;
-            self.source_of(&state.queue.first()?.track)
+            self.source_of(&state.queue.first()?.track, state.station_token.as_deref())
         };
 
         let fetch_url = url.clone();
@@ -813,8 +877,10 @@ impl Engine {
         let Some(track) = self.now_playing().await else {
             return Err(Error::NoStation);
         };
+        let station = self.state.lock().await.station_token.clone();
         self.audio.stop();
-        self.audio.play(&self.source_of(&track), Start::Playing);
+        self.audio
+            .play(&self.source_of(&track, station.as_deref()), Start::Playing);
         // Re-announce so the UI resets its progress bar and re-syncs lyrics to zero.
         let _ = self.events.send(Event::TrackStarted(Box::new(track)));
         Ok(())
@@ -982,7 +1048,7 @@ fn cache_pins(state: &State) -> Vec<String> {
 /// one playlist request share one stamp exactly, and the comparison has to treat equal stamps
 /// as the same batch or the retirement would keep the very tracks it exists to drop.
 fn retire_no_fresher_than(queue: &mut Vec<Fetched>, at: Instant) {
-    queue.retain(|queued| queued.at > at);
+    queue.retain(|queued| queued.at > Some(at));
 }
 
 #[cfg(test)]
@@ -995,7 +1061,7 @@ mod tests {
                 song_title: title.into(),
                 ..Track::default()
             },
-            at,
+            at: Some(at),
         }
     }
 

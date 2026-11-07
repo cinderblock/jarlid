@@ -37,6 +37,102 @@ const EXTENSIONS: [&str; 3] = ["mp3", "aac", "m4a"];
 /// it is what a crash or a lost connection mid-download leaves behind.
 const PARTIAL: &str = "part";
 
+/// Extension of a song's sidecar: what the song *is* (title, artist, the stations it was saved
+/// on), which the audio file alone cannot say. Small, never counted towards the cache size, and
+/// deleted with its song.
+const SIDECAR: &str = "json";
+
+/// What is known about a saved song, kept beside it so the song can be found and played again.
+///
+/// Deliberately not [`pandora::Track`] itself: that carries the signed `audioURL`, a credential
+/// that has expired by the time anything reads this back, and telemetry URLs that mean nothing
+/// later.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SavedSong {
+    pub id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    /// Seconds.
+    pub length: u64,
+    pub art: Vec<SavedArt>,
+    /// For thumbs. Whether Pandora still accepts one from an earlier session is not known.
+    pub track_token: String,
+    /// Pandora's rating when the song was last seen: 1 = thumbs up.
+    pub rating: i32,
+    /// The station that produced it, which on QuickMix is one of the contributing stations.
+    pub station_id: String,
+    /// The station tokens it was saved or played on. What "this station's songs" means.
+    pub stations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SavedArt {
+    pub size: u32,
+    pub url: String,
+}
+
+impl SavedSong {
+    fn of(track: &pandora::Track) -> Self {
+        Self {
+            id: track.pandora_id.clone(),
+            title: track.song_title.clone(),
+            artist: track.artist_name.clone(),
+            album: track.album_title.clone(),
+            length: track.track_length,
+            art: track
+                .art()
+                .iter()
+                .map(|a| SavedArt {
+                    size: a.size,
+                    url: a.url.clone(),
+                })
+                .collect(),
+            track_token: track.track_token.clone(),
+            rating: track.song_rating,
+            station_id: track.station_id.clone(),
+            stations: Vec::new(),
+        }
+    }
+
+    /// The song as a track to play from `path`. The audio URL is the file itself: the one
+    /// Pandora signed for it is long dead, and the engine tells tracks apart by their URL, so
+    /// it has to be something.
+    pub fn to_track(&self, path: &Path) -> pandora::Track {
+        pandora::Track {
+            pandora_id: self.id.clone(),
+            track_token: self.track_token.clone(),
+            station_id: self.station_id.clone(),
+            song_title: self.title.clone(),
+            artist_name: self.artist.clone(),
+            album_title: self.album.clone(),
+            audio_url: path.to_string_lossy().into_owned(),
+            track_length: self.length,
+            track_type: "Track".into(),
+            song_rating: self.rating,
+            album_art: self
+                .art
+                .iter()
+                .map(|a| pandora::Art {
+                    size: a.size,
+                    url: a.url.clone(),
+                })
+                .collect(),
+            ..pandora::Track::default()
+        }
+    }
+}
+
+/// A saved song, with when it last played: the file's modified time, which is what eviction
+/// orders by too.
+#[derive(Debug, Clone)]
+pub struct Listed {
+    pub song: SavedSong,
+    pub played: SystemTime,
+}
+
 /// The file name stem for a `pandora_id`, or `None` if it cannot be one. Ids look like
 /// `TR:12345`; anything outside a conservative alphabet is mapped to `_` so no id can name a
 /// path outside the directory.
@@ -75,6 +171,71 @@ pub fn take(dir: &Path, id: &str) -> Option<PathBuf> {
         let _ = file.set_modified(SystemTime::now());
     }
     Some(path)
+}
+
+fn sidecar(dir: &Path, id: &str) -> Option<PathBuf> {
+    Some(dir.join(format!("{}.{SIDECAR}", stem(id)?)))
+}
+
+/// What is known about the saved song `id`, if it has a sidecar.
+pub fn saved(dir: &Path, id: &str) -> Option<SavedSong> {
+    let bytes = std::fs::read(sidecar(dir, id)?).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Record `track` as saved on `station`, beside its audio. Does nothing unless the audio is
+/// there: a sidecar is never written for a song that is not saved.
+///
+/// The details are refreshed from `track` each time (its rating may have changed), and the
+/// station is added to the ones it is already known on. Best effort: a song whose sidecar can't
+/// be written still plays; it just can't be found later.
+pub fn remember(dir: &Path, track: &pandora::Track, station: &str) {
+    if find(dir, &track.pandora_id).is_none() {
+        return;
+    }
+    let Some(path) = sidecar(dir, &track.pandora_id) else {
+        return;
+    };
+    let before = saved(dir, &track.pandora_id);
+    let mut song = SavedSong::of(track);
+    song.stations = before
+        .as_ref()
+        .map(|s| s.stations.clone())
+        .unwrap_or_default();
+    if !station.is_empty() && !song.stations.iter().any(|s| s == station) {
+        song.stations.push(station.to_string());
+    }
+    if before.as_ref() == Some(&song) {
+        return;
+    }
+    if let Ok(json) = serde_json::to_vec_pretty(&song) {
+        // Written beside it and renamed over, so a crash mid-write can't leave a sidecar that no
+        // longer parses and silently drops the song from the list.
+        let tmp = path.with_extension(SIDECAR_TMP);
+        if std::fs::write(&tmp, json).is_err() || std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+}
+
+/// A sidecar being written. Swept by [`evict`] if a crash leaves one.
+const SIDECAR_TMP: &str = "json-tmp";
+
+/// Every saved song known on `station`, most recently played first.
+pub fn saved_songs(dir: &Path, station: &str) -> Vec<Listed> {
+    let mut songs: Vec<Listed> = entries(dir)
+        .into_iter()
+        .filter_map(|(path, _, played)| {
+            let bytes = std::fs::read(path.with_extension(SIDECAR)).ok()?;
+            let song: SavedSong = serde_json::from_slice(&bytes).ok()?;
+            song.stations
+                .iter()
+                .any(|s| s == station)
+                .then_some(Listed { song, played })
+        })
+        .collect();
+    songs.sort_by(|a, b| b.played.cmp(&a.played));
+    songs
 }
 
 /// What a file holds, from its first bytes, as the extension Media Foundation needs.
@@ -206,6 +367,9 @@ pub fn evict(dir: &Path, max_bytes: u64, keep: &[&str]) {
             if path.extension().is_some_and(|e| e == PARTIAL) && !kept(&path) {
                 let _ = std::fs::remove_file(&path);
             }
+            if path.extension().is_some_and(|e| e == SIDECAR_TMP) {
+                let _ = std::fs::remove_file(&path);
+            }
         }
     }
 
@@ -220,7 +384,22 @@ pub fn evict(dir: &Path, max_bytes: u64, keep: &[&str]) {
         if kept(&path) || std::fs::remove_file(&path).is_err() {
             continue;
         }
+        let _ = std::fs::remove_file(path.with_extension(SIDECAR));
         total -= size;
+    }
+
+    // Sidecars whose song is gone, deleted by hand or by something outside this module.
+    if let Ok(read) = std::fs::read_dir(dir) {
+        for entry in read.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == SIDECAR)
+                && !EXTENSIONS
+                    .iter()
+                    .any(|ext| path.with_extension(ext).is_file())
+            {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
     }
 }
 
@@ -427,6 +606,113 @@ mod tests {
             .await
             .is_err());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    fn track(id: &str, title: &str) -> pandora::Track {
+        pandora::Track {
+            pandora_id: id.into(),
+            song_title: title.into(),
+            artist_name: "Artist".into(),
+            track_token: "tok".into(),
+            track_length: 200,
+            track_type: "Track".into(),
+            audio_url: "https://signed.example/secret".into(),
+            ..pandora::Track::default()
+        }
+    }
+
+    fn titles(listed: Vec<Listed>) -> Vec<String> {
+        listed.into_iter().map(|l| l.song.title).collect()
+    }
+
+    #[test]
+    fn a_saved_song_is_listed_on_the_stations_it_was_saved_on() {
+        let dir = scratch("remember");
+        put(&dir, "TR:a", "mp3", 100, 300);
+        put(&dir, "TR:b", "mp3", 100, 100);
+
+        remember(&dir, &track("TR:a", "A"), "ST:1");
+        remember(&dir, &track("TR:b", "B"), "ST:1");
+        remember(&dir, &track("TR:a", "A"), "ST:2");
+
+        assert_eq!(
+            titles(saved_songs(&dir, "ST:1")),
+            ["B", "A"],
+            "most recently played first"
+        );
+        assert_eq!(titles(saved_songs(&dir, "ST:2")), ["A"]);
+        assert!(saved_songs(&dir, "ST:3").is_empty());
+        assert_eq!(
+            saved(&dir, "TR:a").unwrap().stations,
+            ["ST:1", "ST:2"],
+            "a second station is added, not swapped in"
+        );
+    }
+
+    #[test]
+    fn a_sidecar_never_holds_the_signed_url_or_counts_as_a_song() {
+        let dir = scratch("sidecar");
+        put(&dir, "TR:a", "mp3", 100, 0);
+        remember(&dir, &track("TR:a", "A"), "ST:1");
+
+        let text = std::fs::read_to_string(dir.join("TR_a.json")).unwrap();
+        assert!(!text.contains("signed.example"));
+        assert_eq!(
+            stats(&dir),
+            CacheStats {
+                bytes: 100,
+                songs: 1
+            }
+        );
+    }
+
+    #[test]
+    fn no_sidecar_is_written_for_a_song_that_is_not_saved() {
+        let dir = scratch("unsaved");
+        remember(&dir, &track("TR:a", "A"), "ST:1");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn eviction_takes_the_sidecar_with_the_song() {
+        let dir = scratch("evict-sidecar");
+        put(&dir, "TR:old", "mp3", 100, 300);
+        put(&dir, "TR:new", "mp3", 100, 100);
+        remember(&dir, &track("TR:old", "Old"), "ST:1");
+        remember(&dir, &track("TR:new", "New"), "ST:1");
+        std::fs::write(dir.join("TR_gone.json"), b"{}").unwrap();
+        std::fs::write(dir.join("TR_new.json-tmp"), b"{").unwrap();
+
+        evict(&dir, 100, &[]);
+
+        assert!(!dir.join("TR_old.json").exists());
+        assert!(dir.join("TR_new.json").exists());
+        assert!(
+            !dir.join("TR_gone.json").exists(),
+            "an orphan sidecar was left"
+        );
+        assert!(!dir.join("TR_new.json-tmp").exists());
+        assert_eq!(titles(saved_songs(&dir, "ST:1")), ["New"]);
+    }
+
+    #[test]
+    fn a_saved_song_plays_from_its_file() {
+        let dir = scratch("to-track");
+        put(&dir, "TR:a", "mp3", 100, 0);
+        let mut t = track("TR:a", "A");
+        t.album_art = vec![pandora::Art {
+            size: 500,
+            url: "https://art/500".into(),
+        }];
+        remember(&dir, &t, "ST:1");
+
+        let path = find(&dir, "TR:a").unwrap();
+        let back = saved(&dir, "TR:a").unwrap().to_track(&path);
+        assert_eq!(back.song_title, "A");
+        assert_eq!(back.track_token, "tok");
+        assert_eq!(back.audio_url, path.to_string_lossy());
+        assert_eq!(back.art().len(), 1);
+        assert!(back.kind().is_music());
     }
 
     #[test]

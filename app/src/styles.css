@@ -389,7 +389,8 @@ body {
 body.remote #thumbUp,
 body.remote #thumbDown,
 body.remote #replay,
-body.remote #history {
+body.remote #history,
+body.remote #find-btn {
   display: none;
 }
 
@@ -1651,7 +1652,8 @@ body.remote #remote-vol-wrap {
    The scrim is deliberately unblurred. A blur would turn the thing it is meant to let you
    watch into a smear — dimming keeps the motion legible where blurring destroys it. */
 #stations-page,
-#settings-page {
+#settings-page,
+#find-page {
   position: fixed;
   inset: 0;
   z-index: 8;
@@ -1664,6 +1666,13 @@ body.remote #remote-vol-wrap {
 }
 #settings-page {
   --panel: 80%;
+}
+/* One column of songs: narrower than the others, and as tall as Settings. */
+#find-page {
+  --panel: 80%;
+}
+#find-page .page-panel {
+  width: min(720px, 92%);
 }
 .page-panel {
   width: var(--panel);
@@ -1704,21 +1713,25 @@ body.remote #remote-vol-wrap {
   }
 }
 #stations-page.opening,
-#settings-page.opening {
+#settings-page.opening,
+#find-page.opening {
   animation: scrim-in 220ms ease-out;
 }
 #stations-page.opening .page-panel,
-#settings-page.opening .page-panel {
+#settings-page.opening .page-panel,
+#find-page.opening .page-panel {
   animation: stations-in 320ms cubic-bezier(0.22, 0.75, 0.25, 1);
 }
 /* Closing runs the same shapes backwards; each page's module hides it when the timer
    ends. */
 #stations-page.closing,
-#settings-page.closing {
+#settings-page.closing,
+#find-page.closing {
   animation: scrim-in 200ms ease-in reverse;
 }
 #stations-page.closing .page-panel,
-#settings-page.closing .page-panel {
+#settings-page.closing .page-panel,
+#find-page.closing .page-panel {
   animation: stations-in 200ms cubic-bezier(0.4, 0, 0.7, 0.3) reverse;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1729,12 +1742,17 @@ body.remote #remote-vol-wrap {
   #settings-page.opening,
   #settings-page.opening .page-panel,
   #settings-page.closing,
-  #settings-page.closing .page-panel {
+  #settings-page.closing .page-panel,
+  #find-page.opening,
+  #find-page.opening .page-panel,
+  #find-page.closing,
+  #find-page.closing .page-panel {
     animation: none;
   }
 }
 #stations-page[hidden],
-#settings-page[hidden] {
+#settings-page[hidden],
+#find-page[hidden] {
   display: none;
 }
 #sp-list {
@@ -1756,7 +1774,8 @@ body.remote #remote-vol-wrap {
   letter-spacing: 0.02em;
   white-space: nowrap;
 }
-#sp-search {
+#sp-search,
+#fs-search {
   flex: 1;
   min-width: 0;
   background: rgba(var(--wash), 0.08);
@@ -3305,4 +3324,109 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
 .lyric-publish:disabled {
   cursor: progress;
   opacity: 0.7;
+}
+
+/* ---- Find a song ----
+   One column of the songs saved for this station. The rows borrow the Stations page's cover
+   tile (.sp-art) so a song without art still has something in its place. */
+#fs-search:disabled {
+  opacity: 0.5;
+}
+#fs-sub {
+  padding: 10px 26px 0;
+  font-size: 0.74rem;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+#fs-sub:empty {
+  display: none;
+}
+#fs-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 8px 14px 24px;
+}
+.fs-empty {
+  color: var(--faint);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  padding: 16px 12px;
+  max-width: 34rem;
+}
+.fs-empty p {
+  margin: 0 0 12px;
+}
+.fs-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 0.92rem;
+  text-align: left;
+  cursor: pointer;
+}
+/* The cursor is where Enter goes: the arrow keys move it, and so does the pointer, so there
+   is only ever one highlighted row and it is always the one that will play. */
+.fs-row.cursor {
+  background: rgba(var(--wash), 0.08);
+  color: var(--fg);
+}
+.fs-row.playing .fs-title {
+  color: var(--accent);
+}
+.fs-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.fs-title,
+.fs-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fs-meta {
+  font-size: 0.76rem;
+  color: var(--faint);
+}
+.fs-up {
+  flex: none;
+  display: grid;
+  color: var(--accent);
+}
+.fs-up svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.fs-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.fs-len {
+  font-size: 0.8rem;
+}
+.fs-when {
+  font-size: 0.7rem;
+  color: var(--faint);
+  white-space: nowrap;
 }

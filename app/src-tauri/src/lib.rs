@@ -615,6 +615,8 @@ pub fn run() {
             native::native_output_devices,
             native::audio_cache_stats,
             native::audio_cache_clear,
+            native::saved_songs,
+            native::native_play_saved,
             native::native_set_output,
             native::native_output_device,
             debug_log::debug_log_path,

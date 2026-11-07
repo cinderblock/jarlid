@@ -121,6 +121,11 @@ anywhere in it.
   uses no more data than streaming would, and a repeat plays from disk. The songs played longest
   ago make room when it fills. Adverts are never saved. Off by default, because Pandora's terms
   don't generally allow keeping their audio outside their own offline feature.
+- **Find a song**: the magnifier in the top bar (or Ctrl+F) searches the songs saved for the
+  station playing now, by title, artist or album, and plays the one you pick straight from disk.
+  When it ends the station carries on with what it had lined up. Only songs saved while on this
+  station are listed, because thumbs go to the station playing. Needs Saved songs on; songs saved
+  by a version before this one appear once they come round again.
 - **Playback that survives being left alone**: a long pause releases the stream and the audio
   device rather than sitting on a connection that the far end will quietly drop, and pressing play
   re-opens the track and seeks back to the second you paused on. The same watchdog covers a stream

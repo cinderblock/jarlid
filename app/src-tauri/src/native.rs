@@ -119,6 +119,71 @@ pub fn audio_cache_clear(app: AppHandle) -> engine::CacheStats {
         .unwrap_or_default()
 }
 
+/// The saved songs known on the station playing now, for the Find a song panel.
+///
+/// `enabled: false` when Saved songs is off in Settings. The engine may still hold a cache then
+/// (the transient one auto-sync uses), but Settings promises that turning saving off stops songs
+/// being played from disk, and the transient one is not the listener's to browse anyway.
+#[tauri::command]
+pub async fn saved_songs(
+    app: AppHandle,
+    state: tauri::State<'_, NativeEngine>,
+) -> Result<serde_json::Value, String> {
+    if !crate::settings::get(&app).audio_cache.enabled {
+        return Ok(json!({ "enabled": false, "songs": [] }));
+    }
+    let songs = state.get().await?.saved_songs().await;
+    let songs: Vec<_> = songs
+        .into_iter()
+        .map(|listed| {
+            let song = listed.song;
+            let art = |min: u32| {
+                song.art
+                    .iter()
+                    .filter(|a| a.size >= min)
+                    .min_by_key(|a| a.size)
+                    .or_else(|| song.art.iter().max_by_key(|a| a.size))
+                    .map(|a| a.url.clone())
+                    .unwrap_or_default()
+            };
+            let played = listed
+                .played
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            json!({
+                "id": song.id,
+                "title": song.title,
+                "artist": song.artist,
+                "album": song.album,
+                "length": song.length,
+                "art": art(130),
+                "thumbUp": song.rating > 0,
+                "playedAt": played,
+            })
+        })
+        .collect();
+    Ok(json!({ "enabled": true, "songs": songs }))
+}
+
+/// Jump to a saved song on the station playing now. The station carries on afterwards.
+#[tauri::command]
+pub async fn native_play_saved(
+    app: AppHandle,
+    state: tauri::State<'_, NativeEngine>,
+    id: String,
+) -> Result<(), String> {
+    if !crate::settings::get(&app).audio_cache.enabled {
+        return Err("Saved songs is off in Settings".into());
+    }
+    state
+        .get()
+        .await?
+        .play_saved(&id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Where the last-played station is remembered, so launching resumes what you were listening to
 /// rather than whatever happens to sort first.
 fn last_station_path(app: &AppHandle) -> Option<std::path::PathBuf> {

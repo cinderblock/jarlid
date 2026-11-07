@@ -17,6 +17,7 @@ import { fillMarked, fillWords } from "./draft-marks";
 import { wordTimesFor } from "./edit-lines";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
 import * as stationStats from "./station-stats";
+import * as findSong from "./find-song";
 
 // ---- types -------------------------------------------------------------
 interface NowPlaying {
@@ -524,6 +525,7 @@ async function onNowPlaying(np: NowPlaying) {
   // event to notice it by. Only on the transition — this runs on every track.
   if (wasSignedOut) renderVersion();
 
+  findSong.setNowPlaying(np.title || "", np.artist || "");
   titleInner.textContent = np.title || "—";
   artistEl.textContent = np.artist || "";
   albumEl.textContent = np.album || "";
@@ -1809,6 +1811,7 @@ onState<{ name: string; token: string }>("engine://station-active", (p) => {
   activeStation = p.name || activeStation;
   activeToken = p.token;
   stationsPage.setActiveStation(activeStation, p.token);
+  findSong.setStation(activeStation);
 });
 
 onState<{ stations: StationInfo[] }>("engine://stations", (p) => {
@@ -1831,6 +1834,26 @@ speakersBtn.addEventListener("click", (e) => {
 $("settings-btn").addEventListener("click", (e) => {
   e.stopPropagation();
   settingsPage.open();
+});
+// Find a song saved for this station. Local playback only: the button is hidden while the
+// screen shows the speakers, and Ctrl+F does nothing then either.
+findSong.init({
+  openSettings: () => settingsPage.open(),
+  onError: (message) => showToast(message),
+});
+const findBtn = $("find-btn");
+findBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  void findSong.open();
+});
+attachTip(findBtn, () => "Find a song saved for this station (Ctrl+F)");
+window.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "f") return;
+  // The webview's own find bar is no use here, so the shortcut is always ours.
+  e.preventDefault();
+  if (remoteMode || player.hidden || findSong.isOpen() || stationsPage.isOpen()) return;
+  if (!$("settings-page").hidden) return;
+  void findSong.open();
 });
 // index.html paints from a cached preference before the first frame; this is the
 // authoritative answer arriving a moment later.

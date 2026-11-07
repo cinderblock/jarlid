@@ -258,7 +258,7 @@ function groups(rows: StationInfo[]): Group[] {
 
 /// Up to two letters to stand in for a cover. Two words give their initials, one word gives
 /// its first two letters — "Alt Nation" reads better as AN than as AL.
-function initials(name: string) {
+export function initials(name: string) {
   const words = name.trim().split(/\s+/).filter(Boolean);
   if (!words.length) return "?";
   const letters = words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2);
@@ -267,7 +267,7 @@ function initials(name: string) {
 
 /// A stable hue per station name, so the same station is the same colour every launch and
 /// two stations next to each other are rarely the same one. Plain FNV-ish string hash.
-function hueOf(name: string) {
+export function hueOf(name: string) {
   let h = 2166136261;
   for (let i = 0; i < name.length; i++) {
     h ^= name.charCodeAt(i);
@@ -288,7 +288,7 @@ const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
 
 /// "yesterday", "3 weeks ago" — the largest unit that fits, because nobody wants a station
 /// last played in March described in hours.
-function ago(ms: number) {
+export function ago(ms: number) {
   const sec = Math.round((ms - Date.now()) / 1000);
   for (const [unit, size] of UNITS) {
     if (Math.abs(sec) >= size) return rtf.format(Math.round(sec / size), unit);
