@@ -587,6 +587,20 @@ impl Engine {
         cache::saved_songs(&config.dir, &station)
     }
 
+    /// The tuner token of the station playing now.
+    pub async fn station_token(&self) -> Option<String> {
+        self.state.lock().await.station_token.clone()
+    }
+
+    /// Every saved song on any station, most recently played first. Empty when the cache is
+    /// off. For matching the play history against what is on disk.
+    pub async fn all_saved_songs(&self) -> Vec<cache::Listed> {
+        match self.cache_config() {
+            Some(config) => cache::all_saved(&config.dir),
+            None => Vec::new(),
+        }
+    }
+
     /// Jump to a saved song on the station playing now, straight from disk.
     ///
     /// The queue is left exactly as it was, so when the song ends the station carries on with
@@ -594,20 +608,51 @@ impl Engine {
     /// jump. Only a song saved on *this* station is accepted: thumbs go to the station playing
     /// now, and a song from another one would be rated on the wrong station.
     pub async fn play_saved(&self, pandora_id: &str) -> Result<()> {
+        self.play_saved_as(pandora_id, None).await
+    }
+
+    /// Switch to the station `token` (named `name`) and start it with a saved song.
+    ///
+    /// The cross-station form of [`Engine::play_saved`], for the play history: the song has to
+    /// have been saved on `token`, and becoming that station is what keeps thumbs going to the
+    /// station the song belongs to. The queue is the new station's, so it starts empty and is
+    /// filled from Pandora when the song ends, as when any station is picked. Already on
+    /// `token`, this is exactly [`Engine::play_saved`] and the queue is kept.
+    pub async fn play_saved_on(&self, name: &str, token: &str, pandora_id: &str) -> Result<()> {
+        self.play_saved_as(pandora_id, Some((name, token))).await
+    }
+
+    async fn play_saved_as(&self, pandora_id: &str, on: Option<(&str, &str)>) -> Result<()> {
         let config = self.cache_config().ok_or(Error::NotSaved)?;
-        let track = {
+        let (track, switched) = {
             let mut state = self.state.lock().await;
-            let station = state.station_token.clone().ok_or(Error::NoStation)?;
+            let station = match on {
+                Some((_, token)) => token.to_string(),
+                None => state.station_token.clone().ok_or(Error::NoStation)?,
+            };
+            // Everything that can fail is checked before anything changes, so a refusal
+            // leaves the station that was playing untouched.
             let song = cache::saved(&config.dir, pandora_id)
                 .filter(|s| s.stations.contains(&station))
                 .ok_or(Error::NotSaved)?;
             let path = cache::take(&config.dir, pandora_id).ok_or(Error::NotSaved)?;
             let track = song.to_track(&path);
+
+            let switched = match on {
+                Some((name, token)) if state.station_token.as_deref() != Some(token) => {
+                    state.station_token = Some(token.to_string());
+                    state.station_rest_id = None;
+                    state.station_name = name.to_string();
+                    state.queue.clear();
+                    Some(name.to_string())
+                }
+                _ => None,
+            };
             state.current = Some(Fetched {
                 track: track.clone(),
                 at: None,
             });
-            track
+            (track, switched)
         };
 
         eprintln!(
@@ -615,6 +660,9 @@ impl Engine {
             track.song_title, track.artist_name
         );
         self.audio.stop();
+        if let Some(name) = switched {
+            let _ = self.events.send(Event::StationChanged(name));
+        }
         self.audio.play(&track.audio_url, Start::Playing);
         let _ = self.events.send(Event::TrackStarted(Box::new(track)));
         Ok(())

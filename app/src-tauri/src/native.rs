@@ -119,6 +119,37 @@ pub fn audio_cache_clear(app: AppHandle) -> engine::CacheStats {
         .unwrap_or_default()
 }
 
+/// One saved song as the UI sees it. `stations` is only for the play history, which has to know
+/// which station a song can be played on; the Find a song panel ignores it.
+fn saved_song_json(listed: engine::cache::Listed) -> serde_json::Value {
+    let song = listed.song;
+    let art = |min: u32| {
+        song.art
+            .iter()
+            .filter(|a| a.size >= min)
+            .min_by_key(|a| a.size)
+            .or_else(|| song.art.iter().max_by_key(|a| a.size))
+            .map(|a| a.url.clone())
+            .unwrap_or_default()
+    };
+    let played = listed
+        .played
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    json!({
+        "id": song.id,
+        "title": song.title,
+        "artist": song.artist,
+        "album": song.album,
+        "length": song.length,
+        "art": art(130),
+        "thumbUp": song.rating > 0,
+        "playedAt": played,
+        "stations": song.stations,
+    })
+}
+
 /// The saved songs known on the station playing now, for the Find a song panel.
 ///
 /// `enabled: false` when Saved songs is off in Settings. The engine may still hold a cache then
@@ -133,55 +164,53 @@ pub async fn saved_songs(
         return Ok(json!({ "enabled": false, "songs": [] }));
     }
     let songs = state.get().await?.saved_songs().await;
-    let songs: Vec<_> = songs
-        .into_iter()
-        .map(|listed| {
-            let song = listed.song;
-            let art = |min: u32| {
-                song.art
-                    .iter()
-                    .filter(|a| a.size >= min)
-                    .min_by_key(|a| a.size)
-                    .or_else(|| song.art.iter().max_by_key(|a| a.size))
-                    .map(|a| a.url.clone())
-                    .unwrap_or_default()
-            };
-            let played = listed
-                .played
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            json!({
-                "id": song.id,
-                "title": song.title,
-                "artist": song.artist,
-                "album": song.album,
-                "length": song.length,
-                "art": art(130),
-                "thumbUp": song.rating > 0,
-                "playedAt": played,
-            })
-        })
-        .collect();
+    let songs: Vec<_> = songs.into_iter().map(saved_song_json).collect();
     Ok(json!({ "enabled": true, "songs": songs }))
 }
 
-/// Jump to a saved song on the station playing now. The station carries on afterwards.
+/// Every saved song on every station, for the play history to tell which of its songs can be
+/// played again, and on which station. `enabled: false` when Saved songs is off, as above.
+#[tauri::command]
+pub async fn saved_index(
+    app: AppHandle,
+    state: tauri::State<'_, NativeEngine>,
+) -> Result<serde_json::Value, String> {
+    if !crate::settings::get(&app).audio_cache.enabled {
+        return Ok(json!({ "enabled": false, "songs": [] }));
+    }
+    let songs = state.get().await?.all_saved_songs().await;
+    let songs: Vec<_> = songs.into_iter().map(saved_song_json).collect();
+    Ok(json!({ "enabled": true, "songs": songs }))
+}
+
+/// Jump to a saved song. The station carries on afterwards.
+///
+/// With no station, the song must be saved on the station playing now. With one (the play
+/// history's case), the engine switches to that station first when it is not the one playing,
+/// and it is remembered as the station to resume, as picking a station is.
 #[tauri::command]
 pub async fn native_play_saved(
     app: AppHandle,
     state: tauri::State<'_, NativeEngine>,
     id: String,
+    station_name: Option<String>,
+    station_token: Option<String>,
 ) -> Result<(), String> {
     if !crate::settings::get(&app).audio_cache.enabled {
         return Err("Saved songs is off in Settings".into());
     }
-    state
-        .get()
-        .await?
-        .play_saved(&id)
-        .await
-        .map_err(|e| e.to_string())
+    let engine = state.get().await?;
+    match (station_name, station_token) {
+        (Some(name), Some(token)) => {
+            engine
+                .play_saved_on(&name, &token, &id)
+                .await
+                .map_err(|e| e.to_string())?;
+            save_last_station(&app, &name, &token);
+            Ok(())
+        }
+        _ => engine.play_saved(&id).await.map_err(|e| e.to_string()),
+    }
 }
 
 /// Where the last-played station is remembered, so launching resumes what you were listening to
@@ -403,15 +432,23 @@ async fn attach(
                         // to?" — invisible otherwise. `None` on an ordinary station, where it
                         // would just repeat the station name.
                         let source = engine.source_station().await.unwrap_or_default();
+                        // The token as well as the name, for the play history. The
+                        // `station-active` event says the same, but it is sent once a switch has
+                        // returned, which can be after this track's event.
+                        let station_token = engine.station_token().await.unwrap_or_default();
 
                         emit_state(
                             &app,
                             "engine://nowplaying",
                             json!({
+                                // For the play history, which matches what it recorded against
+                                // the songs saved on disk. Names alone are ambiguous.
+                                "id": track.pandora_id,
                                 "title": track.song_title,
                                 "artist": track.artist_name,
                                 "album": track.album_title,
                                 "station": station,
+                                "stationToken": station_token,
                                 "sourceStation": source,
                                 "art": art(1080),
                                 "artFallback": art(500),

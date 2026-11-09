@@ -223,15 +223,19 @@ const SIDECAR_TMP: &str = "json-tmp";
 
 /// Every saved song known on `station`, most recently played first.
 pub fn saved_songs(dir: &Path, station: &str) -> Vec<Listed> {
+    let mut songs = all_saved(dir);
+    songs.retain(|listed| listed.song.stations.iter().any(|s| s == station));
+    songs
+}
+
+/// Every saved song with a sidecar, on any station, most recently played first.
+pub fn all_saved(dir: &Path) -> Vec<Listed> {
     let mut songs: Vec<Listed> = entries(dir)
         .into_iter()
         .filter_map(|(path, _, played)| {
             let bytes = std::fs::read(path.with_extension(SIDECAR)).ok()?;
             let song: SavedSong = serde_json::from_slice(&bytes).ok()?;
-            song.stations
-                .iter()
-                .any(|s| s == station)
-                .then_some(Listed { song, played })
+            Some(Listed { song, played })
         })
         .collect();
     songs.sort_by(|a, b| b.played.cmp(&a.played));
@@ -642,6 +646,11 @@ mod tests {
         );
         assert_eq!(titles(saved_songs(&dir, "ST:2")), ["A"]);
         assert!(saved_songs(&dir, "ST:3").is_empty());
+        assert_eq!(
+            titles(all_saved(&dir)),
+            ["B", "A"],
+            "every station's, each once, most recently played first"
+        );
         assert_eq!(
             saved(&dir, "TR:a").unwrap().stations,
             ["ST:1", "ST:2"],

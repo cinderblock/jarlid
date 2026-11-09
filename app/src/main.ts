@@ -18,13 +18,27 @@ import { wordTimesFor } from "./edit-lines";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
 import * as stationStats from "./station-stats";
 import * as findSong from "./find-song";
+import * as historyPage from "./history-page";
+import {
+  HISTORY_LENGTH,
+  STRIP_LENGTH,
+  parse as parseHistory,
+  playability,
+  pushed,
+  type HistItem,
+  type Playability,
+} from "./play-history";
 
 // ---- types -------------------------------------------------------------
 interface NowPlaying {
+  /// Pandora's id for the track. For the play history.
+  id?: string;
   title: string;
   artist: string;
   album: string;
   station: string;
+  /// The station's tuner token, which the name is not: two stations can share a name.
+  stationToken?: string;
   /// On QuickMix, which contributing station this track came from. Empty on an ordinary station.
   sourceStation: string;
   art: string;
@@ -581,34 +595,91 @@ async function waitForDuration(key: string): Promise<number | null> {
 }
 
 // ---- recently-played gallery -------------------------------------------
-interface HistItem {
-  art: string;
-  title: string;
-  artist: string;
-  album?: string;
-  at?: number;
+// The strip shows the newest STRIP_LENGTH; the History page (history-page.ts) all of it.
+// Stored newest-first in localStorage; see play-history.ts.
+let history: HistItem[] = parseHistory(localStorage.getItem("history"));
+
+/**
+ * Keep the history. A full `localStorage` is the one way this fails, and the history is the
+ * thing to give way: it is halved until it fits rather than losing the song just played.
+ */
+function saveHistory() {
+  for (let keep = history.length; keep > 0; keep = Math.floor(keep / 2)) {
+    try {
+      localStorage.setItem("history", JSON.stringify(history.slice(0, keep)));
+      history = history.slice(0, keep);
+      return;
+    } catch {
+      // Quota: try again with less.
+    }
+  }
 }
-let history: HistItem[] = [];
-try {
-  history = JSON.parse(localStorage.getItem("history") || "[]");
-} catch {
-  history = [];
-}
+
 const histModal = $("hist-modal");
 const hmArt = $<HTMLImageElement>("hm-art");
 const hmTitle = $("hm-title");
 const hmArtist = $("hm-artist");
 const hmAlbum = $("hm-album");
 const hmWhen = $("hm-when");
+const hmPlay = $<HTMLButtonElement>("hm-play");
+const hmPlayLabel = $("hm-play-label");
+const hmWhy = $("hm-why");
+/** What the card's Play button does, once the saved index has answered. */
+let hmVerdict: Playability | null = null;
+/** Which opening of the card an answer from Rust belongs to. */
+let hmToken = 0;
 
 function openHistModal(h: HistItem) {
   hmArt.src = h.art;
   hmTitle.textContent = h.title;
   hmArtist.textContent = h.artist;
   hmAlbum.textContent = h.album || "";
-  hmWhen.textContent = h.at ? `Played ${new Date(h.at).toLocaleString()}` : "";
+  const when = h.at
+    ? `Played ${new Date(h.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`
+    : "";
+  hmWhen.textContent = [when, h.stationName ? `on ${h.stationName}` : ""].filter(Boolean).join(" ");
+  hmPlay.hidden = true;
+  hmWhy.textContent = "";
+  hmVerdict = null;
   histModal.hidden = false;
+
+  const token = ++hmToken;
+  if (remoteMode) {
+    hmWhy.textContent = "Playing on the speakers: songs play again only on this computer.";
+    return;
+  }
+  if (h === history[0] && currentKey === `${h.title}|${h.artist}`) {
+    hmWhy.textContent = "Playing now.";
+    return;
+  }
+  historyPage
+    .fetchIndex()
+    .then((index) => {
+      if (token !== hmToken || histModal.hidden) return;
+      const p = playability(h, index, activeToken, stationList);
+      if (p.kind === "play") {
+        hmVerdict = p;
+        hmPlayLabel.textContent = p.switches ? `Play on ${p.station.name || "its station"}` : "Play again";
+        hmPlay.hidden = false;
+      } else if (p.kind === "off") {
+        hmWhy.textContent = "Saved songs is off in Settings, so songs can't be played again.";
+      } else {
+        hmWhy.textContent = `${historyPage.describe(p)}, so it can't be played again.`;
+      }
+    })
+    .catch(() => {
+      // Not signed in: there is nothing to play it on, and nothing to explain.
+    });
 }
+hmPlay.addEventListener("click", () => {
+  if (!hmVerdict) return;
+  histModal.hidden = true;
+  historyPage.playEntry(hmVerdict).catch((e) => showToast(String(e)));
+});
+$("hm-all").addEventListener("click", () => {
+  histModal.hidden = true;
+  void historyPage.open();
+});
 histModal.addEventListener("click", (e) => {
   if (!(e.target as HTMLElement).closest(".hm-card")) histModal.hidden = true;
 });
@@ -647,7 +718,10 @@ function attachTip(el: HTMLElement, text: () => string) {
 function renderHistory() {
   histEl.innerHTML = "";
   const newestLeft = recentsOrder() === "newestLeft";
-  const order = newestLeft ? history : [...history].reverse();
+  const recent = history.slice(0, STRIP_LENGTH);
+  const order = newestLeft ? recent : [...recent].reverse();
+  // The way further back sits past the oldest cover, where scrolling back runs out.
+  if (history.length && !newestLeft) histEl.appendChild(moreTile());
   for (const h of order) {
     const wrap = document.createElement("div");
     wrap.className = "hist-wrap";
@@ -660,8 +734,25 @@ function renderHistory() {
     wrap.appendChild(img);
     histEl.appendChild(wrap);
   }
+  if (history.length && newestLeft) histEl.appendChild(moreTile());
   showNewestEnd();
   requestAnimationFrame(coverflow);
+}
+
+/** The strip's tile for the History page. */
+function moreTile() {
+  const wrap = document.createElement("div");
+  wrap.className = "hist-wrap";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "hist-more";
+  btn.setAttribute("aria-label", "All history");
+  btn.innerHTML =
+    '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3.5 2"/></svg>';
+  btn.addEventListener("click", () => void historyPage.open());
+  attachTip(btn, () => `All ${history.length} songs played (Ctrl+H)`);
+  wrap.appendChild(btn);
+  return wrap;
 }
 
 /**
@@ -723,14 +814,25 @@ window.addEventListener(RECENTS_ORDER_CHANGED, () => renderHistory());
 function pushHistory(np: NowPlaying) {
   const art = np.artFallback || np.art;
   if (!art || !np.title) return;
-  if (history[0] && history[0].title === np.title && history[0].artist === np.artist) return;
+  const entry: HistItem = {
+    art,
+    title: np.title,
+    artist: np.artist,
+    album: np.album,
+    at: Date.now(),
+    id: np.id || undefined,
+    station: np.stationToken || undefined,
+    stationName: np.station || undefined,
+  };
+  const next = pushed(history, entry, HISTORY_LENGTH);
+  if (next === history) return;
   // The same moment, counted against the station rather than the track: this is where the
   // Stations page's "recently played" and "most played" orders come from.
   stationStats.noteTrack(art);
-  history.unshift({ art, title: np.title, artist: np.artist, album: np.album, at: Date.now() });
-  history = history.slice(0, 40);
-  localStorage.setItem("history", JSON.stringify(history));
+  history = next;
+  saveHistory();
   renderHistory();
+  historyPage.refresh();
 }
 renderHistory();
 // Cap accumulated per-track sync offsets (no timestamps to age by; a rare
@@ -1812,11 +1914,16 @@ onState<{ name: string; token: string }>("engine://station-active", (p) => {
   activeToken = p.token;
   stationsPage.setActiveStation(activeStation, p.token);
   findSong.setStation(activeStation);
+  historyPage.refresh();
 });
+
+/// The station list, for the play history to name stations and skip deleted ones.
+let stationList: StationInfo[] = [];
 
 onState<{ stations: StationInfo[] }>("engine://stations", (p) => {
   const next = p.stations;
   if (!next?.length) return;
+  stationList = next;
   stationStats.prune(next.map((s) => s.token));
   stationsPage.setStations(next, activeStation);
   // The station list arriving means we know what's playing, so its modes are fetchable.
@@ -1854,6 +1961,32 @@ window.addEventListener("keydown", (e) => {
   if (remoteMode || player.hidden || findSong.isOpen() || stationsPage.isOpen()) return;
   if (!$("settings-page").hidden) return;
   void findSong.open();
+});
+// History: everything played, and any of it saved on disk played again. Local playback only,
+// like Find a song.
+historyPage.init({
+  history: () => history,
+  active: () => activeToken,
+  stations: () => stationList,
+  remote: () => remoteMode,
+  playing: () =>
+    history[0] && currentKey === `${history[0].title}|${history[0].artist}` ? history[0] : undefined,
+  openSettings: () => settingsPage.open(),
+  onError: (message) => showToast(message),
+});
+const historyBtn = $("history-btn");
+historyBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  void historyPage.open();
+});
+attachTip(historyBtn, () => "History: everything played, and play it again (Ctrl+H)");
+window.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "h") return;
+  e.preventDefault();
+  if (remoteMode || player.hidden || historyPage.isOpen() || findSong.isOpen() || stationsPage.isOpen()) return;
+  if (!$("settings-page").hidden) return;
+  histModal.hidden = true;
+  void historyPage.open();
 });
 // index.html paints from a cached preference before the first frame; this is the
 // authoritative answer arriving a moment later.
