@@ -16,7 +16,10 @@ one song, just a one-off tool to validate one language or the other on every ver
 - Records: 2785399 (this track, French only, 55 lines, the timing grid); 11043109 (Split Brain,
   each line in both languages, coarser lines, about 0.25 s later).
 - Engine: Parakeet v3 q8 through the shipped `jarlid-autosync.exe`; CPU, about 100 s for the song.
-- Scratch: `%LOCALAPPDATA%\Temp\dopamine-fr-en`.
+- Scratch was `%LOCALAPPDATA%\Temp\dopamine-fr-en` and `...\Temp\dopamine-pub`; both were
+  wiped 2026-11-09 (see Findings). What matters now lives in the repo:
+  `scripts/mix-lyrics-dopamine-published.json` (the published text, as the app's override JSON)
+  and `scripts/check-dopamine-lrclib.py`.
 
 ## Decisions already made (don't re-ask)
 
@@ -33,8 +36,8 @@ one song, just a one-off tool to validate one language or the other on every ver
        0:35 and 1:32, the "ah" at 0:54.86 kept, `My D-O-P-A-M-I-N-E` and `Ma D.O.P.A.M.I.N.E`.
        Those were written straight into the override, which also cleared its `draft`, so it is
        now an ordinary local edit. The final text lives there, not in the script's output: a
-       rerun would lose Cameron's corrections. Previous copy:
-       `%LOCALAPPDATA%\Temp\dopamine-fr-en\override-before-final.json`.
+       rerun would lose Cameron's corrections. Kept in the repo since 2026-11-09:
+       `scripts/mix-lyrics-dopamine-published.json`.
 5. [x] Published 2026-11-02, at Cameron's request, by script rather than the editor: the same
        challenge and `POST /api/publish` as `publish_lyrics`, under record 2785399's own name.
        201, and `/api/get/2785399` and the track lookup both serve all 67 lines unchanged. As the
@@ -51,8 +54,10 @@ one song, just a one-off tool to validate one language or the other on every ver
 8. [x] Republished 2026-11-05 4:48 PM PST (00:48Z), at Cameron's yes: 201, both read-backs
        match. The local edit stays in place as a safety net.
 9. [ ] Watching every 12 h (T3 scheduled task "Watch dopamine lyrics on LRCLIB", this thread):
-       `dopamine-pub\check.py` logs to `dopamine-pub\check.log`. A revert is reported, never
-       republished without asking. ← current
+       `python -I scripts/check-dopamine-lrclib.py`, logging to
+       `%LOCALAPPDATA%\com.camer.pandora-desktop\dopamine-watch\check.log`. Still ours at every
+       check from 2026-11-05 4:48 PM PST (00:48Z) on. A revert is reported, never republished
+       without asking. No end date set. ← current
 
 To regenerate (`--hear` only if the grid's times change):
 
@@ -77,6 +82,12 @@ Not marked but worth a look: the 12 Da-ra-da lines aren't in record 2785399. The
 11043109 with its times moved 0.25 s earlier, so their timing is an estimate, not the record's.
 
 ## Findings / gotchas
+
+- **`%LOCALAPPDATA%\Temp` gets wiped.** Between 4:48 AM and 3:41 PM PST 2026-11-09, both
+  scratch folders lost everything but `check.py` and `check.log`: the reference copy,
+  `publish.py`, the audio, `heard.json`, `all-records.json`. The 4:48 PM check then failed with
+  `FileNotFoundError: ...dopamine-pub\override-published.json`, not a revert (LRCLIB still
+  matched). Keep anything that must last in the repo or the app's data folder, not Temp.
 
 - **The 2026-11-02 publish didn't stick.** By 11-05 the record was the old French again. Not the
   missing `lyricsfile` in our request: LRCLIB builds one from the LRC (`publish_lyrics.rs`,
