@@ -387,9 +387,12 @@ for timestamp correlation against the debug log.
 ### Proposed fix (needs the user's explicit yes; host networking)
 
 `Set-VMSwitch -Name "VLAN-vSwitch" -EnableSoftwareRsc $false`. Undo: same with `$true`.
-Software RSC coalesces received TCP segments inside vmswitch's receive DPC; it is the documented
-source of long vmswitch DPCs. The I219-V has no VMQ, so the switch cannot spread that work off
-CPU 0. At 1 Gbps the throughput cost of losing RSC should be negligible.
+Software RSC coalesces received TCP segments inside vmswitch's receive DPC. **Correction
+(2026-11-10):** this was first written up as "the documented source of long vmswitch DPCs". That
+overstated it. It is a common suspect, not something this trace shows. The trace says *that*
+vmswitch runs long on CPU 0, not *which part* of vmswitch does. The I219-V has no VMQ, so the
+switch cannot spread that work off CPU 0. At 1 Gbps the throughput cost of losing RSC should be
+negligible.
 
 Verify by repeating the DPC-only trace under the same kind of load and comparing the vmswitch
 histogram and Jarlid's late-callback rate (baseline: 3 late callbacks in 3 min, 1,374 vmswitch
@@ -401,7 +404,48 @@ If audiodg itself is held up, a bigger Jarlid buffer or a higher priority cannot
 engine is late for every stream on the machine. Exclusive-mode WASAPI would bypass audiodg, but
 not the DPC queue on CPU 0, and it locks out other apps' audio.
 
+### More findings (read-only, 2026-11-10 1:30 PM PST)
+
+- `VLAN-vSwitch` extensions: **Microsoft NDIS Capture is Enabled** (Azure VFP and WFP are
+  disabled). NDIS Capture is the packet-capture filter that `pktmon` / `netsh trace` use. It is
+  a second suspect alongside RSC.
+- Eight host vNICs on the switch (VLANs 0, 3, 4 (FMS), 5, 7, 11, 12, 99).
+- No HD Audio module appears by name in the DPC table. The audio bus driver is KMDF, so its DPCs
+  are counted under `Wdf01000.sys`, which runs on CPU 0 (1.34 s) and CPU 1 (0.48 s) in the
+  3-minute trace. So some audio-driver DPCs very likely queue behind vmswitch on CPU 0.
+- `jarlid.exe` and `audiodg.exe` both run with affinity `0xFFF` (all 12 CPUs).
+
+### Candidate fixes, best evidence first
+
+1. **Find out what vmswitch is doing** before changing it: a ~30 s sampled-stack trace (the
+   `PROFILE` kernel flag with `-stackwalk Profile`), resolved against Microsoft's public symbols,
+   shows which vmswitch functions the 16 ms is spent in. Then pick the change that targets it.
+2. Disable software RSC on the switch (above).
+3. Disable the NDIS Capture extension on the switch, if nothing relies on it.
+4. Turn on default-queue vRSS (`Set-VMSwitch -DefaultQueueVrssEnabled $true`), which spreads
+   vmswitch's host-vNIC receive work across CPUs in software. Unverified that it works without
+   VMQ hardware.
+
+All of 2–4 are host networking changes: one explicit yes per change.
+
+### Moving Jarlid off CPU 0
+
+Possible: `SetThreadSelectedCpuSets` (soft, preferred) or `SetThreadAffinityMask` (hard) on the
+output callback thread. It only protects Jarlid's own thread, and only in one case: a thread
+*running* on CPU 0 when a DPC starts is stuck until the DPC ends. A thread merely *waiting* to
+run is already sent to another CPU by the scheduler. The burst pattern in the log points at
+audiodg and the audio driver, not Jarlid's thread, and neither of those moves with Jarlid.
+
+Cheap, reversible test without a code change: set `jarlid.exe`'s process affinity to `0xFFE`
+(all but CPU 0) and compare the late-callback rate under load with the baseline (3 in 3 min).
+If it drops, ship the CPU-set change. If not, it is audiodg or the driver, and the fix is on the
+vmswitch side.
+
 ### Open questions for the user
 
-1. Approve the `Set-VMSwitch … -EnableSoftwareRsc $false` change? (Recommended.)
-2. When were the glitches heard, and on which output? Lets them be matched against the log.
+1. Run the Jarlid-off-CPU-0 affinity test? (Recommended: harmless, Jarlid only, resets when it
+   restarts.)
+2. Run the sampled-stack trace to see what vmswitch is doing? (Recommended before any network
+   change.)
+3. Then: which network change, if any (RSC, NDIS Capture, vRSS)? Each needs its own yes.
+4. When were the glitches heard, and on which output? Lets them be matched against the log.
