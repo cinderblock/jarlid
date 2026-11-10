@@ -310,3 +310,98 @@ from-scratch Tauri release build.
 In **v1.14.1** (`27ac345`, 2026-10-20): the callback-thread MMCSS fix, the stream-only reopen,
 and the callback timing in the debug log. Release run succeeded and all five assets are
 attached (setup exe, msi, both signatures, `latest.json` at 1.14.1).
+
+## Round 4 (2026-11-10): "still getting glitches in v1.20.1 when heavily loaded"
+
+### What the debug log says (v1.20.1, installed 2026-11-09 6:46 PM PST)
+
+- **Zero counted device underruns and zero starved stretches in v1.20.1.** The last underrun in
+  the log is 2026-11-09 1:00 PM PST, on the build before. By the app's own measurement its output
+  callback was never late enough to empty its 30 ms client buffer.
+- What remains are "late callback" near-misses: 22–27 ms waits on the Dell (Intel Display Audio)
+  today at 100% CPU, and 29–44 ms waits on the WH-1000XM4 (Bluetooth) on 2026-11-09 7:02 PM PST,
+  with no underrun counted (the Bluetooth endpoint's real buffer is larger than the 30 ms asked
+  for; the log prints the request, not the size Windows granted).
+- **The shape is a burst:** each late callback is followed by callbacks 0.1–0.9 ms apart
+  ("period" in the log is the shortest gap in the 50 ms poll). An auto-reset event signalled
+  once cannot produce that if *our* thread was the one held up: it would give one big request
+  and then the normal ~10 ms cadence. Back-to-back signals mean the audio engine (audiodg) was
+  itself late and caught up in a rush. That points downstream of the app: audiodg, the
+  endpoint driver, or DPC/ISR latency. A bigger client buffer does not help with any of those.
+
+### Measuring it
+
+ETW trace with WPR's built-in `Audio` (audio glitches) and `CPU` profiles, recorded at
+12:18 PM PST while the machine sat at 100% CPU (rustc, Firefox, Defender, SearchIndexer) and
+Jarlid was playing on the Dell. Analysed with `xperf` from the Windows Performance Toolkit.
+
+#### Gotcha: WPR's `CPU` profile is unusable at 100% CPU
+
+The first attempt (`wpr -start CPU -start Audio -filemode`, started 12:18 PM PST) produced a
+**10 GB** ETL. `wpr -stop` then ran for more than 30 minutes, most likely generating NGEN PDBs for
+managed processes, and was killed. `xperf -a tracestats` reported **177,530 lost events** and
+exited 112 (`ERROR_DISK_FULL`, with 128 GB free on C:). The file was deleted.
+
+Second attempt (12:56 PM PST): `wpr -start Audio -filemode` alone, 90 s, stopped with
+`wpr -stop <file> -skipPdbGen`.
+
+#### Second trace: a driver, not the app (2026-11-10 12:59–1:00 PM PST)
+
+`wpr` refused to start again ("The profiles are already running", `0xc5583001`) while reporting
+nothing recording: Windows' own `WPR_initiated_DiagTrackMiniLogger_WPR System Collector`
+session holds the collector. Left alone; recorded with `xperf` directly instead
+(`-on PROC_THREAD+LOADER+DPC+INTERRUPT+CSWITCH+DISPATCHER`, plus a `Microsoft-Windows-Audio`
+user session). 60 s, 394 MB. No Jarlid late callback fell inside that minute, but the DPC
+histogram (`xperf -a dpcisr`) is damning on its own:
+
+- 601 DPCs over 2 ms in 66 s, 324 of them 8–16 ms, 3 of them 16–32 ms. **Every one is
+  `vmswitch.sys`** (the Hyper-V virtual switch). No other driver has a single DPC over 1 ms.
+- `vmswitch.sys` used 7.7 s of **CPU 0** (11.6%), and almost nothing on the other 11 CPUs.
+- Network at the time: only ~1.6 MB/s, 1,700 packets/s on the I219-V.
+- `VLAN-vSwitch` (external, on the I219-V, carrying 8 tagged host vNICs) has
+  `SoftwareRscEnabled = True`. The I219-V has no VMQ, so all the switch's receive work runs as
+  DPCs, and nearly all of it on CPU 0.
+
+A DPC blocks everything at lower IRQL on its CPU, other DPCs included. A 16–32 ms vmswitch DPC on
+the CPU that services the audio interrupt or timer delays audiodg by that much. That fits the
+22–44 ms late callbacks followed by catch-up bursts exactly. Third trace (DPC only, 3 min) is
+for timestamp correlation against the debug log.
+
+#### Third trace: correlation (DPC only, 1:04:36–1:07:36 PM PST, 142 MB, 0 events lost)
+
+`xperf -a dumper`, DPC rows, timestamps converted from the header's `Trace Start` FILETIME.
+
+- **1,374 DPCs of 4 ms or more, every one `vmswitch.sys`, every one on CPU 0.** In 122 of 1,800
+  100 ms windows (6.8%), vmswitch held CPU 0 for more than half the window.
+- Jarlid late callbacks in the window, against the vmswitch DPCs of 4 ms or more in the 300 ms
+  before each log line (lines are written at the engine's 50 ms poll):
+  - 1:05:51.594 PM (23.6 ms wait): **eight back-to-back 12.5–16 ms vmswitch DPCs**,
+    1:05:51.580–.681, i.e. CPU 0 almost solidly in vmswitch for ~110 ms.
+  - 1:07:10.373 PM (28.2 ms wait): two 5.5 ms vmswitch DPCs, 1:07:10.264 and .427.
+  - 1:07:11.082 PM (29.8 ms wait): none of 4 ms or more.
+- So: a strong match for one, weak for one, none for the third. With vmswitch saturating CPU 0
+  6.8% of the time, this is good evidence that vmswitch is *a* cause, not proof it is the only one.
+- None of these three was an underrun of Jarlid's own 30 ms buffer. Whether audiodg's endpoint
+  buffer glitched at those moments is not visible from inside Jarlid.
+
+### Proposed fix (needs the user's explicit yes; host networking)
+
+`Set-VMSwitch -Name "VLAN-vSwitch" -EnableSoftwareRsc $false`. Undo: same with `$true`.
+Software RSC coalesces received TCP segments inside vmswitch's receive DPC; it is the documented
+source of long vmswitch DPCs. The I219-V has no VMQ, so the switch cannot spread that work off
+CPU 0. At 1 Gbps the throughput cost of losing RSC should be negligible.
+
+Verify by repeating the DPC-only trace under the same kind of load and comparing the vmswitch
+histogram and Jarlid's late-callback rate (baseline: 3 late callbacks in 3 min, 1,374 vmswitch
+DPCs of 4 ms or more).
+
+### Nothing app-side would help
+
+If audiodg itself is held up, a bigger Jarlid buffer or a higher priority cannot help: the
+engine is late for every stream on the machine. Exclusive-mode WASAPI would bypass audiodg, but
+not the DPC queue on CPU 0, and it locks out other apps' audio.
+
+### Open questions for the user
+
+1. Approve the `Set-VMSwitch … -EnableSoftwareRsc $false` change? (Recommended.)
+2. When were the glitches heard, and on which output? Lets them be matched against the log.
