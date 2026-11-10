@@ -625,6 +625,7 @@ const hmAlbum = $("hm-album");
 const hmWhen = $("hm-when");
 const hmPlay = $<HTMLButtonElement>("hm-play");
 const hmPlayLabel = $("hm-play-label");
+const hmSwitch = $<HTMLButtonElement>("hm-switch");
 const hmWhy = $("hm-why");
 /** What the card's Play button does, once the saved index has answered. */
 let hmVerdict: Playability | null = null;
@@ -641,6 +642,7 @@ function openHistModal(h: HistItem) {
     : "";
   hmWhen.textContent = [when, h.stationName ? `on ${h.stationName}` : ""].filter(Boolean).join(" ");
   hmPlay.hidden = true;
+  hmSwitch.hidden = true;
   hmWhy.textContent = "";
   hmVerdict = null;
   histModal.hidden = false;
@@ -660,8 +662,12 @@ function openHistModal(h: HistItem) {
       const p = playability(h, index, activeToken, stationList);
       if (p.kind === "play") {
         hmVerdict = p;
-        hmPlayLabel.textContent = p.switches ? `Play on ${p.station.name || "its station"}` : "Play again";
+        // Saved on another station: play it here, or go to that station. Either way its thumbs
+        // go to the station it was saved on.
+        hmPlayLabel.textContent = p.switches ? "Play here" : "Play again";
         hmPlay.hidden = false;
+        hmSwitch.textContent = `Play on ${p.station.name || "its station"}`;
+        hmSwitch.hidden = !p.switches;
       } else if (p.kind === "off") {
         hmWhy.textContent = "Saved songs is off in Settings, so songs can't be played again.";
       } else {
@@ -672,19 +678,24 @@ function openHistModal(h: HistItem) {
       // Not signed in: there is nothing to play it on, and nothing to explain.
     });
 }
-hmPlay.addEventListener("click", () => {
-  if (!hmVerdict) return;
-  histModal.hidden = true;
+/**
+ * Play the card's song. `here` keeps the station playing (and its queue), with the song's
+ * thumbs going to the station it was saved on; otherwise the station switches to that one.
+ */
+function playFromCard(here: boolean) {
   const p = hmVerdict;
-  if (p.kind !== "play") return;
-  // The station travels only when it changes: without it the engine keeps the queue.
+  if (p?.kind !== "play") return;
+  histModal.hidden = true;
   const args: Record<string, string> = { id: p.id };
-  if (p.switches) {
+  if (p.switches && here) args.fromStation = p.station.token;
+  if (p.switches && !here) {
     args.stationName = p.station.name;
     args.stationToken = p.station.token;
   }
   invoke("native_play_saved", args).catch((e) => showToast(String(e)));
-});
+}
+hmPlay.addEventListener("click", () => playFromCard(true));
+hmSwitch.addEventListener("click", () => playFromCard(false));
 histModal.addEventListener("click", (e) => {
   if (!(e.target as HTMLElement).closest(".hm-card")) histModal.hidden = true;
 });

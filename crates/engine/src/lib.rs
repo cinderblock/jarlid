@@ -160,6 +160,26 @@ struct Fetched {
     /// `None` for a saved song the listener jumped to: no playlist request issued it, so its
     /// failing to open says nothing about anything in the queue.
     at: Option<Instant>,
+    /// Where this track's thumbs go, when that is not the station playing: a saved song from
+    /// another station, played here without switching (see [`Engine::play_saved_from`]).
+    thumbs_to: Option<String>,
+}
+
+/// The station a thumb on `current` goes to: its own, if it carries one, else `playing`.
+fn thumb_station(current: Option<&Fetched>, playing: Option<&str>) -> Option<String> {
+    current
+        .and_then(|c| c.thumbs_to.clone())
+        .or_else(|| playing.map(str::to_string))
+}
+
+/// Which station a saved song is played on, for [`Engine::play_saved_as`].
+enum SavedOn<'a> {
+    /// The station playing now, which the song must have been saved on.
+    Current,
+    /// The station playing now, though the song was saved on `from`; thumbs go to `from`.
+    Here { from: &'a str },
+    /// Switch to `token` first, which the song must have been saved on.
+    Switch { name: &'a str, token: &'a str },
 }
 
 struct State {
@@ -424,6 +444,7 @@ impl Engine {
                         state.queue.extend(tracks.into_iter().map(|track| Fetched {
                             track,
                             at: Some(at),
+                            thumbs_to: None,
                         }));
                     }
                     Err(e) if e.is_stream_violation() => {
@@ -608,7 +629,16 @@ impl Engine {
     /// jump. Only a song saved on *this* station is accepted: thumbs go to the station playing
     /// now, and a song from another one would be rated on the wrong station.
     pub async fn play_saved(&self, pandora_id: &str) -> Result<()> {
-        self.play_saved_as(pandora_id, None).await
+        self.play_saved_as(pandora_id, SavedOn::Current).await
+    }
+
+    /// Play a saved song from the station `from` on the station playing now, without switching.
+    ///
+    /// The song must have been saved on `from`, and its thumbs go there rather than to the
+    /// station playing, so rating it here rates it where it came from. The queue is kept, as
+    /// with [`Engine::play_saved`].
+    pub async fn play_saved_from(&self, from: &str, pandora_id: &str) -> Result<()> {
+        self.play_saved_as(pandora_id, SavedOn::Here { from }).await
     }
 
     /// Switch to the station `token` (named `name`) and start it with a saved song.
@@ -619,16 +649,23 @@ impl Engine {
     /// filled from Pandora when the song ends, as when any station is picked. Already on
     /// `token`, this is exactly [`Engine::play_saved`] and the queue is kept.
     pub async fn play_saved_on(&self, name: &str, token: &str, pandora_id: &str) -> Result<()> {
-        self.play_saved_as(pandora_id, Some((name, token))).await
+        self.play_saved_as(pandora_id, SavedOn::Switch { name, token })
+            .await
     }
 
-    async fn play_saved_as(&self, pandora_id: &str, on: Option<(&str, &str)>) -> Result<()> {
+    async fn play_saved_as(&self, pandora_id: &str, on: SavedOn<'_>) -> Result<()> {
         let config = self.cache_config().ok_or(Error::NotSaved)?;
         let (track, switched) = {
             let mut state = self.state.lock().await;
+            let playing = state.station_token.clone();
+            // The station the song has to have been saved on.
             let station = match on {
-                Some((_, token)) => token.to_string(),
-                None => state.station_token.clone().ok_or(Error::NoStation)?,
+                SavedOn::Current => playing.clone().ok_or(Error::NoStation)?,
+                SavedOn::Here { from } => {
+                    playing.as_ref().ok_or(Error::NoStation)?;
+                    from.to_string()
+                }
+                SavedOn::Switch { token, .. } => token.to_string(),
             };
             // Everything that can fail is checked before anything changes, so a refusal
             // leaves the station that was playing untouched.
@@ -639,7 +676,7 @@ impl Engine {
             let track = song.to_track(&path);
 
             let switched = match on {
-                Some((name, token)) if state.station_token.as_deref() != Some(token) => {
+                SavedOn::Switch { name, token } if playing.as_deref() != Some(token) => {
                     state.station_token = Some(token.to_string());
                     state.station_rest_id = None;
                     state.station_name = name.to_string();
@@ -648,9 +685,13 @@ impl Engine {
                 }
                 _ => None,
             };
+            // After any switch, the song's station is the one playing unless it was played here.
+            let thumbs_to =
+                (state.station_token.as_deref() != Some(station.as_str())).then_some(station);
             state.current = Some(Fetched {
                 track: track.clone(),
                 at: None,
+                thumbs_to,
             });
             (track, switched)
         };
@@ -1053,7 +1094,7 @@ impl Engine {
     async fn feedback(&self, positive: bool) -> Result<()> {
         let mut state = self.state.lock().await;
         let (Some(station), Some(track)) = (
-            state.station_token.clone(),
+            thumb_station(state.current.as_ref(), state.station_token.as_deref()),
             state.current.as_ref().map(|c| c.track.clone()),
         ) else {
             return Err(Error::NoStation);
@@ -1110,7 +1151,24 @@ mod tests {
                 ..Track::default()
             },
             at: Some(at),
+            thumbs_to: None,
         }
+    }
+
+    #[test]
+    fn a_song_played_here_from_another_station_is_thumbed_there() {
+        let mut current = fetched("A", Instant::now());
+        assert_eq!(
+            thumb_station(Some(&current), Some("ST:1")).as_deref(),
+            Some("ST:1"),
+            "an ordinary track is thumbed on the station playing"
+        );
+        current.thumbs_to = Some("ST:2".into());
+        assert_eq!(
+            thumb_station(Some(&current), Some("ST:1")).as_deref(),
+            Some("ST:2")
+        );
+        assert_eq!(thumb_station(None, Some("ST:1")).as_deref(), Some("ST:1"));
     }
 
     fn titles(queue: &[Fetched]) -> Vec<&str> {

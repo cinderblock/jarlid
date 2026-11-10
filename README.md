@@ -130,8 +130,9 @@ anywhere in it.
 - **Play it again**: the recently-played strip under the art keeps the last 1,000 songs and
   scrolls back through all of them, drawing older covers as you get near its end. Click a cover
   for its card: a song saved on this computer has a Play button there. A song saved on another
-  station plays by switching to that station first, so thumbs still go where the song came
-  from; one that isn't saved says so. Needs Saved songs on.
+  station offers both **Play here**, which keeps the station playing and what it had lined up,
+  and **Play on** *that station*, which switches to it first. Either way its thumbs go to the
+  station it was saved on. One that isn't saved says so. Needs Saved songs on.
 - **Playback that survives being left alone**: a long pause releases the stream and the audio
   device rather than sitting on a connection that the far end will quietly drop, and pressing play
   re-opens the track and seeks back to the second you paused on. The same watchdog covers a stream

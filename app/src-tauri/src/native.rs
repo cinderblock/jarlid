@@ -185,9 +185,10 @@ pub async fn saved_index(
 
 /// Jump to a saved song. The station carries on afterwards.
 ///
-/// With no station, the song must be saved on the station playing now. With one (the play
-/// history's case), the engine switches to that station first when it is not the one playing,
-/// and it is remembered as the station to resume, as picking a station is.
+/// With no station, the song must be saved on the station playing now. With `from_station`, it
+/// was saved on that one and plays here anyway, its thumbs going to `from_station`. With a
+/// station name and token, the engine switches to that station first, and it is remembered as
+/// the station to resume, as picking a station is. The last two are the play history's.
 #[tauri::command]
 pub async fn native_play_saved(
     app: AppHandle,
@@ -195,11 +196,18 @@ pub async fn native_play_saved(
     id: String,
     station_name: Option<String>,
     station_token: Option<String>,
+    from_station: Option<String>,
 ) -> Result<(), String> {
     if !crate::settings::get(&app).audio_cache.enabled {
         return Err("Saved songs is off in Settings".into());
     }
     let engine = state.get().await?;
+    if let Some(from) = from_station {
+        return engine
+            .play_saved_from(&from, &id)
+            .await
+            .map_err(|e| e.to_string());
+    }
     match (station_name, station_token) {
         (Some(name), Some(token)) => {
             engine

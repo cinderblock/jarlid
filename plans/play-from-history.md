@@ -76,7 +76,28 @@ Two halves:
 5. [x] Checks, harness, commit (`a1f94ee`); v1.20.0 (`f027b88`) released with installer and
        `latest.json`: https://github.com/cinderblock/jarlid/releases/tag/v1.20.0
 
+## Play here, or Play on its station (after v1.20.1)
+
+A song saved on another station now has two buttons on its card instead of one that always
+switched.
+
+1. [x] Engine: `play_saved_from(from, id)` plays it on the station playing now. The track
+       carries `thumbs_to`, so `feedback` rates it on `from` (`thumb_station`, tested).
+2. [x] native.rs: `native_play_saved` takes optional `fromStation`.
+3. [x] Card: **Play here** (`#hm-play`) and **Play on <station>** (`#hm-switch`). A song
+       saved on the current station keeps a single **Play again**.
+4. [x] Checks (2026-11-09, after freeing disk): engine 27, app `cargo test --lib` 132,
+       `bun test` 77, `bun run build` clean, `rustfmt --check` clean, harness 24/24.
+5. [x] README; commit.
+6. [ ] **Real app check (Cameron)**: Play here on a song from another station, then thumb
+       it, and confirm Pandora accepts the thumb on the song's own station.
+7. [ ] Release (v1.21.0) only if Cameron asks.
+
 ## Findings / gotchas
+
+- **Disk full (2026-11-09).** C: hit 0 bytes mid-check. The Rust `target` folders were only
+  ~5 GB (`crates\target` 1.7, `app\src-tauri\target` 3.6), so they were not the cause.
+  Cameron freed the space.
 
 - **`showPlayer()` parked the strip on every song.** It runs on each `nowplaying`, so a new
   song yanked anyone scrolled back to the newest end. It now parks only on the reveal itself;
@@ -109,8 +130,9 @@ Two halves:
 
 ## Open questions for the user
 
-1. Cross-station play switches the station (my call, so thumbs stay correct). If you'd rather
-   it never switch, only same-station songs would be playable from History.
+1. ~~Cross-station play always switches the station.~~ Settled: the card now offers both
+   Play here and Play on its station.
+2. Release the two-button card as v1.21.0? (Not unless asked.)
 
 ## Things not to do
 
