@@ -90,6 +90,10 @@ Two parts:
   as the pane reads them (`wordTimesFor`). Text check against LRCLIB: same 48 lines and no
   added words. The only changes are your→you're, hoar→whore, "No Freedom"→"No freedom" and a
   stray trailing `"`.
+- [x] "Suck it" removed 2026-11-10: Cameron says it isn't sung. It came from LRCLIB's record,
+  not from the engine, which never heard it. So LRCLIB's text is wrong there too.
+- [ ] Vocalizations after "Fuck it" (about 17–22 s): the engine heard nothing there. Waiting on
+  Cameron to say what they are, then time them from the audio as a line like `(ooh, ooh)`.
 - [x] Recogniser: `app/src/sections.ts` (+ tests), Rust twin `autosync::text::is_section_label`.
 - [x] Pane headings (`appendHead` in `main.ts`, `.lyric-section`): not `.line`, so the
   highlighter, flags and plain follow all keep counting rows only.
