@@ -103,8 +103,8 @@ Steps:
    needed.
 4. [x] Ignored real-song test (`AUTOSYNC_REAL_SONG`, `repeat::tests::real_song`) on Wings: offsets
    56.49 and 112.95 s, coverage 53% → 88%, 0.8 s for features and search in release mode.
-5. [ ] Commit (done after this edit). Release: **not** cut. A version bump needs Cameron's
-   say-so for this one. v1.21.0 carried only the section headings.
+5. [x] Committed as `10db6be`. Released as v1.22.0 (`d4c8efa`) on Cameron's go-ahead,
+   2026-11-10. v1.21.0 carried only the section headings.
 
 ## Progress log
 
