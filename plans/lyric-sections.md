@@ -65,11 +65,46 @@ Two parts:
 5. Editor keeps labels on save.
 6. README, then commit.
 
-## Later / proposals (need Cameron's yes)
+## Missed repeats in autosync (approved 2026-11-10: "sure")
 
-- **Missed choruses in autosync:** when the engine hears nothing in a section the plain text says
-  repeats, place it where the music repeats, using chorus 1's timings. Step 1 does this by hand;
-  doing it natively would rescue songs like Wings automatically.
+When the engine hears little or nothing of a block of lines that the lyrics repeat (a chorus),
+find that block in the audio by matching it against a copy that *was* heard, and copy the heard
+copy's timings across, shifted. Wings is the test case: chorus 2 should land at +56.46 s and
+chorus 3 at +112.93 s.
+
+Design:
+- **Repeats come from the text, not the labels.** A block is a run of 2 or more consecutive sung
+  lines whose normalised text recurs elsewhere in the plain lyrics. Labels are optional, so this
+  works on any lyrics.
+- **Reference and weak copies.** The reference is the copy with the most words matched (at least
+  60%). A weak copy is one with under 30% matched.
+- **Search.** The window lies between the last anchored line before the weak copy and the first
+  one after it. The template is the reference block's audio features: chroma plus log-band
+  spectrum, z-scored per track. The best offset is accepted only if it clearly beats both the
+  window's median score and its next-best peak at least 1 s away.
+- **Result.** The weak copy's lines get the reference's line times plus the offset, and count as
+  anchored. The words they recover count toward coverage, because an audio match is evidence. So
+  a song like Wings can pass the 60% gate.
+- **Stored.** The offsets found are kept in the stored result (`repeats`), so re-timing from
+  stored heard words (an aligner bump) still has them without the audio.
+- Pure logic and features live in `crates/autosync` (`repeat.rs`). The app computes features from
+  the 16 kHz PCM it already decodes for the engine.
+
+Steps:
+1. [x] Python prototype at 16 kHz. Chorus 2 came out at 95.84 s (95.82 by hand) and chorus 3 at
+   152.32 s (152.29). A window with no chorus scored 0.13. The acceptance rule is best ≥ 0.5,
+   at least 0.15 over the median and at least 0.05 over the next peak.
+2. [x] `autosync::repeat` (`candidates`, `Features`, `find`) and `Alignment::anchor_repeats`,
+   with synthetic tests. The FFT comes from `rustfft`.
+3. [x] App: `run` decodes once, writing the WAV for the engine and computing features from the
+   same PCM. `time()` takes `Repeats::Find` or `Repeats::Known`. Stored results keep `repeats`
+   and `repeats_checked`. An older result whose lyrics have a missed repeat gets a `Job::Repeats`:
+   the audio is decoded and checked, and the engine is not re-run. No `align::VERSION` bump was
+   needed.
+4. [x] Ignored real-song test (`AUTOSYNC_REAL_SONG`, `repeat::tests::real_song`) on Wings: offsets
+   56.49 and 112.95 s, coverage 53% → 88%, 0.8 s for features and search in release mode.
+5. [ ] Commit (done after this edit). Release: **not** cut. A version bump needs Cameron's
+   say-so for this one. v1.21.0 carried only the section headings.
 
 ## Progress log
 
@@ -113,6 +148,14 @@ Two parts:
 - [x] Editor: label rows are styled as headings, the timing pass skips them, and save keeps
   them out of `synced` and the Lyricsfile and restores the old plain text's labels.
 - [x] README.
+- [x] **v1.21.0 released** 2026-11-10 at about 1:50 PM PST (21:50Z): section headings. Release
+  run `42907531473` succeeded, with the installer, its signature and `latest.json`.
+- [x] Obvious: "I can't articulate it" (Cameron confirmed). The "oh" lines are placed per the
+  published lyrics (Dork: intro and outro, 3 then 4 oh's). The intro is one line at 0:00.88;
+  its two groups couldn't be told apart in the audio. The outro is 2:10.63 and 2:18.26, cleared
+  at 2:22.0. These lines are left unreviewed in the draft review state, for Cameron to check.
+- Dropped: the Wings vocalizations after "Fuck it". Cameron doesn't remember them, and nothing
+  will be invented.
 
 ## Findings, after building
 

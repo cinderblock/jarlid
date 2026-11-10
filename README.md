@@ -25,7 +25,10 @@ anywhere in it.
   ([Parakeet v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), run by whisper.cpp) hears
   the song, and the known words are lined up against what it heard. Only timings are added: the
   words, and their order, are LRCLIB's exactly, however the model misheard them. Lines it
-  didn't hear at all are placed from the song's line pace and its stanzas. The next song is
+  didn't hear at all are placed from the song's line pace and its stanzas. When the model hears
+  a chorus once but misses a later copy, Jarlid finds that copy in the music and gives it the
+  timings of the copy it heard. It matches the music of the heard copy against the stretch where
+  the missed one must be, and does so only where the match is clear. The next song is
   worked on while the current one plays, so it is usually ready when it starts; a song that
   starts with nothing prepared fills in from the playhead as it is heard. Across 56 test songs,
   counting every line shown, 74% of lines land within 0.3 s of LRCLIB's hand-synced timings, 90%

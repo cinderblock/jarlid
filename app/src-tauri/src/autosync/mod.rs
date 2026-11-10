@@ -248,6 +248,9 @@ enum Job {
     Align(String),
     /// LRCLIB has no words: write them.
     Draft,
+    /// Timed before, from these words, but a block the lyrics repeat was missed and the music was
+    /// never checked for it. Only the audio is needed, not the engine (see `autosync::repeat`).
+    Repeats(String, Stored),
 }
 
 async fn run(
@@ -278,10 +281,14 @@ async fn run(
         return Ok(());
     }
     let job = match lyrics.plain {
-        // Done before for these words — or tried, and failed the gate. Not again until they
-        // change, or the aligner does and the song has to be heard again to re-time it.
-        Some(plain) if current(app, &key, &plain).is_some() => return Ok(()),
-        Some(plain) => Job::Align(plain),
+        Some(plain) => match current(app, &key, &plain) {
+            // Done before for these words — or tried, and failed the gate. Not again until they
+            // change, or the aligner does and the song has to be heard again to re-time it.
+            Some(s) if s.repeats_checked || !misses_repeats(&plain, &s) => return Ok(()),
+            // Results from before missed repeats were looked for: just the music to check.
+            Some(s) => Job::Repeats(plain, s),
+            None => Job::Align(plain),
+        },
         // Drafted before, or found to have nothing worth drafting.
         None if !setting.drafts || current_draft(app, &key).is_some() => return Ok(()),
         None => Job::Draft,
@@ -310,18 +317,59 @@ async fn run(
         match job {
             Job::Align(_) => "syncing",
             Job::Draft => "drafting",
+            Job::Repeats(..) => "looking for missed repeats",
         }
     );
 
     let dir = work_dir(app).ok_or("no cache directory")?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let wav = dir.join(format!("{}.wav", file_stem(&track.pandora_id)));
-    {
+    // The engine reads a WAV; finding missed repeats reads the music's features. A draft has no
+    // lyrics to repeat, and a repeats check doesn't run the engine.
+    let (wants_wav, wants_features) =
+        (!matches!(job, Job::Repeats(..)), !matches!(job, Job::Draft));
+    let features = {
         let wav = wav.clone();
-        tokio::task::spawn_blocking(move || decode_to_wav(&src, &wav))
-            .await
-            .map_err(|e| e.to_string())??;
-    }
+        tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let pcm = decode_16k(&src)?;
+            if wants_wav {
+                write_wav(&pcm, &wav)?;
+            }
+            Ok(wants_features.then(|| features_of(&pcm)))
+        })
+        .await
+        .map_err(|e| e.to_string())??
+    };
+
+    let job = match job {
+        Job::Repeats(plain, mut s) => {
+            let heard = heard_of(&s);
+            let duration = if s.duration > 0.0 {
+                s.duration
+            } else {
+                duration
+            };
+            let (lrc, coverage, repeats) =
+                time(&plain, &heard, duration, Repeats::Find(features.as_ref()));
+            eprintln!(
+                "[autosync] {} — {}: {} missed repeat(s) found in the music; {:.0}% of words placed{}",
+                track.artist_name,
+                track.song_title,
+                repeats.len(),
+                coverage * 100.0,
+                if lrc.is_some() { "" } else { "; below the gate, not shown" }
+            );
+            let ok = lrc.is_some();
+            s.lrc = lrc.clone();
+            s.coverage = coverage;
+            s.repeats = stored_repeats(&repeats);
+            s.repeats_checked = true;
+            store(app, &key, &s);
+            emit_lines(app, track, Shown { lrc, doubt: None }, 0, 0, true, ok);
+            return Ok(());
+        }
+        other => other,
+    };
 
     let gpu = setting.gpu;
     let result = match &job {
@@ -346,6 +394,7 @@ async fn run(
             };
             hear(app, installed, track, &wav, from, gpu, shown).await
         }
+        Job::Repeats(..) => unreachable!("handled before the engine runs"),
     };
     let _ = std::fs::remove_file(&wav);
     let Some(heard) = result? else {
@@ -359,8 +408,9 @@ async fn run(
             finish_draft(app, installed, track, &key, &heard, duration);
             return Ok(());
         }
+        Job::Repeats(..) => unreachable!("handled before the engine runs"),
     };
-    let (lrc, coverage) = time(&plain, &heard, duration);
+    let (lrc, coverage, repeats) = time(&plain, &heard, duration, Repeats::Find(features.as_ref()));
     let ok = lrc.is_some();
     eprintln!(
         "[autosync] {} — {}: {:.0}% of words heard{}",
@@ -388,6 +438,8 @@ async fn run(
                 .map(|w| (w.text.clone(), w.start, w.end))
                 .collect(),
             duration,
+            repeats: stored_repeats(&repeats),
+            repeats_checked: true,
         },
     );
     emit_lines(app, track, Shown { lrc, doubt: None }, 0, 0, true, ok);
@@ -539,15 +591,53 @@ async fn hear(
     Ok(Some(heard))
 }
 
-/// The timings for `plain` from `heard`, or `None` below the quality gate, and the share of the
-/// lyric words heard.
-fn time(plain: &str, heard: &[autosync::Heard], duration: f64) -> (Option<String>, f64) {
+/// Where missed repeats come from when timing: the music, or a result that already found them.
+enum Repeats<'a> {
+    Find(Option<&'a autosync::repeat::Features>),
+    Known(&'a [autosync::repeat::Repeat]),
+}
+
+/// The timings for `plain` from `heard`, or `None` below the quality gate; the share of the lyric
+/// words placed by what was heard or by the music; and the missed repeats the music placed.
+fn time(
+    plain: &str,
+    heard: &[autosync::Heard],
+    duration: f64,
+    repeats: Repeats,
+) -> (Option<String>, f64, Vec<autosync::repeat::Repeat>) {
     let lines: Vec<&str> = plain.lines().collect();
-    let aligned = autosync::align::align(&lines, heard);
+    let mut aligned = autosync::align::align(&lines, heard);
+    let found = match repeats {
+        Repeats::Find(Some(f)) => autosync::repeat::find(&lines, &aligned, f, duration),
+        Repeats::Find(None) => Vec::new(),
+        Repeats::Known(r) => r.to_vec(),
+    };
+    aligned.anchor_repeats(&found);
     let lrc = (aligned.coverage() >= GATE)
         .then(|| lrc_of(&aligned, &lines, duration))
         .flatten();
-    (lrc, aligned.coverage())
+    (lrc, aligned.coverage(), found)
+}
+
+/// Whether a stored result's lyrics repeat a block it missed: then the music is worth checking.
+fn misses_repeats(plain: &str, s: &Stored) -> bool {
+    let lines: Vec<&str> = plain.lines().collect();
+    let aligned = autosync::align::align(&lines, &heard_of(s));
+    !autosync::repeat::candidates(&lines, &aligned).is_empty()
+}
+
+fn features_of(pcm: &[u8]) -> autosync::repeat::Features {
+    let samples: Vec<i16> = pcm
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    autosync::repeat::Features::from_pcm16(&samples, 16_000)
+}
+
+fn stored_repeats(r: &[autosync::repeat::Repeat]) -> Vec<(usize, usize, usize, f64)> {
+    r.iter()
+        .map(|r| (r.reference, r.copy, r.len, r.offset))
+        .collect()
 }
 
 fn lrc_of(aligned: &autosync::align::Alignment, lines: &[&str], duration: f64) -> Option<String> {
@@ -739,6 +829,13 @@ struct Stored {
     /// The track's length, which placing lines after the last one heard needs.
     #[serde(default)]
     duration: f64,
+    /// Copies of repeated blocks the engine missed and the music placed (`autosync::repeat`), as
+    /// `(reference, copy, len, offset)`: re-timing without the audio keeps them.
+    #[serde(default)]
+    repeats: Vec<(usize, usize, usize, f64)>,
+    /// Whether the music was checked for missed repeats. False in results from before that was done.
+    #[serde(default)]
+    repeats_checked: bool,
 }
 
 /// In the cache dir: all of it can be made again.
@@ -763,8 +860,25 @@ fn current(app: &AppHandle, key: &str, plain: &str) -> Option<Stored> {
     if s.heard.is_empty() {
         return None;
     }
-    let heard: Vec<autosync::Heard> = s
-        .heard
+    let known: Vec<autosync::repeat::Repeat> = s
+        .repeats
+        .iter()
+        .map(|&(reference, copy, len, offset)| autosync::repeat::Repeat {
+            reference,
+            copy,
+            len,
+            offset,
+        })
+        .collect();
+    (s.lrc, s.coverage, _) = time(plain, &heard_of(&s), s.duration, Repeats::Known(&known));
+    s.aligner = autosync::align::VERSION;
+    store(app, key, &s);
+    Some(s)
+}
+
+/// What the engine heard, as a stored result kept it.
+fn heard_of(s: &Stored) -> Vec<autosync::Heard> {
+    s.heard
         .iter()
         .map(|(text, start, end)| autosync::Heard {
             text: text.clone(),
@@ -772,11 +886,7 @@ fn current(app: &AppHandle, key: &str, plain: &str) -> Option<Stored> {
             end: *end,
             p: 1.0,
         })
-        .collect();
-    (s.lrc, s.coverage) = time(plain, &heard, s.duration);
-    s.aligner = autosync::align::VERSION;
-    store(app, key, &s);
-    Some(s)
+        .collect()
 }
 
 fn store(app: &AppHandle, key: &str, result: &Stored) {
@@ -899,9 +1009,8 @@ fn work_dir(app: &AppHandle) -> Option<PathBuf> {
     Some(app.path().app_cache_dir().ok()?.join("autosync-work"))
 }
 
-/// Decode `src` (a file or a URL) to the 16 kHz mono 16-bit WAV the sidecar reads.
-fn decode_to_wav(src: &str, wav: &Path) -> Result<(), String> {
-    let pcm = decode_16k(src)?;
+/// 16 kHz mono 16-bit PCM (from [`decode_16k`]) as the WAV the sidecar reads.
+fn write_wav(pcm: &[u8], wav: &Path) -> Result<(), String> {
     let mut out = Vec::with_capacity(44 + pcm.len());
     let len = pcm.len() as u32;
     out.extend_from_slice(b"RIFF");
@@ -916,7 +1025,7 @@ fn decode_to_wav(src: &str, wav: &Path) -> Result<(), String> {
     out.extend_from_slice(&16u16.to_le_bytes());
     out.extend_from_slice(b"data");
     out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(&pcm);
+    out.extend_from_slice(pcm);
     std::fs::write(wav, out).map_err(|e| e.to_string())
 }
 
@@ -978,7 +1087,7 @@ mod tests {
         let src =
             std::env::var("JARLID_AUTOSYNC_TEST_AUDIO").expect("set JARLID_AUTOSYNC_TEST_AUDIO");
         let wav = std::env::temp_dir().join("jarlid-autosync-decode-test.wav");
-        decode_to_wav(&src, &wav).unwrap();
+        write_wav(&decode_16k(&src).unwrap(), &wav).unwrap();
         let bytes = std::fs::read(&wav).unwrap();
         assert_eq!(&bytes[0..4], b"RIFF");
         assert_eq!(

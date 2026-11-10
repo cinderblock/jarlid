@@ -10,6 +10,7 @@ license = "MIT"
 # sidecar); this crate turns its timed words plus the lyric text into timed lines, and scores the
 # result. See `plans/auto-synced-lyrics.md`.
 [dependencies]
+rustfft = "6"
 
 [dev-dependencies]
 serde_json = "1"

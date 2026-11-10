@@ -188,6 +188,46 @@ impl Alignment {
         t
     }
 
+    /// Place the copies of repeated blocks the model missed, as the music found them (see
+    /// [`crate::repeat`]): each missed line takes its heard twin's time plus the offset, and
+    /// counts as heard, since the music matching is evidence too. Lines nothing anchors are then
+    /// placed again around them.
+    pub fn anchor_repeats(&mut self, repeats: &[crate::repeat::Repeat]) {
+        if repeats.is_empty() {
+            return;
+        }
+        let sung: Vec<usize> = (0..self.lines.len())
+            .filter(|&i| self.lines[i].words > 0)
+            .collect();
+        let pos = |line: usize| sung.iter().position(|&i| i == line);
+        for r in repeats {
+            let (Some(a), Some(b)) = (pos(r.reference), pos(r.copy)) else {
+                continue;
+            };
+            for k in 0..r.len {
+                let (Some(&from), Some(&to)) = (sung.get(a + k), sung.get(b + k)) else {
+                    break;
+                };
+                let Some(t) = self.lines[from].t else {
+                    continue;
+                };
+                let line = &mut self.lines[to];
+                line.t = Some(t + r.offset);
+                line.interpolated = false;
+                self.matched_words += line.words - line.matched;
+                line.matched = line.words;
+            }
+        }
+        for line in self.lines.iter_mut().filter(|l| l.interpolated) {
+            line.t = None;
+        }
+        enforce_order(&mut self.lines);
+        let (line_seconds, word_seconds) = (self.line_seconds, self.word_seconds);
+        interpolate(&mut self.lines, |line| {
+            step(line_seconds, word_seconds, line)
+        });
+    }
+
     /// Share of lyric words found in what was heard.
     pub fn coverage(&self) -> f64 {
         self.matched_words as f64 / self.lyric_words.max(1) as f64
