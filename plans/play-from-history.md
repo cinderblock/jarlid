@@ -54,6 +54,8 @@ Two halves:
        pass, `bun run build` clean, `rustfmt --check` clean on touched files. Headless
        harness 22/23 (the one miss was the harness's own expectation; see findings).
 6. [x] README; commit.
+6b. [x] Released as v1.19.0 (`625d43f`, 2026-11-09 5:39 PM PST), installer and
+       `latest.json` attached: https://github.com/cinderblock/jarlid/releases/tag/v1.19.0
 7. [ ] **Real app check (Cameron)**: with Saved songs on, play a few songs on two stations,
        then from History play one from this station (queue continues after it) and one from
        the other (station switches, the pill and the mode follow, thumbs land there).
