@@ -1,7 +1,7 @@
 // The play history: what it remembers, and which of its songs can be played again.
 //
-// Pure, so it can be tested without a DOM. The strip under the art and the History page both
-// draw from this; see plans/play-from-history.md.
+// Pure, so it can be tested without a DOM. The recently-played strip under the art draws from
+// this; see plans/play-from-history.md.
 //
 // Pandora plays nothing on demand, so a song can only be played again when its audio is saved
 // on this computer (the opt-in "Saved songs" cache). A saved song also knows which stations it
@@ -38,11 +38,12 @@ export interface Station {
 }
 
 /**
- * How far back the history goes. The strip shows the newest {@link STRIP_LENGTH}; the History
- * page shows all of it. At a few hundred bytes an entry this is well inside `localStorage`.
+ * How far back the history goes. At a few hundred bytes an entry this is well inside
+ * `localStorage`.
  */
 export const HISTORY_LENGTH = 1000;
-export const STRIP_LENGTH = 40;
+/** Covers the strip draws at a time: at first, then again each time its old end nears. */
+export const STRIP_CHUNK = 40;
 
 /** The same song as the newest entry, so a resumed track is not recorded twice. */
 export function isRepeat(history: HistItem[], next: HistItem): boolean {
@@ -127,59 +128,16 @@ export function playability(
   };
 }
 
-/** Matches every word of `query` against the title, artist, album and station. */
-export function matchesQuery(h: HistItem, query: string): boolean {
-  const words = fold(query).split(" ").filter(Boolean);
-  if (!words.length) return true;
-  const hay = fold(`${h.title} ${h.artist} ${h.album ?? ""} ${h.stationName ?? ""}`);
-  const squashed = hay.replace(/ /g, "");
-  return words.every((w) => hay.includes(w) || squashed.includes(w));
-}
-
-/** Local midnight at the start of the day `ms` falls in. */
-function dayStart(ms: number): number {
-  const d = new Date(ms);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
-
-/**
- * The heading for the day `at` falls in, relative to `now`: "Today", "Yesterday", the weekday
- * within the last week, then the date (with the year once it is not this year's).
- */
-export function dayLabel(at: number, now = Date.now()): string {
-  const days = Math.round((dayStart(now) - dayStart(at)) / 86_400_000);
-  if (days <= 0) return "Today";
-  if (days === 1) return "Yesterday";
-  const d = new Date(at);
-  if (days < 7) return d.toLocaleDateString(undefined, { weekday: "long" });
-  const sameYear = d.getFullYear() === new Date(now).getFullYear();
-  return d.toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    ...(sameYear ? {} : { year: "numeric" }),
-  });
-}
-
-/**
- * The history split into days, newest first, each day's songs newest first. Entries without a
- * time (very old builds did not record one) go in a last group with an empty label.
- */
-export function byDay(
-  history: HistItem[],
-  now = Date.now()
-): { label: string; items: HistItem[] }[] {
-  const groups: { label: string; key: number; items: HistItem[] }[] = [];
-  for (const h of history) {
-    const key = h.at ? dayStart(h.at) : -1;
-    let group = groups.find((g) => g.key === key);
-    if (!group) {
-      group = { label: h.at ? dayLabel(h.at, now) : "", key, items: [] };
-      groups.push(group);
-    }
-    group.items.push(h);
+/** Why `p` can't be played, as a sentence for the cover's card. Empty when it can. */
+export function whyNot(p: Playability): string {
+  switch (p.kind) {
+    case "play":
+      return "";
+    case "off":
+      return "Saved songs is off in Settings, so songs can't be played again.";
+    case "unsaved":
+      return "Not saved on this computer, so it can't be played again.";
+    case "gone":
+      return "Its station was deleted, so it can't be played again.";
   }
-  groups.sort((a, b) => b.key - a.key);
-  return groups.map(({ label, items }) => ({ label, items }));
 }

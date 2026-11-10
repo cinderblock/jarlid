@@ -1,15 +1,6 @@
 // Run with `bun test`.
 import { describe, expect, test } from "bun:test";
-import {
-  byDay,
-  dayLabel,
-  matchesQuery,
-  parse,
-  playability,
-  pushed,
-  type HistItem,
-  type IndexedSong,
-} from "./play-history";
+import { parse, playability, pushed, whyNot, type HistItem, type IndexedSong } from "./play-history";
 
 const item = (title: string, extra: Partial<HistItem> = {}): HistItem => ({
   art: "",
@@ -110,29 +101,11 @@ describe("playability", () => {
   });
 });
 
-describe("matchesQuery", () => {
-  test("every word, anywhere, including the station", () => {
-    const h = item("Hey Jude", { album: "Past Masters", stationName: "Beatles Radio" });
-    expect(matchesQuery(h, "jude radio")).toBe(true);
-    expect(matchesQuery(h, "jude zeppelin")).toBe(false);
-    expect(matchesQuery(h, "")).toBe(true);
-  });
-});
-
-describe("days", () => {
-  const now = new Date(2026, 10, 9, 15, 0).getTime();
-  const at = (d: number, h = 12) => new Date(2026, 10, d, h).getTime();
-
-  test("labels", () => {
-    expect(dayLabel(at(9, 1), now)).toBe("Today");
-    expect(dayLabel(at(8, 23), now)).toBe("Yesterday");
-    expect(dayLabel(at(5), now)).toBe(new Date(at(5)).toLocaleDateString(undefined, { weekday: "long" }));
-    expect(dayLabel(new Date(2025, 0, 2).getTime(), now)).toContain("2025");
-  });
-
-  test("groups newest day first, undated last", () => {
-    const groups = byDay([item("c", { at: at(9) }), item("b", { at: at(8) }), item("a", { at: at(8, 9) }), item("x")], now);
-    expect(groups.map((g) => g.label)).toEqual(["Today", "Yesterday", ""]);
-    expect(groups[1].items.map((h) => h.title)).toEqual(["b", "a"]);
+describe("whyNot", () => {
+  test("silent when it can play, a sentence when it can't", () => {
+    expect(whyNot({ kind: "play", id: "TR:a", station: { name: "One", token: "ST:1" }, switches: false })).toBe("");
+    expect(whyNot({ kind: "unsaved" })).toStartWith("Not saved on this computer");
+    expect(whyNot({ kind: "gone" })).toStartWith("Its station was deleted");
+    expect(whyNot({ kind: "off" })).toStartWith("Saved songs is off");
   });
 });

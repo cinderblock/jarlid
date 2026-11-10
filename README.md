@@ -72,7 +72,8 @@ anywhere in it.
   replay · play/pause · skip · thumbs up) under the taskbar hover preview, drawn with the same
   artwork as the in-app transport and following the system light/dark theme.
 - **Transport & stations**: play/pause (Space), skip, thumbs, replay, searchable station
-  picker, recently-played art gallery with per-track detail card and a play-again button.
+  picker, recently-played art gallery that scrolls back through your history, with a per-track
+  card that can play the song again.
 - **Station Modes**: switch a station between My Station, Crowd Faves, Discovery, Deep Cuts,
   Newly Released, Artist Only, Energy Boost and Relax, with Pandora's own description of each
   shown inline. The mode is part of the station button in the top bar,
@@ -126,12 +127,11 @@ anywhere in it.
   When it ends the station carries on with what it had lined up. Only songs saved while on this
   station are listed, because thumbs go to the station playing. Needs Saved songs on; songs saved
   by a version before this one appear once they come round again.
-- **History**: the clock in the top bar (or Ctrl+H, or the tile at the far end of the
-  recently-played strip) lists the last 1,000 songs played, a day at a time, searchable by
-  title, artist, album or station. Any of them saved on this computer plays again with a click,
-  as does a cover in the strip from its detail card. A song saved on another station plays by
-  switching to that station first, so thumbs still go where the song came from; songs that are
-  not saved say so. Needs Saved songs on to play anything.
+- **Play it again**: the recently-played strip under the art keeps the last 1,000 songs and
+  scrolls back through all of them, drawing older covers as you get near its end. Click a cover
+  for its card: a song saved on this computer has a Play button there. A song saved on another
+  station plays by switching to that station first, so thumbs still go where the song came
+  from; one that isn't saved says so. Needs Saved songs on.
 - **Playback that survives being left alone**: a long pause releases the stream and the audio
   device rather than sitting on a connection that the far end will quietly drop, and pressing play
   re-opens the track and seeks back to the second you paused on. The same watchdog covers a stream

@@ -18,14 +18,15 @@ import { wordTimesFor } from "./edit-lines";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
 import * as stationStats from "./station-stats";
 import * as findSong from "./find-song";
-import * as historyPage from "./history-page";
 import {
   HISTORY_LENGTH,
-  STRIP_LENGTH,
+  STRIP_CHUNK,
   parse as parseHistory,
   playability,
   pushed,
+  whyNot,
   type HistItem,
+  type IndexedSong,
   type Playability,
 } from "./play-history";
 
@@ -595,8 +596,8 @@ async function waitForDuration(key: string): Promise<number | null> {
 }
 
 // ---- recently-played gallery -------------------------------------------
-// The strip shows the newest STRIP_LENGTH; the History page (history-page.ts) all of it.
-// Stored newest-first in localStorage; see play-history.ts.
+// The strip is the whole history: it scrolls back through all of it, drawing older covers as
+// the old end comes into view. Stored newest-first in localStorage; see play-history.ts.
 let history: HistItem[] = parseHistory(localStorage.getItem("history"));
 
 /**
@@ -652,8 +653,7 @@ function openHistModal(h: HistItem) {
     hmWhy.textContent = "Playing now.";
     return;
   }
-  historyPage
-    .fetchIndex()
+  invoke<{ enabled: boolean; songs: IndexedSong[] }>("saved_index")
     .then((index) => {
       if (token !== hmToken || histModal.hidden) return;
       const p = playability(h, index, activeToken, stationList);
@@ -664,7 +664,7 @@ function openHistModal(h: HistItem) {
       } else if (p.kind === "off") {
         hmWhy.textContent = "Saved songs is off in Settings, so songs can't be played again.";
       } else {
-        hmWhy.textContent = `${historyPage.describe(p)}, so it can't be played again.`;
+        hmWhy.textContent = whyNot(p);
       }
     })
     .catch(() => {
@@ -674,11 +674,15 @@ function openHistModal(h: HistItem) {
 hmPlay.addEventListener("click", () => {
   if (!hmVerdict) return;
   histModal.hidden = true;
-  historyPage.playEntry(hmVerdict).catch((e) => showToast(String(e)));
-});
-$("hm-all").addEventListener("click", () => {
-  histModal.hidden = true;
-  void historyPage.open();
+  const p = hmVerdict;
+  if (p.kind !== "play") return;
+  // The station travels only when it changes: without it the engine keeps the queue.
+  const args: Record<string, string> = { id: p.id };
+  if (p.switches) {
+    args.stationName = p.station.name;
+    args.stationToken = p.station.token;
+  }
+  invoke("native_play_saved", args).catch((e) => showToast(String(e)));
 });
 histModal.addEventListener("click", (e) => {
   if (!(e.target as HTMLElement).closest(".hm-card")) histModal.hidden = true;
@@ -704,6 +708,22 @@ function attachTip(el: HTMLElement, text: () => string) {
   el.addEventListener("mouseleave", () => (tooltip.hidden = true));
 }
 
+/** How many covers are on the strip: the newest `drawn` entries of `history`. */
+let drawn = 0;
+
+function cover(h: HistItem) {
+  const wrap = document.createElement("div");
+  wrap.className = "hist-wrap";
+  const img = new Image();
+  img.src = h.art;
+  img.className = "hist-item";
+  img.loading = "lazy";
+  img.addEventListener("click", () => openHistModal(h));
+  attachTip(img, () => `${h.title} — ${h.artist}`);
+  wrap.appendChild(img);
+  return wrap;
+}
+
 /**
  * Draw the strip, newest end first.
  *
@@ -714,45 +734,60 @@ function attachTip(el: HTMLElement, text: () => string) {
  * wider than its column, so whichever end the newest track is at has to be the end
  * that is actually on screen — with the newest on the left that was `scrollLeft: 0`
  * and happened for free, which is exactly why it was never written down.
+ *
+ * Only the newest few are drawn here; {@link drawOlder} adds the rest as they are
+ * scrolled towards, so a thousand-song history costs nothing until it is looked at.
  */
 function renderHistory() {
   histEl.innerHTML = "";
-  const newestLeft = recentsOrder() === "newestLeft";
-  const recent = history.slice(0, STRIP_LENGTH);
-  const order = newestLeft ? recent : [...recent].reverse();
-  // The way further back sits past the oldest cover, where scrolling back runs out.
-  if (history.length && !newestLeft) histEl.appendChild(moreTile());
-  for (const h of order) {
-    const wrap = document.createElement("div");
-    wrap.className = "hist-wrap";
-    const img = new Image();
-    img.src = h.art;
-    img.className = "hist-item";
-    img.loading = "lazy";
-    img.addEventListener("click", () => openHistModal(h));
-    attachTip(img, () => `${h.title} — ${h.artist}`);
-    wrap.appendChild(img);
-    histEl.appendChild(wrap);
-  }
-  if (history.length && newestLeft) histEl.appendChild(moreTile());
+  drawn = 0;
+  drawOlder();
   showNewestEnd();
   requestAnimationFrame(coverflow);
 }
 
-/** The strip's tile for the History page. */
-function moreTile() {
-  const wrap = document.createElement("div");
-  wrap.className = "hist-wrap";
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "hist-more";
-  btn.setAttribute("aria-label", "All history");
-  btn.innerHTML =
-    '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3.5 2"/></svg>';
-  btn.addEventListener("click", () => void historyPage.open());
-  attachTip(btn, () => `All ${history.length} songs played (Ctrl+H)`);
-  wrap.appendChild(btn);
-  return wrap;
+/**
+ * Add the next {@link STRIP_CHUNK} older covers at the strip's old end.
+ *
+ * With the newest on the right the old end is the left, and covers added there push
+ * everything already drawn rightwards: the scroll position moves by exactly the width
+ * added, so what was on screen stays on screen.
+ */
+function drawOlder() {
+  const batch = history.slice(drawn, drawn + STRIP_CHUNK);
+  if (!batch.length) return;
+  drawn += batch.length;
+  if (recentsOrder() === "newestLeft") {
+    for (const h of batch) histEl.appendChild(cover(h));
+    return;
+  }
+  const before = histEl.scrollWidth;
+  const at = histEl.scrollLeft;
+  const frag = document.createDocumentFragment();
+  for (const h of [...batch].reverse()) frag.appendChild(cover(h));
+  histEl.prepend(frag);
+  histEl.scrollLeft = at + (histEl.scrollWidth - before);
+}
+
+/** Within a few covers of the oldest one drawn, draw more. */
+function nearOldEnd() {
+  if (drawn >= history.length || histEl.clientWidth === 0) return false;
+  const fromOld =
+    recentsOrder() === "newestLeft"
+      ? histEl.scrollWidth - histEl.clientWidth - histEl.scrollLeft
+      : histEl.scrollLeft;
+  return fromOld < histEl.clientWidth;
+}
+
+/** Whether the strip is showing its newest cover, give or take one. */
+function atNewestEnd() {
+  // Not laid out yet (the player is still hidden): showPlayer() parks it at the newest end.
+  if (histEl.clientWidth === 0) return true;
+  const fromNew =
+    recentsOrder() === "newestLeft"
+      ? histEl.scrollLeft
+      : histEl.scrollWidth - histEl.clientWidth - histEl.scrollLeft;
+  return fromNew < 64;
 }
 
 /**
@@ -783,8 +818,11 @@ function showNewestEnd() {
  * caller has to remember to do in order.
  */
 function showPlayer() {
+  // Only on the reveal itself. This runs for every song, and parking then would pull
+  // someone scrolled back through the history to the newest end each time a song changed.
+  const revealing = player.hidden;
   player.hidden = false;
-  showNewestEnd();
+  if (revealing) showNewestEnd();
   // The top bar's room is the lyrics column, which has only just got a box.
   fitTopbar();
 }
@@ -792,13 +830,30 @@ function showPlayer() {
 // Cover-Flow-style perspective: items tilt away from the strip's center as
 // they approach the edges (the wrap gets the scroll-driven transform so the
 // image's own hover zoom still works).
+//
+// Only the covers in or near view are touched. The strip can hold hundreds, and measuring
+// each one every scroll frame is what would make it stutter; off-screen covers keep their
+// last transform until they come back into view, when the next frame corrects it. The
+// covers are evenly spaced, so which ones are in view follows from the scroll offset.
 function coverflow() {
   const rect = histEl.getBoundingClientRect();
   if (rect.width === 0) return;
+  const items = histEl.children as HTMLCollectionOf<HTMLElement>;
+  if (!items.length) return;
+  const step = items.length > 1 ? items[1].offsetLeft - items[0].offsetLeft || 64 : 64;
+  const first = Math.max(0, Math.floor(histEl.scrollLeft / step) - 2);
+  const last = Math.min(items.length - 1, Math.ceil((histEl.scrollLeft + rect.width) / step) + 2);
   const cx = rect.left + rect.width / 2;
-  for (const el of Array.from(histEl.children) as HTMLElement[]) {
-    const r = el.getBoundingClientRect();
-    const d = Math.max(-1, Math.min(1, (r.left + r.width / 2 - cx) / (rect.width / 2)));
+  // Reads first, then writes, so the frame lays out once. A transform about the centre
+  // leaves a cover's centre where it was, so measuring a tilted one is still exact.
+  const centres: number[] = [];
+  for (let i = first; i <= last; i++) {
+    const r = items[i].getBoundingClientRect();
+    centres.push(r.left + r.width / 2);
+  }
+  for (let i = first; i <= last; i++) {
+    const el = items[i];
+    const d = Math.max(-1, Math.min(1, (centres[i - first] - cx) / (rect.width / 2)));
     el.style.transform = `perspective(420px) rotateY(${(-d * 32).toFixed(1)}deg) scale(${(
       1 - Math.abs(d) * 0.16
     ).toFixed(3)})`;
@@ -806,6 +861,9 @@ function coverflow() {
     el.style.zIndex = String(100 - Math.round(Math.abs(d) * 50));
   }
 }
+histEl.addEventListener("scroll", () => {
+  if (nearOldEnd()) drawOlder();
+});
 histEl.addEventListener("scroll", () => requestAnimationFrame(coverflow));
 window.addEventListener("resize", () => requestAnimationFrame(coverflow));
 // Turning the strip round is a redraw, not a reload — the setting is judged by
@@ -831,8 +889,34 @@ function pushHistory(np: NowPlaying) {
   stationStats.noteTrack(art);
   history = next;
   saveHistory();
-  renderHistory();
-  historyPage.refresh();
+  // One cover at the newest end, rather than a redraw: someone scrolled back through the
+  // history is left where they are, and someone watching the newest end keeps seeing it.
+  const follow = atNewestEnd();
+  const el = cover(entry);
+  const newestLeft = recentsOrder() === "newestLeft";
+  if (newestLeft) {
+    const before = histEl.scrollWidth;
+    const at = histEl.scrollLeft;
+    histEl.prepend(el);
+    if (!follow) histEl.scrollLeft = at + (histEl.scrollWidth - before);
+  } else {
+    histEl.appendChild(el);
+  }
+  drawn++;
+  // The history is capped, so the song that just fell off the end leaves the strip too.
+  // Taken from the old end, which is off screen for anyone not scrolled all the way back.
+  if (drawn > history.length) {
+    const old = newestLeft ? histEl.lastElementChild : histEl.firstElementChild;
+    if (old) {
+      const before = histEl.scrollWidth;
+      const at = histEl.scrollLeft;
+      old.remove();
+      if (!newestLeft) histEl.scrollLeft = at - (before - histEl.scrollWidth);
+    }
+    drawn = history.length;
+  }
+  if (follow) showNewestEnd();
+  requestAnimationFrame(coverflow);
 }
 renderHistory();
 // Cap accumulated per-track sync offsets (no timestamps to age by; a rare
@@ -1914,7 +1998,6 @@ onState<{ name: string; token: string }>("engine://station-active", (p) => {
   activeToken = p.token;
   stationsPage.setActiveStation(activeStation, p.token);
   findSong.setStation(activeStation);
-  historyPage.refresh();
 });
 
 /// The station list, for the play history to name stations and skip deleted ones.
@@ -1961,32 +2044,6 @@ window.addEventListener("keydown", (e) => {
   if (remoteMode || player.hidden || findSong.isOpen() || stationsPage.isOpen()) return;
   if (!$("settings-page").hidden) return;
   void findSong.open();
-});
-// History: everything played, and any of it saved on disk played again. Local playback only,
-// like Find a song.
-historyPage.init({
-  history: () => history,
-  active: () => activeToken,
-  stations: () => stationList,
-  remote: () => remoteMode,
-  playing: () =>
-    history[0] && currentKey === `${history[0].title}|${history[0].artist}` ? history[0] : undefined,
-  openSettings: () => settingsPage.open(),
-  onError: (message) => showToast(message),
-});
-const historyBtn = $("history-btn");
-historyBtn.addEventListener("click", (e) => {
-  e.stopPropagation();
-  void historyPage.open();
-});
-attachTip(historyBtn, () => "History: everything played, and play it again (Ctrl+H)");
-window.addEventListener("keydown", (e) => {
-  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "h") return;
-  e.preventDefault();
-  if (remoteMode || player.hidden || historyPage.isOpen() || findSong.isOpen() || stationsPage.isOpen()) return;
-  if (!$("settings-page").hidden) return;
-  histModal.hidden = true;
-  void historyPage.open();
 });
 // index.html paints from a cached preference before the first frame; this is the
 // authoritative answer arriving a moment later.
@@ -2310,6 +2367,9 @@ function updateMode() {
 function setRemoteMode(want: boolean) {
   remoteMode = want;
   document.body.classList.toggle("remote", remoteMode);
+  // The strip is `display: none` in remote mode, which forgets its scroll position; coming
+  // back it has to be parked again, as on the player's first reveal.
+  if (!remoteMode) showNewestEnd();
   currentKey = ""; // force full re-render for the new source
   miniHeld = false; // the mini now shows the other source
   if (remoteMode && remote) {

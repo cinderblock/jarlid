@@ -26,6 +26,11 @@ Two halves:
 
 ## Decisions already made (don't re-ask)
 
+- **No History page (2026-11-09, Cameron).** v1.19.0 shipped a full History page, a top-bar
+  clock button and Ctrl+H; Cameron never asked for a page. v1.20.0 removes all three. The
+  strip *is* the history: it scrolls back through all of it, drawing older covers as you near
+  the old end, and a cover's card has the Play button. Release as a minor (v1.20.0).
+
 - **Only songs saved on disk can be played.** Anything else is listed but says why it can't
   play. No attempt to ask Pandora for a specific track.
 - **Songs from another station play by switching to that station**, then playing the saved
@@ -60,7 +65,26 @@ Two halves:
        then from History play one from this station (queue continues after it) and one from
        the other (station switches, the pill and the mode follow, thumbs land there).
 
+## v1.20.0 rework (current)
+
+1. [x] Remove `history-page.ts`, its markup and CSS, `#history-btn`, Ctrl+H, the strip's
+       "All history" tile and the card's "All history" button.
+2. [x] Strip draws history in chunks of 40, more as the old end comes into view; scroll
+       position held when covers are added on the left (newest-right).
+3. [x] Coverflow only measures/writes covers near the viewport.
+4. [x] Drop now-unused helpers (search, day grouping) and their tests; README.
+5. [ ] Checks, harness, commit; v1.20.0 bump commit, tag, verify release.
+
 ## Findings / gotchas
+
+- **`showPlayer()` parked the strip on every song.** It runs on each `nowplaying`, so a new
+  song yanked anyone scrolled back to the newest end. It now parks only on the reveal itself;
+  leaving remote mode parks explicitly, because `display: none` forgets the scroll position.
+- Older covers added at the left (newest-right) push the view: `scrollLeft` is moved by the
+  width added, so what is on screen stays put. Checked headless while scrolling 300 covers.
+- v1.20.0 harness: `strip.mjs` beside `run.mjs` in the session scratchpad; 20/20 in both
+  directions (chunked drawing, view holds, new song followed at the newest end and not when
+  scrolled back, card Play / switch / unsaved message, no page or button left).
 
 - **The station token has to travel on `nowplaying`.** `station-active` is emitted by the
   command after the switch returns, and the engine's `TrackStarted` can be turned into a

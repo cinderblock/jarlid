@@ -390,8 +390,7 @@ body.remote #thumbUp,
 body.remote #thumbDown,
 body.remote #replay,
 body.remote #history,
-body.remote #find-btn,
-body.remote #history-btn {
+body.remote #find-btn {
   display: none;
 }
 
@@ -1654,8 +1653,7 @@ body.remote #remote-vol-wrap {
    watch into a smear — dimming keeps the motion legible where blurring destroys it. */
 #stations-page,
 #settings-page,
-#find-page,
-#history-page {
+#find-page {
   position: fixed;
   inset: 0;
   z-index: 8;
@@ -1670,12 +1668,10 @@ body.remote #remote-vol-wrap {
   --panel: 80%;
 }
 /* One column of songs: narrower than the others, and as tall as Settings. */
-#find-page,
-#history-page {
+#find-page {
   --panel: 80%;
 }
-#find-page .page-panel,
-#history-page .page-panel {
+#find-page .page-panel {
   width: min(720px, 92%);
 }
 .page-panel {
@@ -1718,28 +1714,24 @@ body.remote #remote-vol-wrap {
 }
 #stations-page.opening,
 #settings-page.opening,
-#find-page.opening,
-#history-page.opening {
+#find-page.opening {
   animation: scrim-in 220ms ease-out;
 }
 #stations-page.opening .page-panel,
 #settings-page.opening .page-panel,
-#find-page.opening .page-panel,
-#history-page.opening .page-panel {
+#find-page.opening .page-panel {
   animation: stations-in 320ms cubic-bezier(0.22, 0.75, 0.25, 1);
 }
 /* Closing runs the same shapes backwards; each page's module hides it when the timer
    ends. */
 #stations-page.closing,
 #settings-page.closing,
-#find-page.closing,
-#history-page.closing {
+#find-page.closing {
   animation: scrim-in 200ms ease-in reverse;
 }
 #stations-page.closing .page-panel,
 #settings-page.closing .page-panel,
-#find-page.closing .page-panel,
-#history-page.closing .page-panel {
+#find-page.closing .page-panel {
   animation: stations-in 200ms cubic-bezier(0.4, 0, 0.7, 0.3) reverse;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1754,18 +1746,13 @@ body.remote #remote-vol-wrap {
   #find-page.opening,
   #find-page.opening .page-panel,
   #find-page.closing,
-  #find-page.closing .page-panel,
-  #history-page.opening,
-  #history-page.opening .page-panel,
-  #history-page.closing,
-  #history-page.closing .page-panel {
+  #find-page.closing .page-panel {
     animation: none;
   }
 }
 #stations-page[hidden],
 #settings-page[hidden],
-#find-page[hidden],
-#history-page[hidden] {
+#find-page[hidden] {
   display: none;
 }
 #sp-list {
@@ -1788,8 +1775,7 @@ body.remote #remote-vol-wrap {
   white-space: nowrap;
 }
 #sp-search,
-#fs-search,
-#hp-search {
+#fs-search {
   flex: 1;
   min-width: 0;
   background: rgba(var(--wash), 0.08);
@@ -3346,19 +3332,16 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
 #fs-search:disabled {
   opacity: 0.5;
 }
-#fs-sub,
-#hp-sub {
+#fs-sub {
   padding: 10px 26px 0;
   font-size: 0.74rem;
   color: var(--faint);
   font-variant-numeric: tabular-nums;
 }
-#fs-sub:empty,
-#hp-sub:empty {
+#fs-sub:empty {
   display: none;
 }
-#fs-list,
-#hp-list {
+#fs-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -3448,99 +3431,6 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
   white-space: nowrap;
 }
 
-/* ---- History ----
-   Find a song's rows, a day at a time. A row whose audio is not saved stays readable but
-   dimmed, and says why on its right instead of the station. */
-#hp-sub {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 10px;
-}
-.hp-link {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--accent);
-  font: inherit;
-  cursor: pointer;
-}
-.hp-link:hover {
-  text-decoration: underline;
-}
-.hp-day h3 {
-  position: sticky;
-  top: -8px;
-  z-index: 1;
-  margin: 0;
-  padding: 14px 12px 6px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--faint);
-  background: var(--page);
-}
-/* A long history is mostly off screen; skip laying out days nobody is looking at. */
-.hp-day {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 600px;
-}
-.hp-row .sp-art {
-  position: relative;
-}
-.hp-play {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: rgba(0, 0, 0, 0.45);
-  opacity: 0;
-  transition: opacity 0.12s;
-  border-radius: inherit;
-}
-.hp-play svg {
-  width: 18px;
-  height: 18px;
-  fill: #fff;
-}
-.hp-row.cursor .hp-play {
-  opacity: 1;
-}
-.hp-row.unplayable {
-  cursor: default;
-}
-.hp-row.unplayable .sp-art,
-.hp-row.unplayable .fs-text {
-  opacity: 0.5;
-}
-
-/* The strip's last tile, at its oldest end: the way further back. */
-.hist-more {
-  width: 54px;
-  height: 54px;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  border: 1px dashed rgba(var(--wash), 0.25);
-  background: rgba(var(--wash), 0.05);
-  color: var(--dim);
-  cursor: pointer;
-  padding: 0;
-}
-.hist-more:hover {
-  color: var(--fg);
-  background: rgba(var(--wash), 0.1);
-}
-.hist-more svg {
-  width: 22px;
-  height: 22px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
 /* The cover card's actions. */
 .hm-actions {
   display: flex;
