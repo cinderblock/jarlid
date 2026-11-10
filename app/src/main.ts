@@ -13,6 +13,7 @@ import { publicationFor } from "./lyric-publish";
 import type { Row } from "./flags";
 import { parseLrc, type LyricLine } from "./lrc";
 import { detectDual, type Dual } from "./dual-lyrics";
+import { dropLabels, splitSections, timedHeads } from "./sections";
 import { fillMarked, fillWords } from "./draft-marks";
 import { wordTimesFor } from "./edit-lines";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
@@ -238,7 +239,8 @@ function renderSyncedLyrics(
   lines: LyricLine[],
   meta: { title: string; artist: string },
   doubt?: number[][],
-  wordTimes?: (number[] | undefined)[]
+  wordTimes?: (number[] | undefined)[],
+  heads?: (string | undefined)[]
 ) {
   clearPane(meta);
   stopPlainFollow();
@@ -263,11 +265,26 @@ function renderSyncedLyrics(
     div.className = doubt ? "line draft" : "line";
     div.dataset.idx = String(i);
     fillLine(div, ln);
+    appendHead(heads?.[i]);
     lyricsEl.appendChild(div);
   });
 }
 
-function renderPlainLyrics(lines: PaneLine[], meta: { title: string; artist: string }) {
+/// A section's heading ("Chorus", "Verse 2") over its first line. Not a `.line`: the highlighter,
+/// the flags and the plain follow all count rows, and a heading isn't one. See sections.ts.
+function appendHead(label: string | undefined) {
+  if (!label) return;
+  const h = document.createElement("div");
+  h.className = "lyric-section";
+  h.textContent = label;
+  lyricsEl.appendChild(h);
+}
+
+function renderPlainLyrics(
+  lines: PaneLine[],
+  meta: { title: string; artist: string },
+  heads?: (string | undefined)[]
+) {
   lyricsEl.classList.remove("synced");
   const carried = clearPane(meta);
   introEl = introBar = null;
@@ -278,6 +295,7 @@ function renderPlainLyrics(lines: PaneLine[], meta: { title: string; artist: str
     // Not for the highlighter, which leaves plain rows alone: flags point at rows by index.
     div.dataset.idx = String(i);
     fillLine(div, ln);
+    appendHead(heads?.[i]);
     lyricsEl.appendChild(div);
   });
   // A new song starts at its first verse, wherever the last one's pane was left. Carried on
@@ -1272,7 +1290,7 @@ function applyLyrics(res: Lyrics) {
   // Edit mode owns the pane's contents. Repainting under it would throw away the rows
   // and the caret mid-edit, so keep the state current and leave the DOM alone.
   if (lyricEditor.isEditing()) {
-    const parsed = res.synced ? parseLrc(res.synced) : null;
+    const parsed = res.synced ? dropLabels(parseLrc(res.synced)).lines : null;
     syncedLines = parsed && (res.draft ? parsed : (detectDual(parsed)?.lines ?? parsed));
     lyricsStatus.textContent = res.draft
       ? draftStatus(res)
@@ -1297,24 +1315,28 @@ function showFlags(res: Lyrics) {
 /// them: the picker previews candidates through this without touching `lastLyrics`.
 function paintLyrics(res: Lyrics, note: string) {
   if (res.synced) {
-    const parsed = parseLrc(res.synced);
+    // Section labels timed as lines are headings, not rows.
+    const { lines: parsed, marks } = dropLabels(parseLrc(res.synced));
     // A draft is the engine's own words in one language: nothing to pair up.
     const dual = res.draft ? null : detectDual(parsed);
     noteDual(dual);
     syncedLines = dual?.lines ?? parsed;
     // Word by word where the lyrics are timed that finely (not for two languages at once).
     const wordTimes = res.timing && !dual ? wordTimesFor(syncedLines, res.timing) : undefined;
-    renderSyncedLyrics(syncedLines, lastMeta, res.draft?.doubt, wordTimes);
+    const heads = res.draft ? undefined : timedHeads(syncedLines, marks, res.plain);
+    renderSyncedLyrics(syncedLines, lastMeta, res.draft?.doubt, wordTimes, heads);
     if (wordTimes?.some(Boolean)) startWordFollow();
     lyricsStatus.textContent = res.draft ? draftStatus(res) : `Synced lyrics${note}`;
     activeLineIdx = NO_LINE;
     highlightLine(lastPlayhead.position);
   } else if (res.plain) {
     syncedLines = null;
-    const lines = res.plain.split(/\r?\n/).map((text) => ({ t: null, text }));
+    const split = splitSections(res.plain.split(/\r?\n/));
+    const lines = split.lines.map((text) => ({ t: null, text }));
     const dual = detectDual(lines);
     noteDual(dual);
-    renderPlainLyrics(dual?.lines ?? lines, lastMeta);
+    // Pairing two languages changes which row is which; their headings are left out then.
+    renderPlainLyrics(dual?.lines ?? lines, lastMeta, dual ? undefined : split.heads);
     lyricsStatus.textContent = `Lyrics${note}`;
   } else {
     syncedLines = null;

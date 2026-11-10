@@ -18,14 +18,15 @@
 
 use std::collections::VecDeque;
 
-use crate::text::{similarity, words};
+use crate::text::{is_section_label, similarity, words};
 use crate::Heard;
 
 /// Which aligner this is. Bump it whenever the same heard words would come out timed
 /// differently, so timings kept from an older one are made again.
 ///
-/// 1: v1.13.0. 2: unheard words take time, unheard lines placed by stanza.
-pub const VERSION: u32 = 2;
+/// 1: v1.13.0. 2: unheard words take time, unheard lines placed by stanza. 3: section labels
+/// ("Chorus:") are not sung: no words, no time, and a stanza break.
+pub const VERSION: u32 = 3;
 
 /// Fallback seconds-per-word, when too few words matched to measure it.
 const DEFAULT_WORD_SECONDS: f64 = 0.35;
@@ -203,7 +204,9 @@ pub fn align_with(lines: &[&str], heard: &[Heard], params: &Params) -> Alignment
     // Every lyric word, tagged with its line.
     let mut lyric: Vec<(usize, String)> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        lyric.extend(words(line).into_iter().map(|w| (i, w)));
+        if !is_section_label(line) {
+            lyric.extend(words(line).into_iter().map(|w| (i, w)));
+        }
     }
     let heard_words: Vec<String> = heard.iter().map(|h| words(&h.text).concat()).collect();
 
@@ -233,7 +236,7 @@ pub fn align_with(lines: &[&str], heard: &[Heard], params: &Params) -> Alignment
     let mut out: Vec<LineTime> = lines
         .iter()
         .map(|line| {
-            if line.trim().is_empty() {
+            if line.trim().is_empty() || is_section_label(line) {
                 stanza += 1;
             }
             LineTime {
@@ -752,6 +755,22 @@ mod tests {
         assert!(timed[0].t < 20.0 && timed[0].t >= 0.0);
         assert_eq!(timed[1].t, 20.0);
         assert!(timed[3].t <= 30.0);
+    }
+
+    #[test]
+    fn section_labels_are_never_timed() {
+        let lines = ["Chorus:", "the anchor line", "[Verse 2]", "after one"];
+        let h = heard(&[
+            ("the", 20.0),
+            ("anchor", 20.4),
+            ("line", 20.8),
+            ("after", 23.0),
+            ("one", 23.4),
+        ]);
+        let a = exact(&lines, &h);
+        assert_eq!(a.coverage(), 1.0, "labels are not words to hear");
+        let texts: Vec<String> = a.timed(&lines, 30.0).into_iter().map(|l| l.text).collect();
+        assert_eq!(texts, ["the anchor line", "after one"]);
     }
 
     #[test]

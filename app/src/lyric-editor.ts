@@ -23,6 +23,7 @@ import * as confirm from "./lyric-confirm";
 import * as timeline from "./lyric-timeline";
 import { publicationFor } from "./lyric-publish";
 import { fillMarked } from "./draft-marks";
+import { sectionLabel, withSections } from "./sections";
 import {
   applyReview,
   isBlank,
@@ -158,9 +159,13 @@ const serialize = (ls: Line[]) =>
 
 const anyTimed = () => lines.some((l) => l.t !== null);
 
+/// A section label ("Chorus:", "[Verse 2]") is never sung, so it never gets a time.
+const isLabel = (l: Line) => !!sectionLabel(l.text);
+
 /// The first line at or after `from` that a timing pass should land on, or -1.
 const nextLyric = (from: number) => {
-  for (let i = Math.max(0, from); i < lines.length; i++) if (!isBlank(lines[i])) return i;
+  for (let i = Math.max(0, from); i < lines.length; i++)
+    if (!isBlank(lines[i]) && !isLabel(lines[i])) return i;
   return -1;
 };
 
@@ -265,6 +270,7 @@ function render() {
     row.dataset.idx = String(i);
     if (stamping && i === cursor) row.classList.add("cursor");
     if (isBlank(line)) row.classList.add("blank");
+    if (isLabel(line)) row.classList.add("section");
     if (line.t !== null) row.classList.add("timed");
     if (i === nowRow) row.classList.add("now");
     if (i === selected) row.classList.add("selected");
@@ -597,7 +603,7 @@ function startStamping() {
   if (!ctx || stale || !ctx.canTransport) return;
   stamping = true;
   // Resume where there is work rather than restamping good lines from the top.
-  cursor = lines.findIndex((l) => l.t === null && !isBlank(l));
+  cursor = lines.findIndex((l) => l.t === null && !isBlank(l) && !isLabel(l));
   if (cursor < 0) cursor = nextLyric(0);
   if (cursor < 0) {
     stamping = false;
@@ -702,17 +708,22 @@ const keyArgs = () => ({
 });
 
 /// The edit, in the shape LRCLIB and the cache both want. Lines that never got a time
-/// still belong in the plain form.
+/// still belong in the plain form. Section labels belong *only* there: in the LRC, or a
+/// Lyricsfile's lines, a player would show them as sung. Labels the plain text had that the
+/// timed lines never carried are put back over the lines they headed (see sections.ts).
 function edited() {
   const body = serialize(lines).trim();
   if (!body) return { synced: null, plain: null, timing: null };
-  return anyTimed()
-    ? {
-        synced: body,
-        plain: lines.map((l) => l.text).join("\n").trim(),
-        timing: toTiming(lines),
-      }
-    : { synced: null, plain: body, timing: null };
+  if (!anyTimed()) return { synced: null, plain: body, timing: null };
+  const sung = lines.filter((l) => !isLabel(l));
+  return {
+    synced: serialize(sung).trim(),
+    plain: withSections(
+      ctx?.lyrics.plain,
+      lines.map((l) => l.text)
+    ),
+    timing: toTiming(sung),
+  };
 }
 
 async function saveOverride(): Promise<Lyrics> {

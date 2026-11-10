@@ -1271,6 +1271,21 @@ body.remote #remote-vol-wrap {
   opacity: 0;
 }
 
+/* A section's name ("Chorus", "Verse 2") over its first line: structure, so small and quiet,
+   in the same voice as the break between tracks. Not a .line (see appendHead in main.ts). */
+.lyric-section {
+  margin: 22px 0 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--faint);
+}
+.lyric-section:first-child,
+.lyric-intro + .lyric-section {
+  margin-top: 0;
+}
+
 /* The last track's rows, kept above the new one's so the pane scrolls on down into it
    rather than rewinding (see clearPane in main.ts). All of it is behind the playhead now. */
 .lyric-outgoing .line {
@@ -2989,6 +3004,17 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
   opacity: 0.5;
 }
 #lyrics.stamping .line.blank .ln-time {
+  visibility: hidden;
+}
+/* A section label in the editor: kept as text so it can be edited, drawn like the pane's
+   heading, and never timed (a pass steps over it). */
+#lyrics.editing .line.section {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+}
+#lyrics.editing .line.section .ln-time {
   visibility: hidden;
 }
 #lyrics.stamping .line.cursor {

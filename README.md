@@ -58,6 +58,11 @@ anywhere in it.
   [Lyricsfile](https://github.com/tranxuanthang/lyricsfile), LRCLIB's format for word timing.
   LRCLIB derives ordinary line-synced lyrics from it, so players that don't know word timing
   still get the lines, pauses included.
+- **Song sections**: labels such as `Chorus:`, `[Verse 2: Artist]` or `(Bridge)` in a song's
+  lyrics show as quiet section headings over the lines they introduce, never as sung lines.
+  Synced lyrics take their headings from the plain lyrics, lined up line by line. Labels are
+  never timed: auto-sync skips them, the editor's timing pass steps over them, and saving or
+  publishing keeps them in the plain lyrics only. That is where the Lyricsfile spec puts them.
 - **Flag lyrics as wrong**: press `F` while a song plays to flag the line being sung, without
   stopping anything (the line before comes too if this one has only just started). The flag
   button above the lyrics opens flag mode: click a line to flag it, shift-click to flag a
