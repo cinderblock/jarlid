@@ -73,7 +73,8 @@ Two halves:
        position held when covers are added on the left (newest-right).
 3. [x] Coverflow only measures/writes covers near the viewport.
 4. [x] Drop now-unused helpers (search, day grouping) and their tests; README.
-5. [ ] Checks, harness, commit; v1.20.0 bump commit, tag, verify release.
+5. [x] Checks, harness, commit (`a1f94ee`); v1.20.0 (`f027b88`) released with installer and
+       `latest.json`: https://github.com/cinderblock/jarlid/releases/tag/v1.20.0
 
 ## Findings / gotchas
 
