@@ -441,11 +441,63 @@ Cheap, reversible test without a code change: set `jarlid.exe`'s process affinit
 If it drops, ship the CPU-set change. If not, it is audiodg or the driver, and the fix is on the
 vmswitch side.
 
+### Results (2026-11-10 afternoon)
+
+User: Jarlid only plays to this computer (the Dell, Intel Display Audio), and "the scratchy is
+pretty reliable now". Approved the affinity test and the stack trace; network changes: "let's
+test first".
+
+**The scratch is mostly invisible to Jarlid.** All afternoon: 2–10 late callbacks per half hour,
+zero underruns, zero starved, while the user hears it reliably. The audio leaves Jarlid intact;
+the damage happens downstream (audiodg, the endpoint driver, or the DisplayPort link).
+
+**Affinity test: no effect.** `jarlid.exe` at `0xFFE` (off CPU 0) 2:54:31–3:47 PM PST: 8 late
+callbacks in 53 minutes, all with the same 0.1 ms burst signature. Before: 10, 5 and 2 per half
+hour from 1:30 PM PST. Restored to `0xFFF` at 3:47 PM PST. Don't build CPU pinning into Jarlid.
+
+**What vmswitch's long DPCs are doing** (30 s, `PROFILE` with `-stackwalk Profile`, 2:56:36 PM
+PST; Microsoft public symbols; `xperf -a dumper` with stacks, CPU 0 only):
+
+- 1,817 of 29,997 CPU 0 samples (6.1%) have vmswitch on the stack. 1,570 of those start in
+  `vmswitch.sys!VmsVrssDpc`, and 1,469 are below `ndis.sys!NdisMIndicateReceiveNetBufferLists`:
+  vmswitch handing received packets up to the host's own TCP/IP stack.
+- Where the CPU actually is: `NETIO.SYS!FindCacheMatch` 347, `FilterMatchEx` 146,
+  `RtlLookupEntryHashTable` 85, `NETIO memcmp` 72, `MatchValues` 38, `IndexTrieClassify` 32,
+  `CompareSecurityContexts` 28, with `tcpip!UdpReceiveDatagrams` / `UdpDeliverDatagrams`.
+  That is **Windows Filtering Platform classification** (the firewall) of inbound UDP, run
+  inside vmswitch's receive DPC. No RSC code and no NDIS Capture code in the samples.
+  **RSC and NDIS Capture are cleared as suspects.**
+- Traffic at 3:45 PM PST: ~970 unicast + ~150 multicast/broadcast packets/s on the I219-V. Not
+  much, so the cost per packet is the problem: ~1.8 s of CPU 0 per 30 s.
+
+**The filter set is bloated:**
+
+- 5,500 WFP filters; 5,289 from Windows Firewall (`FWPM_PROVIDER_MPSSVC_WF`). 2,860 at
+  `ALE_AUTH_RECV_ACCEPT` (v4 + v6), the layer inbound UDP is classified at.
+- 917 firewall rules, 671 enabled, 466 of them inbound enabled.
+- **206 of the 466 enabled inbound rules name a program that no longer exists.** 132 are under
+  `target`, `Temp`, `build`, `.cargo` or `node_modules` paths: old test binaries and dev builds
+  that Windows prompted for, and the "Allow" stayed. Repeat offenders include `gate.exe` (18),
+  `empyrean-gate-mini-test.exe` (14), `electron.exe` (14), `node.exe` (14),
+  `Microsoft Edge (mDNS-In)` (21).
+
+**Side finding, not the cause:** `fl2000.sys` (Fresco Logic FL2000 USB display adapter) uses ~20%
+of one CPU in System and WUDFHost threads. None of it is in DPCs.
+
+### Proposed test (needs the user's yes: host firewall)
+
+Disable, don't delete, the 206 enabled inbound rules whose program path no longer exists.
+Before doing it, export their names to a file so `Enable-NetFirewallRule` can put back exactly
+those. Security-neutral: an allow rule for a program that isn't there admits nothing. Then
+repeat the 3-minute DPC-only trace and compare against `dpc4.etl` (1,374 vmswitch DPCs of 4 ms
+or more; 6.8% of 100 ms windows with CPU 0 over half in vmswitch). And listen.
+
+If that is not enough: find what the ~1,000 inbound UDP packets/s are (likely something on one of
+the VLANs; there are sACN / lighting tools installed) and whether the host needs to receive them
+at all.
+
 ### Open questions for the user
 
-1. Run the Jarlid-off-CPU-0 affinity test? (Recommended: harmless, Jarlid only, resets when it
-   restarts.)
-2. Run the sampled-stack trace to see what vmswitch is doing? (Recommended before any network
-   change.)
-3. Then: which network change, if any (RSC, NDIS Capture, vRSS)? Each needs its own yes.
-4. When were the glitches heard, and on which output? Lets them be matched against the log.
+1. Disable the 206 stale inbound firewall rules as a test? (Recommended; reversible.)
+2. Optional: play other audio through the Dell while it is scratchy, with Jarlid paused. If it is
+   scratchy too, Jarlid is ruled out completely.
