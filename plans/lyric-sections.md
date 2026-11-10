@@ -81,6 +81,15 @@ Two parts:
   "boots" and "throw down". Two text fixes went in where the engine clearly heard otherwise:
   "hoar" became "whore", and "your asking" became "you're asking". The script is in this
   session's scratchpad (`wings.py`, `selfsim.py`) and is not kept.
+- [x] Wings per-word timings, added 2026-11-10 (Cameron asked "what about per-word timings?").
+  Within each line, the lyric words were matched to the words heard during that line, and
+  unheard words were interpolated. Choruses 2 and 3 copy chorus 1's word times, shifted. Two
+  lines were fixed by hand. "Who said…" now starts at 30.45 s ("Who" was unheard and had been
+  squeezed against "said"). "Won't die for much…" was heard as "or without the mind.
+  Spreading…", so its words are spread over those syllables. All 48 sung lines are word-timed
+  as the pane reads them (`wordTimesFor`). Text check against LRCLIB: same 48 lines and no
+  added words. The only changes are your→you're, hoar→whore, "No Freedom"→"No freedom" and a
+  stray trailing `"`.
 - [x] Recogniser: `app/src/sections.ts` (+ tests), Rust twin `autosync::text::is_section_label`.
 - [x] Pane headings (`appendHead` in `main.ts`, `.lyric-section`): not `.line`, so the
   highlighter, flags and plain follow all keep counting rows only.
