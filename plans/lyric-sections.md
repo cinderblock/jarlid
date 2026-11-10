@@ -9,7 +9,7 @@ Actually, we should probably have some native support for things like chorus and
 Two parts:
 
 1. **Wings now:** timed lyrics for ILUKA, "Wings" (LRCLIB record `37935460`, 185 s), with the
-   section labels handled properly. This is a local override, never published without Cameron.
+   section labels handled properly. Published to LRCLIB on 2026-11-10 with Cameron's yes.
 2. **Native sections:** Jarlid recognises section labels in any common spelling. It shows them as
    section headings, keeps them out of timing and alignment, and keeps them through edits.
 
@@ -157,6 +157,12 @@ Steps:
 - Dropped: the Wings vocalizations after "Fuck it". Cameron doesn't remember them, and nothing
   will be invented.
 
+- [x] Wings published to LRCLIB 2026-11-10 (Cameron: "sure"). Same record `37935460`, HTTP 201.
+  The Lyricsfile was built by the app's own `lyricsfile.rs` (compiled standalone from a scratch
+  crate) and sent with the override's plain (with `[Chorus]` labels) and synced lyrics. LRCLIB
+  now serves 53 synced lines, "theirs", no "Suck it", and the Lyricsfile. Local cache cleared.
+- [ ] Obvious's oh lines: Cameron checks them by ear next time it plays.
+
 ## Findings, after building
 
 - Flags left earlier on *plain* lyrics that contain labels address rows by index. Those rows
@@ -167,5 +173,5 @@ Steps:
 
 ## Things not to do
 
-- Don't publish Wings to LRCLIB without Cameron's explicit yes.
+- Wings is published (see the progress log). Republishing it needs Cameron's yes again.
 - Don't put labels in LRC or Lyricsfile `lines`. Players show them as sung lines.
