@@ -1096,6 +1096,17 @@ body.remote #remote-vol-wrap {
 .hist-item:hover {
   transform: scale(1.4);
 }
+/* The song that just ended, flying from the big art down into the strip. Placed, sized and
+   tilted by the Web Animations API in main.ts (flyArtTo); this is only what never changes. */
+.art-flight {
+  position: fixed;
+  margin: 0;
+  object-fit: cover;
+  display: block;
+  z-index: 3;
+  pointer-events: none;
+  transform-origin: 50% 50%;
+}
 
 /* ---- lyrics ---- */
 .lyrics-pane {

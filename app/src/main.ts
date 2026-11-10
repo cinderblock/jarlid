@@ -561,6 +561,7 @@ async function onNowPlaying(np: NowPlaying) {
   // wipe the lyrics until the next song.
   const key = `${np.title}|${np.artist}`;
   if (key !== currentKey) {
+    const prevKey = currentKey;
     currentKey = key;
     syncedLines = null;
     activeLineIdx = NO_LINE;
@@ -576,7 +577,7 @@ async function onNowPlaying(np: NowPlaying) {
     lyricsVersionsBtn.hidden = true;
     refreshPublishChip();
     lyricFlags.trackChanged();
-    pushHistory(np);
+    pushHistory(np, prevKey);
     await loadLyrics(np);
   }
 }
@@ -708,7 +709,20 @@ function attachTip(el: HTMLElement, text: () => string) {
   el.addEventListener("mouseleave", () => (tooltip.hidden = true));
 }
 
-/** How many covers are on the strip: the newest `drawn` entries of `history`. */
+/**
+ * Whether `history[0]` is the song playing now. It is on screen as the big art, so the strip
+ * leaves it out and starts at `history[1]`; when the next song starts it flies down into the
+ * strip (see {@link flyArtTo}).
+ *
+ * True from the start: the newest entry is the last song of the last session, and the first
+ * track this session either is that song resumed, or replaces it and puts it on the strip.
+ * False only after a track that could not be recorded (no art or no title), when the newest
+ * entry is no longer the one playing and belongs on the strip after all.
+ */
+let topIsPlaying = true;
+/** Where in `history` the strip starts. */
+const stripStart = () => (topIsPlaying ? 1 : 0);
+/** How many covers are on the strip: `drawn` entries of `history` from {@link stripStart}. */
 let drawn = 0;
 
 function cover(h: HistItem) {
@@ -754,7 +768,8 @@ function renderHistory() {
  * added, so what was on screen stays on screen.
  */
 function drawOlder() {
-  const batch = history.slice(drawn, drawn + STRIP_CHUNK);
+  const from = stripStart() + drawn;
+  const batch = history.slice(from, from + STRIP_CHUNK);
   if (!batch.length) return;
   drawn += batch.length;
   if (recentsOrder() === "newestLeft") {
@@ -771,7 +786,7 @@ function drawOlder() {
 
 /** Within a few covers of the oldest one drawn, draw more. */
 function nearOldEnd() {
-  if (drawn >= history.length || histEl.clientWidth === 0) return false;
+  if (stripStart() + drawn >= history.length || histEl.clientWidth === 0) return false;
   const fromOld =
     recentsOrder() === "newestLeft"
       ? histEl.scrollWidth - histEl.clientWidth - histEl.scrollLeft
@@ -869,9 +884,24 @@ window.addEventListener("resize", () => requestAnimationFrame(coverflow));
 // Turning the strip round is a redraw, not a reload — the setting is judged by
 // looking at the strip while the page is open.
 window.addEventListener(RECENTS_ORDER_CHANGED, () => renderHistory());
-function pushHistory(np: NowPlaying) {
+/**
+ * Record the song that just started, and put the one it replaced on the strip.
+ *
+ * `prevKey` is the `currentKey` the big art was showing until now. Only when that is the song
+ * leaving does its cover fly from the art into the strip — not on the first track of a session,
+ * and not coming back from the speakers, when the art on screen was some other song's.
+ */
+function pushHistory(np: NowPlaying, prevKey: string) {
+  const outgoing = topIsPlaying ? history[0] : undefined;
   const art = np.artFallback || np.art;
-  if (!art || !np.title) return;
+  if (!art || !np.title) {
+    // Not recorded, so the newest entry is no longer the song playing: it joins the strip.
+    if (outgoing) {
+      topIsPlaying = false;
+      addNewestCover(outgoing, prevKey);
+    }
+    return;
+  }
   const entry: HistItem = {
     art,
     title: np.title,
@@ -883,29 +913,27 @@ function pushHistory(np: NowPlaying) {
     stationName: np.station || undefined,
   };
   const next = pushed(history, entry, HISTORY_LENGTH);
-  if (next === history) return;
+  // The song playing is already the newest entry: resumed, or back from the speakers. The
+  // strip shows only what is not playing, so if it had been put there, it comes back off.
+  if (next === history) {
+    if (!topIsPlaying) {
+      topIsPlaying = true;
+      dropNewestCover();
+    }
+    return;
+  }
   // The same moment, counted against the station rather than the track: this is where the
   // Stations page's "recently played" and "most played" orders come from.
   stationStats.noteTrack(art);
   history = next;
   saveHistory();
-  // One cover at the newest end, rather than a redraw: someone scrolled back through the
-  // history is left where they are, and someone watching the newest end keeps seeing it.
-  const follow = atNewestEnd();
-  const el = cover(entry);
-  const newestLeft = recentsOrder() === "newestLeft";
-  if (newestLeft) {
-    const before = histEl.scrollWidth;
-    const at = histEl.scrollLeft;
-    histEl.prepend(el);
-    if (!follow) histEl.scrollLeft = at + (histEl.scrollWidth - before);
-  } else {
-    histEl.appendChild(el);
-  }
-  drawn++;
+  if (outgoing) addNewestCover(outgoing, prevKey);
+  topIsPlaying = true;
   // The history is capped, so the song that just fell off the end leaves the strip too.
   // Taken from the old end, which is off screen for anyone not scrolled all the way back.
-  if (drawn > history.length) {
+  const room = history.length - stripStart();
+  if (drawn > room) {
+    const newestLeft = recentsOrder() === "newestLeft";
     const old = newestLeft ? histEl.lastElementChild : histEl.firstElementChild;
     if (old) {
       const before = histEl.scrollWidth;
@@ -913,11 +941,131 @@ function pushHistory(np: NowPlaying) {
       old.remove();
       if (!newestLeft) histEl.scrollLeft = at - (before - histEl.scrollWidth);
     }
-    drawn = history.length;
+    drawn = room;
   }
-  if (follow) showNewestEnd();
   requestAnimationFrame(coverflow);
 }
+
+/**
+ * One cover at the strip's newest end, rather than a redraw: someone scrolled back through the
+ * history is left where they are, and someone watching the newest end keeps seeing it — and
+ * sees it arrive, flying down from the big art when that is where it was just showing.
+ */
+function addNewestCover(h: HistItem, prevKey: string) {
+  const follow = atNewestEnd();
+  const el = cover(h);
+  const newestLeft = recentsOrder() === "newestLeft";
+  const at = histEl.scrollLeft;
+  if (newestLeft) {
+    const before = histEl.scrollWidth;
+    histEl.prepend(el);
+    if (!follow) histEl.scrollLeft = at + (histEl.scrollWidth - before);
+  } else {
+    histEl.appendChild(el);
+  }
+  drawn++;
+  const flies =
+    follow && histEl.clientWidth > 0 && prevKey === `${h.title}|${h.artist}` && !reducedMotion.matches;
+  if (!flies) {
+    if (follow) showNewestEnd();
+    requestAnimationFrame(coverflow);
+    return;
+  }
+  // Where the cover will sit once the strip has made room for it: parked at the newest end,
+  // tilted as the coverflow tilts it there. Measured there, then put back, so the strip can
+  // slide over to it while the cover is in the air.
+  showNewestEnd();
+  const to = histEl.scrollLeft;
+  coverflow();
+  const tilt = el.style.transform;
+  const fade = el.style.opacity;
+  el.style.transform = "none";
+  const img = el.firstElementChild as HTMLElement;
+  const box = img.getBoundingClientRect();
+  el.style.transform = tilt;
+  histEl.scrollLeft = at;
+  coverflow();
+  if (to !== at) histEl.scrollTo({ left: to, behavior: "smooth" });
+  flyArtTo(img, box, tilt, fade);
+}
+
+/** Take the newest cover back off the strip: it turned out to be the song playing. */
+function dropNewestCover() {
+  if (!drawn) return;
+  const newestLeft = recentsOrder() === "newestLeft";
+  const el = newestLeft ? histEl.firstElementChild : histEl.lastElementChild;
+  if (!el) return;
+  const before = histEl.scrollWidth;
+  const at = histEl.scrollLeft;
+  el.remove();
+  drawn--;
+  if (newestLeft) histEl.scrollLeft = at - (before - histEl.scrollWidth);
+  requestAnimationFrame(coverflow);
+}
+
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+/** How long the outgoing cover takes to fly from the big art down into the strip. */
+const ART_FLIGHT_MS = 700;
+
+/**
+ * Fly the big art down into the strip as the song it belongs to ends.
+ *
+ * A copy of the art does the flying, so the art itself is free to fade out and take the new
+ * song's cover as soon as that has loaded ({@link setArt}). The cover waiting in the strip is
+ * hidden until the copy lands on it, and the copy lands already tilted and faded the way the
+ * coverflow has that cover, so the hand-over does not show.
+ *
+ * `box` is the cover's untilted place on screen; `tilt` and `fade` are its coverflow transform
+ * and opacity there.
+ */
+function flyArtTo(target: HTMLElement, box: DOMRect, tilt: string, fade: string) {
+  const from = artEl.getBoundingClientRect();
+  if (!artEl.currentSrc || from.width === 0) return;
+  const artStyle = getComputedStyle(artEl);
+  const coverStyle = getComputedStyle(target);
+  const ghost = new Image();
+  ghost.src = artEl.currentSrc;
+  ghost.alt = "";
+  ghost.className = "art-flight";
+  document.body.appendChild(ghost);
+
+  target.style.visibility = "hidden";
+  hideArtForNextSong();
+
+  const anim = ghost.animate(
+    [
+      {
+        left: `${from.left}px`,
+        top: `${from.top}px`,
+        width: `${from.width}px`,
+        height: `${from.height}px`,
+        borderRadius: artStyle.borderRadius,
+        boxShadow: artStyle.boxShadow,
+        transform: "none",
+        opacity: 1,
+      },
+      {
+        left: `${box.left}px`,
+        top: `${box.top}px`,
+        width: `${box.width}px`,
+        height: `${box.height}px`,
+        borderRadius: coverStyle.borderRadius,
+        boxShadow: coverStyle.boxShadow,
+        transform: tilt || "none",
+        opacity: Number(fade || 1),
+      },
+    ],
+    { duration: ART_FLIGHT_MS, easing: "cubic-bezier(0.55, 0, 0.25, 1)", fill: "forwards" }
+  );
+  const land = () => {
+    target.style.visibility = "";
+    ghost.remove();
+  };
+  anim.onfinish = land;
+  anim.oncancel = land;
+}
+
 renderHistory();
 // Cap accumulated per-track sync offsets (no timestamps to age by; a rare
 // full reset beats unbounded growth).
@@ -940,24 +1088,45 @@ histEl.addEventListener(
 // Preload art off-screen, then fade it in — avoids broken-image flashes and
 // softens the stale-art-then-correct-art swap Pandora's DOM produces on load.
 let artToken = 0;
+/** A new cover is loading, and will fade itself in when it has. */
+let artLoading = false;
 function setArt(url: string, fallback: string) {
   if (!url || artEl.src === url) return;
   const token = ++artToken;
+  artLoading = true;
   const img = new Image();
   img.onload = () => {
     if (token !== artToken) return; // newer art superseded this one
     artEl.style.opacity = "0";
     setTimeout(() => {
       if (token !== artToken) return;
+      artLoading = false;
       artEl.src = url;
       bg.style.backgroundImage = `url("${url}")`;
       artEl.style.opacity = "1";
     }, 180);
   };
   img.onerror = () => {
-    if (token === artToken && fallback && fallback !== url) setArt(fallback, "");
+    if (token !== artToken) return;
+    if (fallback && fallback !== url) return setArt(fallback, "");
+    // Nothing to show instead: keep what was there rather than an empty frame.
+    artLoading = false;
+    artEl.style.opacity = "1";
   };
   img.src = url;
+}
+
+/**
+ * The old cover has flown off to the strip: the art stays empty until the new song's fades in.
+ *
+ * {@link setArt} brings it back when the new cover loads. When there is no new cover to load —
+ * the next song shares this one's album art, or has none — it comes back on its own.
+ */
+function hideArtForNextSong() {
+  artEl.style.opacity = "0";
+  setTimeout(() => {
+    if (!artLoading) artEl.style.opacity = "1";
+  }, 260);
 }
 
 function setThumbs(up: boolean, down: boolean) {
