@@ -94,6 +94,17 @@ Two parts:
   not from the engine, which never heard it. So LRCLIB's text is wrong there too.
 - [ ] Vocalizations after "Fuck it" (about 17–22 s): the engine heard nothing there. Waiting on
   Cameron to say what they are, then time them from the audio as a line like `(ooh, ooh)`.
+- [x] Wings after Cameron's in-app edit (saved 1:23 PM PST): kept his "Throw down" and "theirs".
+  Then finished "there's"→"theirs" in chorus 3 and put chorus 2's word timings back (lost by the
+  editor bug in ISSUES.md). Restored the 1:02.30 pause, which had gone, and the section labels:
+  the installed build predates `aecaa6f`, so its save rebuilt the plain text without them. **Until
+  a release, every in-app save of a labelled song drops its labels.**
+- [x] Obvious (EMELINE, an engine-written draft, override `fa876842023ee46e.json`): 23 lines had
+  lost their word timings in edits. They were re-timed from the draft's heard words. Six barely
+  heard hook lines copy the 0:46.63 hook's rhythm. 38 of 38 timed lines are word-timed now.
+- [ ] Obvious: the two "Oh oh oh oh" lines Cameron added are untimed. They go either in the
+  outro (after 2:06) or in the 0:49–0:54 and 1:50–1:55 gaps. Waiting on him to say where.
+  Also asked whether "I can't aren't articulate it" is "I can't articulate it".
 - [x] Recogniser: `app/src/sections.ts` (+ tests), Rust twin `autosync::text::is_section_label`.
 - [x] Pane headings (`appendHead` in `main.ts`, `.lyric-section`): not `.line`, so the
   highlighter, flags and plain follow all keep counting rows only.
