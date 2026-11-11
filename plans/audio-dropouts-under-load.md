@@ -536,12 +536,34 @@ of one CPU in System and WUDFHost threads. None of it is in DPCs.
 - Odd: Jarlid reopened its stream at 4:30:13 PM PST, one second after Bonjour stopped ("opened …
   at 102.7s"). A network-change side effect, probably harmless; not chased.
 
+### User (2026-11-10 ~4:45 PM PST): "better... maybe, but not fixed". Why is it asking? Restart Bonjour.
+
+Bonjour restarted 4:46:24 PM PST.
+
+**Why the gateway keeps asking: still unknown.** What was checked:
+
+- The gateway is AT&T's (`10-C4-CA` is a Humax OUI; AT&T's BGW320 is Humax-built). It queries
+  only `Noook.local` (no other host on that LAN gets this), with the QU bit, ~30–60/s, and each
+  query frame arrives **twice** at the NIC, 1.4 µs apart.
+- **Hypothesis disproven:** that the answers leave out the IPv6 privacy address the PC actually
+  uses. Both responders answer with every VLAN-7 address: `…8a10::49` (DHCPv6), `…78f6:…`
+  (SLAAC), `…b9a9:…` (temporary, the one in use), and the link-local; Bonjour adds the A
+  record. Replies go unicast to the gateway's MAC with cache-flush set. They are correct.
+- Still a candidate: the replies never reach the gateway. This PC has two adapters on
+  192.168.1.0/24: `VLAN-7` (.252, where the gateway is) and `VLAN-5` (.11, where .254 is
+  unreachable). The VLAN each reply leaves on is unverified: a pktmon capture on the VLAN-5/7
+  vNIC components logged only "Filtered VLAN" drops, not the traffic.
+- Reply-to-next-query timing from pktmon is **not usable**: timestamps at the NIC component
+  cluster by DPC batch (62 "unique" queries in 10 s by a 0.5 ms dedupe, against 578 frames), so
+  they show when vmswitch processed a batch, not wire time.
+
 ### Open questions for the user
 
-1. Does it sound better since 4:30 PM PST, with Bonjour stopped?
-2. To actually stop the loop: stop answering the gateway, e.g. a firewall rule blocking inbound
-   UDP 5353 from 192.168.1.254 on `vEthernet (VLAN-7)`. Only helps if the gateway backs off
-   when unanswered, so test it. Needs a yes.
-3. Keep Bonjour stopped, or start it again? (Something may rely on it: AirPlay, printers, Apple
-   device discovery.)
-4. Later, its own task: fewer VLAN vNICs.
+1. Block this PC's answers (firewall rule: inbound UDP 5353 from 192.168.1.254 on
+   `vEthernet (VLAN-7)`) as a test, to see whether the gateway backs off when unanswered.
+   Side effect: the gateway can't learn the PC's name (cosmetic in its device list). Needs a yes.
+2. Can the user check the gateway's device list (192.168.1.254)? How it shows Noook, and whether
+   it shows the PC twice, would say whether it hears the answers. A third-party dashboard: the
+   user looks, or explicitly authorizes a read.
+3. What is VLAN-5's 192.168.1.0/24, and does the PC need to be on two networks with the same
+   subnet? Part of the later VLAN-trim task.
