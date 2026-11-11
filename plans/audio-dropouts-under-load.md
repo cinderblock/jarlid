@@ -515,13 +515,33 @@ of one CPU in System and WUDFHost threads. None of it is in DPCs.
 - Third-party WFP providers are registered ("Tessera Sandbox Provider", "ThisIsFine"), but no
   third-party module appears in the CPU 0 samples; the hot path is all `NETIO.SYS`.
 
+### User answers (2026-11-10 ~4:25 PM PST)
+
+- **Pandora in Chrome glitches too.** Jarlid is ruled out; the fault is system-wide.
+- The 169 dead-program rules can stay disabled (or be deleted). Left disabled.
+- Stop the mDNS loop; Bonjour test approved.
+- Reducing the eight VLAN vNICs: open to it, but it's a bigger change (they're used for
+  testing), to be planned carefully. Not now.
+
+### Bonjour stopped (4:30:12 PM PST): the loop is the gateway's
+
+- With `Bonjour Service` stopped the loop **doubled**: 933 AAAA + 179 A queries from
+  192.168.1.254 in 15 s (~74/s), each answered once by Windows' own mDNS responder. The queries
+  carry the QU bit (class `0x8001`, "unicast reply please"), get exactly that, and are re-sent at
+  once: a gateway-side retry bug, paced by how fast answers come back.
+- 3-minute DPC trace 4:31:42–4:34:42 PM PST at 100% CPU: vmswitch DPCs of 4 ms or more 1,214
+  (vs 1,466 and 1,365); **CPU 0 in vmswitch 7.9%** (vs 10.5% and 11.5%).
+- Jarlid: **0 late callbacks 4:30–4:36 PM PST** at 100% CPU, vs 7 in 3:59–4:05 PM PST. Small
+  sample.
+- Odd: Jarlid reopened its stream at 4:30:13 PM PST, one second after Bonjour stopped ("opened …
+  at 102.7s"). A network-change side effect, probably harmless; not chased.
+
 ### Open questions for the user
 
-1. Keep the 169 dead-program rules disabled (they admit nothing), or put them back?
-2. Test stopping the mDNS loop: stop the `Bonjour Service` for ~10 minutes and re-measure the
-   packet rate, the vmswitch DPCs and the audio. Reversible with `Start-Service`. Bonjour is the
-   likely responder, but Windows' own mDNS may answer too.
-3. Does this PC need host vNICs on all eight VLANs? Each one brings that VLAN's
-   broadcast/multicast into the host stack, through the firewall, inside vmswitch's DPC on CPU 0.
-4. The cheapest proof is still the user's ears: other audio through the Dell while it is
-   scratchy, with Jarlid paused.
+1. Does it sound better since 4:30 PM PST, with Bonjour stopped?
+2. To actually stop the loop: stop answering the gateway, e.g. a firewall rule blocking inbound
+   UDP 5353 from 192.168.1.254 on `vEthernet (VLAN-7)`. Only helps if the gateway backs off
+   when unanswered, so test it. Needs a yes.
+3. Keep Bonjour stopped, or start it again? (Something may rely on it: AirPlay, printers, Apple
+   device discovery.)
+4. Later, its own task: fewer VLAN vNICs.
