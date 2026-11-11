@@ -484,20 +484,44 @@ PST; Microsoft public symbols; `xperf -a dumper` with stacks, CPU 0 only):
 **Side finding, not the cause:** `fl2000.sys` (Fresco Logic FL2000 USB display adapter) uses ~20%
 of one CPU in System and WUDFHost threads. None of it is in DPCs.
 
-### Proposed test (needs the user's yes: host firewall)
+### Firewall cleanup test: no effect (approved by the user, 2026-11-10)
 
-Disable, don't delete, the 206 enabled inbound rules whose program path no longer exists.
-Before doing it, export their names to a file so `Enable-NetFirewallRule` can put back exactly
-those. Security-neutral: an allow rule for a program that isn't there admits nothing. Then
-repeat the 3-minute DPC-only trace and compare against `dpc4.etl` (1,374 vmswitch DPCs of 4 ms
-or more; 6.8% of 100 ms windows with CPU 0 over half in vmswitch). And listen.
+- Counted rule by rule, 169 (not 206; the first count paired rules and programs by position)
+  enabled inbound rules named a program that no longer exists. All 169 were **disabled** (not
+  deleted) at 3:59 PM PST. List saved to
+  `%LOCALAPPDATA%\firewall-cleanup\disabled-stale-rules-2026-11-10.csv`. Undo:
+  `Import-Csv <that file> | % { Enable-NetFirewallRule -Name $_.Name }`.
+- WFP filters 5,500 → 3,690. Enabled inbound rules 466 → 297.
+- 3-minute DPC trace 3:59:22–4:02:22 PM PST (61–98% CPU), against the 1:04 PM PST baseline:
+  vmswitch DPCs of 4 ms or more **1,466 vs 1,365**; CPU 0 in vmswitch 10.5% vs 11.5%. Jarlid: 7
+  late callbacks 3:59–4:05 PM PST. **No improvement.** The size of the filter set is not what
+  makes each packet expensive.
 
-If that is not enough: find what the ~1,000 inbound UDP packets/s are (likely something on one of
-the VLANs; there are sACN / lighting tools installed) and whether the host needs to receive them
-at all.
+### What the inbound UDP is (pktmon, 15 s, 4:05 PM PST, physical NIC)
+
+- **An mDNS loop between this PC and the AT&T gateway on VLAN-7.** 192.168.1.252 is this PC
+  (`vEthernet (VLAN-7)`); 192.168.1.254 is the gateway (MAC `10-C4-CA-68-CE-B1`). The gateway
+  multicasts `Noook.local` AAAA (476 in 15 s) and A (72) queries, ~36/s, and this PC answers each
+  one unicast, often twice (793 four-record answers and 102 one-record answers). Together ~70% of
+  the UDP captured. Most likely the gateway's device-name discovery never accepts the answer and
+  keeps asking.
+- Everything else is ordinary: occasional mDNS from the Mac mini on several VLANs, Cloudflare
+  tunnel traffic (198.41.x.x:7844 from 10.255.0.77), QUIC.
+- 18 sockets on 5353: Bonjour `mDNSResponder` (14, one per address), ChatGPT (2), Chrome (2).
+  No delivery multiplier.
+- **Doesn't add up yet:** ~100 mDNS packets/s cannot explain ~110 ms/s of CPU 0 in vmswitch DPCs
+  unless each costs ~1 ms. The ~1,000 unicast packets/s in the interface counters are mostly not
+  UDP, so the per-packet cost of WFP classification is still unexplained.
+- Third-party WFP providers are registered ("Tessera Sandbox Provider", "ThisIsFine"), but no
+  third-party module appears in the CPU 0 samples; the hot path is all `NETIO.SYS`.
 
 ### Open questions for the user
 
-1. Disable the 206 stale inbound firewall rules as a test? (Recommended; reversible.)
-2. Optional: play other audio through the Dell while it is scratchy, with Jarlid paused. If it is
-   scratchy too, Jarlid is ruled out completely.
+1. Keep the 169 dead-program rules disabled (they admit nothing), or put them back?
+2. Test stopping the mDNS loop: stop the `Bonjour Service` for ~10 minutes and re-measure the
+   packet rate, the vmswitch DPCs and the audio. Reversible with `Start-Service`. Bonjour is the
+   likely responder, but Windows' own mDNS may answer too.
+3. Does this PC need host vNICs on all eight VLANs? Each one brings that VLAN's
+   broadcast/multicast into the host stack, through the firewall, inside vmswitch's DPC on CPU 0.
+4. The cheapest proof is still the user's ears: other audio through the Dell while it is
+   scratchy, with Jarlid paused.
