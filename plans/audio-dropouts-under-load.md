@@ -557,6 +557,25 @@ Bonjour restarted 4:46:24 PM PST.
   cluster by DPC batch (62 "unique" queries in 10 s by a 0.5 ms dedupe, against 578 frames), so
   they show when vmswitch processed a batch, not wire time.
 
+### Verified (2026-11-10 ~5:00 PM PST, read-only)
+
+- **The replies leave on VLAN 7.** Their source MAC `00-15-5D-18-7A-05` is the `VLAN-7` host
+  vNIC (Access, VLAN 7), so vmswitch tags them 7. Over 10 s, `VLAN-7` sent ~95 unicast
+  packets/s (the replies) and `VLAN-5` sent none. The wrong-VLAN hypothesis is **disproven**.
+  From the PC's side the answers are correct and on the right wire; whether the gateway hears
+  them can't be seen from here. Remaining explanations: the gateway's firmware, or something
+  between the switch port and the gateway.
+- **VLAN-5 is a dead leftover.** Static 192.168.1.11/24 (set around 2025-09-14), default
+  gateways 192.168.1.1 and 192.168.1.2 (both ARP `Incomplete`), DNS the `fec0:0:0:ffff::1–3`
+  placeholders, network "Unidentified / Public", **0 bytes received since boot** (14.6 MB sent,
+  all unanswered). Looks like a static setup for reaching a device at a factory default address.
+  Not in the ops repo's UniFi config (no VLANs are defined there). It costs no receive load, so
+  it isn't part of the audio problem.
+- **A trap it does cause:** both `VLAN-5` and `VLAN-7` have a 192.168.1.0/24 route at metric
+  256, and Windows picks `VLAN-5` for 192.168.1.254 (`Find-NetRoute`). Anything on this PC that
+  talks to 192.168.1.x without binding a source address goes into the dead VLAN, e.g. opening
+  the gateway's web page. Not touched.
+
 ### Open questions for the user
 
 1. Block this PC's answers (firewall rule: inbound UDP 5353 from 192.168.1.254 on
@@ -564,6 +583,6 @@ Bonjour restarted 4:46:24 PM PST.
    Side effect: the gateway can't learn the PC's name (cosmetic in its device list). Needs a yes.
 2. Can the user check the gateway's device list (192.168.1.254)? How it shows Noook, and whether
    it shows the PC twice, would say whether it hears the answers. A third-party dashboard: the
-   user looks, or explicitly authorizes a read.
-3. What is VLAN-5's 192.168.1.0/24, and does the PC need to be on two networks with the same
-   subnet? Part of the later VLAN-trim task.
+   user looks, or explicitly authorizes a read. (From this PC, the page will route into dead
+   VLAN-5 unless that is fixed first.)
+3. Remove or disable the dead `VLAN-5` vNIC? Part of the later VLAN-trim task.
