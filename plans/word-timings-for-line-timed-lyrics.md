@@ -103,7 +103,7 @@ set stay as they are; the generated word times only fill in *within* each line.
 4. Grim Reaper: fill word times into the saved edit (backup first).
 5. App: generate word times for line-timed songs (LRCLIB synced, auto-synced, overrides) when the
    engine hears them; serve them in `timing`.
-6. Batch the cached line-only LRCLIB songs offline (scheduled 3 AM 2026-11-12). ← current
+6. Batch the cached line-only LRCLIB songs offline (done 2026-11-12).
 
 ## Progress log
 
@@ -128,13 +128,12 @@ set stay as they are; the generated word times only fill in *within* each line.
   tout ce que je veux" → "To it, two squash, your book"), so its 22 French/spelled-out lines are
   spaced by syllables inside Cameron's line times.
 - [x] Released in v1.23.0 (`6e333ab`), 2026-11-11 9:10 PM PST.
-- [ ] Step 6: offline batch, scheduled. Windows task "Jarlid word-timing hearing batch", once at
-  2026-11-12 3:00 AM PST (start-when-available, 14 h limit, deletes itself a day after expiry).
-  It runs `pythonw -I <scratchpad>/tools/batch_heard.py`: 173 cached line-only LRCLIB songs, chunks
-  of 6, each through `srmctl run --slots 3 --low` with no window, into
-  `%LOCALAPPDATA%\com.camer.pandora-desktop\lyrics-heard\<LRCLIB cache file name>` (the app's
-  `StoredHeard` format). One test song stored 9:16 PM PST (`02a86868d6ce368a.json`), ~4.5 min a
-  song, so ~7–11 h. Log: `<scratchpad>/batch-heard.log`. Re-runnable: skips songs already heard.
+- [x] Step 6: offline batch ran 2026-11-12 3:00–5:10 AM PST (the idle machine went faster than the
+  4.5 min/song estimate): all 173 cached line-only LRCLIB songs heard into
+  `%LOCALAPPDATA%\com.camer.pandora-desktop\lyrics-heard\`, none failed. Scored through the
+  `words` example: 168 of 173 clear the app's 0.35 match gate and will show word times; median
+  share of words matched 0.73, 103 songs at 0.7 or more. The 5 below the gate (0.06–0.34) show
+  lines only, as before. The Windows task deletes itself a day after it expires.
 
 ## Open questions for the user
 
