@@ -574,7 +574,11 @@ Bonjour restarted 4:46:24 PM PST.
 - **A trap it does cause:** both `VLAN-5` and `VLAN-7` have a 192.168.1.0/24 route at metric
   256, and Windows picks `VLAN-5` for 192.168.1.254 (`Find-NetRoute`). Anything on this PC that
   talks to 192.168.1.x without binding a source address goes into the dead VLAN, e.g. opening
-  the gateway's web page. Not touched.
+  the gateway's web page.
+- **VLAN-5 disabled** (2026-11-12, user approved): `Disable-NetAdapter "vEthernet (VLAN-5)"`
+  (MAC 00-15-5D-18-7A-03; the Hyper-V vNIC and its static config are kept). Afterwards
+  `Find-NetRoute 192.168.1.254` picks `VLAN-7` and TCP 80 on the gateway connects. Undo:
+  `Enable-NetAdapter -Name "vEthernet (VLAN-5)"`.
 
 ### Open questions for the user
 
@@ -583,6 +587,7 @@ Bonjour restarted 4:46:24 PM PST.
    Side effect: the gateway can't learn the PC's name (cosmetic in its device list). Needs a yes.
 2. Can the user check the gateway's device list (192.168.1.254)? How it shows Noook, and whether
    it shows the PC twice, would say whether it hears the answers. A third-party dashboard: the
-   user looks, or explicitly authorizes a read. (From this PC, the page will route into dead
-   VLAN-5 unless that is fixed first.)
-3. Remove or disable the dead `VLAN-5` vNIC? Part of the later VLAN-trim task.
+   user looks, or explicitly authorizes a read. (Reachable from this PC now that VLAN-5 is
+   disabled.)
+3. ~~Remove or disable the dead `VLAN-5` vNIC?~~ Disabled 2026-11-12. Removing the vNIC
+   outright is left for the later VLAN-trim task.
