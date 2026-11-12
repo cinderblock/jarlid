@@ -97,13 +97,13 @@ set stay as they are; the generated word times only fill in *within* each line.
    start-mismatch is handled in the backend instead (design above).
 2. `crates/autosync`: `words` module — given timed lines and heard words, a start per word,
    constrained to its line's window; unmatched words interpolated. Unit tests.
-3. Evaluate against the ground-truth songs (heard via `hear.py`), tune. ← current
+3. Evaluate against the ground-truth songs (heard via `hear.py`), tune.
    Harness: `cargo run --release -p autosync --example words -- <case.json>…` (from `crates/`);
    cases built by `<scratchpad>/tools/cases.py`.
 4. Grim Reaper: fill word times into the saved edit (backup first).
 5. App: generate word times for line-timed songs (LRCLIB synced, auto-synced, overrides) when the
    engine hears them; serve them in `timing`.
-6. Batch the 166 cached LRCLIB songs + overrides offline.
+6. Batch the cached line-only LRCLIB songs offline (scheduled 3 AM 2026-11-12). ← current
 
 ## Progress log
 
@@ -121,16 +121,25 @@ set stay as they are; the generated word times only fill in *within* each line.
   `autosync://words`. Tests + clippy pass. Not in a release yet.
   Coverage check: the 45 cached LRCLIB records with Lyricsfile words place 94% of their LRC's
   words (11,549 / 12,209) from their own Lyricsfile, no hearing needed.
-- [ ] Step 6: offline batch of the 166 cached line-only songs — waiting on Cameron (question 2).
+- [x] Overrides filled, 2026-11-11 9:20 PM PST, engine evidence only (their LRCLIB records have no
+  word times), `.before-word-fill.bak` beside each: "your presence" (`2b6d3a9a6d967f83`) 52/52
+  lines, 206/226 words matched; "dopamine" (`545b7f6f3922d6ba`) 51 lines with words (the rest
+  are one word), 131/220 matched. The engine hears dopamine's French as English nonsense ("Tu es
+  tout ce que je veux" → "To it, two squash, your book"), so its 22 French/spelled-out lines are
+  spaced by syllables inside Cameron's line times.
+- [x] Released in v1.23.0 (`6e333ab`), 2026-11-11 9:10 PM PST.
+- [ ] Step 6: offline batch, scheduled. Windows task "Jarlid word-timing hearing batch", once at
+  2026-11-12 3:00 AM PST (start-when-available, 14 h limit, deletes itself a day after expiry).
+  It runs `pythonw -I <scratchpad>/tools/batch_heard.py`: 173 cached line-only LRCLIB songs, chunks
+  of 6, each through `srmctl run --slots 3 --low` with no window, into
+  `%LOCALAPPDATA%\com.camer.pandora-desktop\lyrics-heard\<LRCLIB cache file name>` (the app's
+  `StoredHeard` format). One test song stored 9:16 PM PST (`02a86868d6ce368a.json`), ~4.5 min a
+  song, so ~7–11 h. Log: `<scratchpad>/batch-heard.log`. Re-runnable: skips songs already heard.
 
 ## Open questions for the user
 
-1. Cut a release (minor) so the installed app does this? Recommended: yes.
-2. Hear the 166 cached line-only LRCLIB songs offline now (~8 h CPU at low priority, 3 slots)
-   and seed `lyrics-heard\`, or let the app hear them as they play (needs auto-sync on)?
-   Recommended: let the app do it.
-3. Fill "your presence" and "dopamine" (saved edits with line times, no words) now, like Grim
-   Reaper (~10 min)? Recommended: yes.
+Answered 2026-11-11: release yes (v1.23.0); batch yes, start 3 AM when the computer is idle;
+fill the two overrides yes (done).
 
 ## Things not to do
 
