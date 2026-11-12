@@ -15,6 +15,7 @@ mod thumbbar;
 mod timeline;
 mod updates;
 mod upnp;
+mod word_timing;
 
 use tauri::{Emitter, Listener, Manager};
 

@@ -1557,6 +1557,16 @@ void listen<AutoSyncLines>("autosync://lines", (e) => {
     : `${p.lrc ? "Synced lyrics" : "Lyrics"} · syncing ${p.done} of ${p.of}`;
 });
 
+/// The engine has heard a song whose lines were already timed, so its words can now be placed
+/// inside them (plans/word-timings-for-line-timed-lyrics.md): ask again, and the lyrics come
+/// back with word times.
+void listen<{ title: string; artist: string }>("autosync://words", (e) => {
+  const key = `${e.payload.title}|${e.payload.artist}`;
+  if (key !== currentKey) return;
+  if (lyricEditor.isEditing() || lyricPicker.isOpen()) return;
+  void loadLyricsFor(lastMeta, lastDuration, key);
+});
+
 // ---- publishing checked auto-synced timings ------------------------------
 // Generated timings are never published on their own (plans/autosync-quick-publish.md).
 // Once the listener has watched them line up, this chip sends them to LRCLIB without a trip

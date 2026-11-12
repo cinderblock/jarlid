@@ -254,6 +254,9 @@ pub async fn fetch_lyrics(
             None => {}
         }
     }
+    // Lines timed but not their words: place the words, from the record's own Lyricsfile or
+    // what the engine heard. Line starts stay as they are.
+    crate::word_timing::fill(&mut found, || crate::autosync::heard_words(&app, &key));
     Ok(found)
 }
 

@@ -251,6 +251,9 @@ enum Job {
     /// Timed before, from these words, but a block the lyrics repeat was missed and the music was
     /// never checked for it. Only the audio is needed, not the engine (see `autosync::repeat`).
     Repeats(String, Stored),
+    /// The lines are timed (LRCLIB's, or the listener's edit) but not their words: hear the song
+    /// and keep what was heard, for `word_timing` to place the words by.
+    Words,
 }
 
 async fn run(
@@ -276,22 +279,27 @@ async fn run(
     )
     .await?;
     // Only words without timings, or no words at all: real timings, and the listener's own
-    // edits, always win.
-    if lyrics.overridden || lyrics.synced.is_some() {
-        return Ok(());
-    }
-    let job = match lyrics.plain {
-        Some(plain) => match current(app, &key, &plain) {
-            // Done before for these words — or tried, and failed the gate. Not again until they
-            // change, or the aligner does and the song has to be heard again to re-time it.
-            Some(s) if s.repeats_checked || !misses_repeats(&plain, &s) => return Ok(()),
-            // Results from before missed repeats were looked for: just the music to check.
-            Some(s) => Job::Repeats(plain, s),
-            None => Job::Align(plain),
-        },
-        // Drafted before, or found to have nothing worth drafting.
-        None if !setting.drafts || current_draft(app, &key).is_some() => return Ok(()),
-        None => Job::Draft,
+    // edits, always win. Their words are placed inside them, once the song has been heard.
+    let job = if lyrics.overridden || lyrics.synced.is_some() {
+        if !crate::word_timing::wants_hearing(&lyrics) || heard(app, &key).is_some() {
+            return Ok(());
+        }
+        Job::Words
+    } else {
+        match lyrics.plain {
+            Some(plain) => match current(app, &key, &plain) {
+                // Done before for these words — or tried, and failed the gate. Not again until
+                // they change, or the aligner does and the song has to be heard again to re-time
+                // it.
+                Some(s) if s.repeats_checked || !misses_repeats(&plain, &s) => return Ok(()),
+                // Results from before missed repeats were looked for: just the music to check.
+                Some(s) => Job::Repeats(plain, s),
+                None => Job::Align(plain),
+            },
+            // Drafted before, or found to have nothing worth drafting.
+            None if !setting.drafts || current_draft(app, &key).is_some() => return Ok(()),
+            None => Job::Draft,
+        }
     };
 
     let engine = app.state::<crate::native::NativeEngine>().try_engine();
@@ -318,6 +326,7 @@ async fn run(
             Job::Align(_) => "syncing",
             Job::Draft => "drafting",
             Job::Repeats(..) => "looking for missed repeats",
+            Job::Words => "timing words",
         }
     );
 
@@ -326,8 +335,10 @@ async fn run(
     let wav = dir.join(format!("{}.wav", file_stem(&track.pandora_id)));
     // The engine reads a WAV; finding missed repeats reads the music's features. A draft has no
     // lyrics to repeat, and a repeats check doesn't run the engine.
-    let (wants_wav, wants_features) =
-        (!matches!(job, Job::Repeats(..)), !matches!(job, Job::Draft));
+    let (wants_wav, wants_features) = (
+        !matches!(job, Job::Repeats(..)),
+        matches!(job, Job::Align(_) | Job::Repeats(..)),
+    );
     let features = {
         let wav = wav.clone();
         tokio::task::spawn_blocking(move || -> Result<_, String> {
@@ -394,6 +405,11 @@ async fn run(
             };
             hear(app, installed, track, &wav, from, gpu, shown).await
         }
+        // The lines are already shown, timed; nothing to show until the words are placed.
+        Job::Words => {
+            let shown = |_: &[autosync::Heard], _: usize, _: usize| Shown::default();
+            hear(app, installed, track, &wav, from, gpu, shown).await
+        }
         Job::Repeats(..) => unreachable!("handled before the engine runs"),
     };
     let _ = std::fs::remove_file(&wav);
@@ -406,6 +422,31 @@ async fn run(
         Job::Align(plain) => plain,
         Job::Draft => {
             finish_draft(app, installed, track, &key, &heard, duration);
+            return Ok(());
+        }
+        Job::Words => {
+            eprintln!(
+                "[autosync] {} — {}: {} words heard, for word timings",
+                track.artist_name,
+                track.song_title,
+                heard.len()
+            );
+            store_heard(
+                app,
+                &key,
+                &StoredHeard {
+                    engine: installed.manifest.version.clone(),
+                    created: unix_now(),
+                    heard: heard
+                        .iter()
+                        .map(|w| (w.text.clone(), w.start, w.end, w.p))
+                        .collect(),
+                },
+            );
+            let _ = app.emit(
+                "autosync://words",
+                json!({ "title": track.song_title, "artist": track.artist_name }),
+            );
             return Ok(());
         }
         Job::Repeats(..) => unreachable!("handled before the engine runs"),
@@ -983,14 +1024,61 @@ pub fn heard(app: &AppHandle, key: &str) -> Option<Vec<(String, f64, f64, f32)>>
         return Some(d.heard);
     }
     // Whatever words it was timed for: what was heard doesn't depend on them.
-    let path = crate::lyrics::hashed_file(results_dir(app)?, key)?;
-    let s: Stored = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    (!s.heard.is_empty()).then(|| {
-        s.heard
+    let stored = crate::lyrics::hashed_file(results_dir(app)?, key)
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|json| serde_json::from_slice::<Stored>(&json).ok())
+        .filter(|s| !s.heard.is_empty());
+    if let Some(s) = stored {
+        return Some(
+            s.heard
+                .into_iter()
+                .map(|(text, start, end)| (text, start, end, 1.0))
+                .collect(),
+        );
+    }
+    // Heard only for its word timings: the lines were timed already.
+    let path = crate::lyrics::hashed_file(heard_dir(app)?, key)?;
+    let s: StoredHeard = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    (!s.heard.is_empty()).then_some(s.heard)
+}
+
+/// What the engine heard of a song whose lines were already timed (`Job::Words`).
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredHeard {
+    engine: String,
+    created: u64,
+    /// `(text, start, end, p)`, in order.
+    heard: Vec<(String, f64, f64, f32)>,
+}
+
+/// Beside the aligned results and drafts, in the cache dir: it can be heard again.
+fn heard_dir(app: &AppHandle) -> Option<PathBuf> {
+    Some(app.path().app_cache_dir().ok()?.join("lyrics-heard"))
+}
+
+fn store_heard(app: &AppHandle, key: &str, s: &StoredHeard) {
+    let Some(path) = heard_dir(app).and_then(|d| crate::lyrics::hashed_file(d, key)) else {
+        return;
+    };
+    if let Ok(json) = serde_json::to_vec(s) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// [`heard`] as the aligner takes it.
+pub fn heard_words(app: &AppHandle, key: &str) -> Option<Vec<autosync::Heard>> {
+    Some(
+        heard(app, key)?
             .into_iter()
-            .map(|(text, start, end)| (text, start, end, 1.0))
-            .collect()
-    })
+            .map(|(text, start, end, p)| autosync::Heard {
+                text,
+                start,
+                end,
+                p,
+            })
+            .collect(),
+    )
 }
 
 fn store_draft(app: &AppHandle, key: &str, draft: &StoredDraft) {
