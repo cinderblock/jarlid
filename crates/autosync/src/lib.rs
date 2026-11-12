@@ -15,6 +15,7 @@
 //! - [`repeat`] — repeats the model missed (a chorus heard once), placed by matching the music.
 //! - [`score`] — how close a result is to a known-good synced copy.
 //! - [`window`] — cutting a track into overlapping windows for the model, and stitching back.
+//! - [`words`] — word starts inside lines whose starts are already known.
 
 pub mod align;
 pub mod draft;
@@ -23,6 +24,7 @@ pub mod repeat;
 pub mod score;
 pub mod text;
 pub mod window;
+pub mod words;
 
 /// One word the speech model heard, with when it heard it.
 #[derive(Debug, Clone, PartialEq)]
