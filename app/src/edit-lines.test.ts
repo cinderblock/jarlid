@@ -5,6 +5,7 @@ import {
   fromTiming,
   lineEnd,
   mergeTiming,
+  stampStart,
   joinLine,
   retext,
   reviewState,
@@ -273,4 +274,19 @@ test("the pane's lines find their word times by start and text", () => {
     ]
   );
   expect(times).toEqual([[1, 1.5], undefined, undefined]);
+});
+
+describe("tapping a line's start", () => {
+  test("its words move with it", () => {
+    const line: Line = { t: 10, text: "a b c", words: [10, 10.5, null] };
+    stampStart(line, 9.5);
+    expect(line.t).toBe(9.5);
+    expect(line.words).toEqual([9.5, 10, null]);
+  });
+
+  test("an untimed line just takes the start", () => {
+    const line: Line = { t: null, text: "a b" };
+    stampStart(line, 3);
+    expect(line).toEqual({ t: 3, text: "a b" });
+  });
 });

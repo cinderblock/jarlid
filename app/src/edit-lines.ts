@@ -228,6 +228,17 @@ export function wordStarts(lines: Line[], i: number, fallbackEnd: number): numbe
   return out;
 }
 
+/// Stamp line `line`'s start at `t` (a tap), unclamped: a timing pass sorts its neighbours out
+/// itself. Its word times keep their places in the line, moving with it, since a tap says
+/// when the line starts, not how it is sung.
+export function stampStart(line: Line, t: number) {
+  if (line.t !== null && line.words) {
+    const by = t - line.t;
+    line.words = line.words.map((w) => (w === null ? null : w + by));
+  }
+  line.t = t;
+}
+
 /// Move line `i`'s start to `t`, between its neighbours. Its first word moves with it.
 export function setStart(lines: Line[], i: number, t: number): number {
   const p = prevTimed(lines, i);

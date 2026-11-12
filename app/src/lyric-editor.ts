@@ -34,6 +34,7 @@ import {
   fromTiming,
   mergeTiming,
   retext,
+  stampStart,
   toTiming,
   type Line,
   type TimedLine,
@@ -518,7 +519,7 @@ function markDirty() {
 /// single line is out, so you fix that line.
 function setNow(i: number) {
   if (!ctx || stale || !ctx.canTransport) return;
-  lines[i].t = Math.max(0, ctx.playhead().position - TAP_LATENCY);
+  stampStart(lines[i], Math.max(0, ctx.playhead().position - TAP_LATENCY));
   markDirty();
   render();
   if (autoCheckBox.checked) checkLine(i);
@@ -529,7 +530,7 @@ function setNow(i: number) {
 /// the next line is seconds away.
 function markAt(i: number) {
   if (!ctx || stale || isBlank(lines[i])) return;
-  lines[i].t = Math.max(0, ctx.playhead().position - TAP_LATENCY);
+  stampStart(lines[i], Math.max(0, ctx.playhead().position - TAP_LATENCY));
   dirty = true;
   dropMisplacedGaps(i);
   const next = nextLyric(i + 1);
