@@ -580,12 +580,31 @@ Bonjour restarted 4:46:24 PM PST.
   `Find-NetRoute 192.168.1.254` picks `VLAN-7` and TCP 80 on the gateway connects. Undo:
   `Enable-NetAdapter -Name "vEthernet (VLAN-5)"`.
 
+### Gateway device list (2026-11-13 ~2:00 AM PST, read-only, user logged in and authorized)
+
+`http://192.168.1.254/cgi-bin/devices.ha` (it also loads without a login; Chrome hung on it,
+so it was fetched with `Invoke-WebRequest`). Nothing was clicked; "Clear and Rescan" was not
+touched.
+
+- **The gateway hears the answers.** It lists `00:15:5d:18:7a:05` (the VLAN-7 vNIC) as
+  `192.168.1.252 / Noook`, status on, static, on port Ethernet LAN-2. It lists all four of the
+  PC's IPv6 addresses (two SLAAC privacy addresses, the DHCPv6 `::49`, and the link-local).
+  So it has the name and every address, and keeps asking anyway. The "it never gets an
+  answer" theory is **disproven**. What's left is the gateway's own behaviour (firmware).
+- Only two devices are active: Noook (LAN-2) and `e4:38:83:1d:41:cd` with the public address
+  108.65.74.188 on LAN-1 (labelled "Google Chromecast series", but the e4:38:83 prefix is
+  Ubiquiti: this is the UniFi gateway in IP passthrough). Six other entries are stale (off
+  since October).
+- Lead, not yet checked: each query arrives twice at the PC. With the UniFi gateway on LAN-1
+  and the switch on LAN-2, a duplicate suggests the same frame reaches VLAN 7 by two paths.
+
 ### Open questions for the user
 
 1. Block this PC's answers (firewall rule: inbound UDP 5353 from 192.168.1.254 on
    `vEthernet (VLAN-7)`) as a test, to see whether the gateway backs off when unanswered.
    Side effect: the gateway can't learn the PC's name (cosmetic in its device list). Needs a yes.
-2. Can the user check the gateway's device list (192.168.1.254)? How it shows Noook, and whether
+2. ~~Can the user check the gateway's device list?~~ Read 2026-11-13: it knows Noook's name
+   and addresses. Original question: How it shows Noook, and whether
    it shows the PC twice, would say whether it hears the answers. A third-party dashboard: the
    user looks, or explicitly authorizes a read. (Reachable from this PC now that VLAN-5 is
    disabled.)
