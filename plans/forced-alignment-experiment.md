@@ -41,7 +41,8 @@ Cameron's yes.
 4. Variant (b): Parakeet on the stems → same `words` scorer.
 5. Variant (c): MMS_FA per line window on the stem (and on the mix, to separate the two effects).
 6. Compare; write up; recommend.
-7. int8 ONNX aligner: size and accuracy. ← done; waiting on Cameron (open questions)
+7. int8 ONNX aligner: size and accuracy.
+8. Round 2: anchored FA for unheard words; heard words refined; int8-MatMul model. ← done; waiting on Cameron (open questions)
 
 ## Findings
 
@@ -120,6 +121,41 @@ Cameron's yes.
   says a better per-word chooser could reach the tail. Not measured at all: songs Parakeet
   barely hears (the 5 below the app's gate, dopamine's French lines), where FA would replace
   syllable spreading outright — likely the biggest visible win, but there's no truth for them.
+### Round 2 (2026-11-13, after Cameron: "I think it was some assumptions about where the unheard words must be")
+
+- **The tail is the unheard words.** On the 27 credible songs, words Parakeet heard (and the
+  `words` aligner matched) have error 0.08 / 0.21 / 64% / 93%; words it didn't hear (placed by
+  syllables / line fill) 0.14 / 0.83 / 41% / 67%. 78% of today's > 0.3 s errors are unheard
+  words. Whole-line FA does no better on them (0.16 / 1.01): the same audio is hard for it.
+- **Anchored FA** (`tools/anchored.py`, no model run, uses per-line emissions `fa.py` saves
+  with `FA_EMIT_DIR`): heard words are pins; each run of unheard words is CTC-aligned on the
+  emission between the pins around it (after the last pin: to the line's end, with a star).
+  Accept a word when its FA score ≥ 0.05, else keep today's. Unheard words: 0.10 / **0.70** /
+  49% / 73%.
+- Where the unheard words are: 1,329 in lines with nothing heard, 784 between heard words
+  (0.07 / 0.54 after anchoring), 624 after the last heard word (0.15 / 0.72).
+- **Copying a repeated line's rhythm** (a wholly unheard line takes the word offsets of an
+  identical line that was heard) loses to anchored FA on the 86 lines that have such a twin:
+  0.10 / 0.92 vs 0.09 / 0.41. Singers phrase repeats differently. Dropped.
+- **Heard words refined by FA:** move a heard word to FA's whole-line time when they're within
+  0.25 s. Combined with anchored FA ("combo"), 27 credible songs:
+
+  | variant | all words (med / p90 / ≤0.1 / ≤0.25) | unheard words |
+  | --- | --- | --- |
+  | today | 0.09 / 0.40 / 56% / 84% | 0.14 / 0.83 / 41% / 67% |
+  | round 1 best (line hybrid, int8 mix) | 0.06 / 0.41 / 64% / 84% | 0.11 / 0.81 / 47% / 70% |
+  | anchored only | 0.08 / 0.33 / 59% / 86% | 0.10 / 0.70 / 49% / 73% |
+  | **combo** (anchored + heard refined within 0.25 s) | **0.06 / 0.34 / 66% / 86%** | 0.10 / 0.70 / 49% / 73% |
+
+  Thresholds barely matter (refine window 0.15–0.25 s; FA score 0.05–0.1).
+- All with the **int8** aligner on the **mix**: no vocal isolation needed.
+- **Speed, measured cleanly** (Wings, 3 threads, model load included): torch fp32 59 s, ONNX
+  fp32 49 s, ONNX dynamic int8 (all ops) **120 s** — int8 convolutions in the feature
+  extractor are slow on this CPU. **ONNX int8 on MatMul only** (`op_types_to_quantize=
+  ['MatMul']`): **355 MB, 34 s**; all 38 songs in 14 min (~22 s a song).
+- **int8-MatMul keeps the accuracy:** combo on it, 27 credible songs, 0.06 / 0.34 / 67% / 86%
+  (vs 0.06 / 0.34 / 66% / 86% with all-op int8). This is the candidate to ship:
+  `C:\Users\camer\.cache\jarlid-align\onnx\mms_fa.int8mm.onnx`.
 - The compute budget is often full with other threads' builds: a 1-slot demucs test waited
   39 min, then ran out a 30-min tool timeout. Heavy stages now run from one hidden driver
   (`tools/run_experiment.py`, launched with `pythonw`, log `<scratchpad>/experiment.log`).
@@ -136,16 +172,26 @@ Cameron's yes.
 - [x] Step 5: FA on stems and mix.
 - [x] Step 6: results above.
 - [x] Step 7: int8 ONNX, 317 MB, keeps the gain.
+- [x] Step 8: round 2: combo 0.06 / 0.34 / 67% on 27 songs; int8-MatMul model 355 MB, ~22 s a song.
 
 ## Open questions for the user
 
-1. What looked off when you watched it (words early/late, wrong word lit, songs with no
-   word highlighting)? Decides whether the tail or the unheard songs come first.
-2. Next: (a) one more offline round on the tail and on unheard songs (a per-word chooser;
-   checking FA on dopamine and the 5 below-gate songs by ear), then decide on shipping; or
-   (b) ship the hybrid now: int8 aligner in the sidecar via ONNX Runtime, +317 MB engine
-   download, ~1 min CPU per song once. Recommended: (a) — the shipped gain today is mostly
-   invisible, and the download is big.
+Answered 2026-11-13: what looked off was where unheard words were assumed to be; "another
+round" → round 2 above.
+
+1. Build it into the app? What it would take:
+   - Engine (sidecar): ONNX Runtime (`ort` crate, its DLL ~15 MB) running the int8-MatMul
+     MMS_FA model (+355 MB download, a new engine version); a new op that returns per-line
+     emissions (or does the alignment itself).
+   - `crates/autosync`: CTC forced alignment (a small Viterbi over the line's tokens with a
+     star token), MMS romanization (Latin: NFKD + strip marks; other scripts later), the
+     anchored placement and the heard-word refinement.
+   - App: `Job::Words` also runs the aligner (~25 s CPU a song, once); `word_timing::fill`
+     uses the result. Same auto-sync setting; no new UI.
+   - Then the same aligner can serve line auto-sync (`plans/auto-synced-lyrics.md` phase 2).
+   Recommended: yes. Several days of work; ships as a minor release.
+2. Songs the engine barely hears (dopamine's French, the 5 below the 0.35 gate) have no truth
+   to score against; they'd be judged by you, by eye, once it's in the app.
 
 ## Things not to do
 
