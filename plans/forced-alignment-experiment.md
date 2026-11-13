@@ -49,6 +49,12 @@ Cameron's yes.
 - MMS_FA model: 1.18 GB download (torch hub cache, `C:\Users\camer\.cache\torch\hub`).
 - First run, Wings, FA on the **mix**: median 0.10 / p90 0.48 / 53% within 0.1 s, against
   today's method on the same song 0.06 / 0.16 / 82%. Worse on the mix; stems not yet tried.
+- **Baseline, today's method, all 38 songs** (2026-11-13 3:20 AM PST): median 0.11 s, p90
+  0.50 s, 47% within 0.1 s, 76% within 0.25 s — worse than the first 8 songs suggested
+  (0.08 / 0.40 / 58%). Spread is wide: Wings 0.06 / 0.16, Good Girl Era 0.06 / 0.13, but
+  Sweet Dreams 0.61 / 1.13, Elevator Eyes 0.34 / 0.67, Running with the Wolves p90 2.79.
+  Some of the worst may be LRCLIB truth that is itself off (as with Rapunzel); check those
+  by ear before trusting them either way.
 - The compute budget is often full with other threads' builds: a 1-slot demucs test waited
   39 min, then ran out a 30-min tool timeout. Heavy stages now run from one hidden driver
   (`tools/run_experiment.py`, launched with `pythonw`, log `<scratchpad>/experiment.log`).
