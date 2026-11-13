@@ -156,6 +156,35 @@ Cameron's yes.
 - **int8-MatMul keeps the accuracy:** combo on it, 27 credible songs, 0.06 / 0.34 / 67% / 86%
   (vs 0.06 / 0.34 / 66% / 86% with all-op int8). This is the candidate to ship:
   `C:\Users\camer\.cache\jarlid-align\onnx\mms_fa.int8mm.onnx`.
+### Dopamine (2026-11-13, Cameron: "split version or alternating version?")
+
+- Only the **French + English** (alternating-lines) version is in play: its override
+  `545b7f6f3922d6ba.json`, audio `TR_91277714.mp3`. The **Split Brain Version**
+  (`ed7cdf4a9199e46a.json`) has only plain lyrics on LRCLIB and no cached audio, so the app
+  gives it no timing at all; word timing never touches it.
+- **Parakeet v3 hears French.** Mid-song French lines ("C'est bien chouette…", "Si toi, tu
+  te barres", "À quel point…") are fully heard. French words heard: 33 of 97; English 98
+  of 123. What it misses: the soft intro ("Tu es tout ce que je veux" ×2, "Je veux, je
+  veux"), "Tu me rends un peu folle / Et ça prend…", "Est-ce que tu m'élèves…", "Tu
+  m'contrôles…", and the parenthesised backing vocals at the end.
+- **The aligner does fine on French** where the singing is audible: "Et ça prend trop peu
+  d'effort" 0.50, "Tu me rends…" 0.28, "Est-ce que…" 0.26 line confidence (English lines run
+  0.2–0.7). Anchored placement places 61 of the 87 unheard words.
+- **Neither engine finds the intro or the outro backing vocals** (aligner confidence
+  0.02–0.08). Those stay on the syllable spread; hand-timing is the only real fix.
+- **Vocal stem made it worse here:** 119 lyric words heard vs 131 on the mix (lost "Tu es
+  tout ce que je veux" at 1:47, "J'déteste…", "Mais rien…"). Third time stems don't pay.
+- **Spelled-out words mislead the aligner.** "Ma D.O.P.A.M.I.N.E" romanizes to the word
+  `dopamine`, but it is sung as letters (dee-oh-pee…, ~2.5 s); anchored moved it 1.1–1.6 s
+  late. Fix: expand dotted/hyphenated letter runs to letter names before aligning (and
+  optionally highlight letter by letter).
+- **Bug found and fixed in the scratch tools:** `-` is the aligner's CTC blank, so any
+  hyphenated word ("Da-ra-da", "D-O-P-A-M-I-N-E", "Ooh-ooh") made the whole line's alignment
+  throw. Romanization now drops `-`. Only 2 hyphenated words in the truth set, so the scores
+  above stand. The app's romanizer must do the same.
+- Gotcha: `grep -l dopamine heard/*.json` found a *different* song whose lyrics mention
+  dopamine (TR_37416125). Find a track's audio by artist + title in `audio/*.json`.
+
 - The compute budget is often full with other threads' builds: a 1-slot demucs test waited
   39 min, then ran out a 30-min tool timeout. Heavy stages now run from one hidden driver
   (`tools/run_experiment.py`, launched with `pythonw`, log `<scratchpad>/experiment.log`).
@@ -173,6 +202,7 @@ Cameron's yes.
 - [x] Step 6: results above.
 - [x] Step 7: int8 ONNX, 317 MB, keeps the gain.
 - [x] Step 8: round 2: combo 0.06 / 0.34 / 67% on 27 songs; int8-MatMul model 355 MB, ~22 s a song.
+- [x] Dopamine deep-dive (mix, stem, aligner): findings above; scratch in `<scratchpad>/dopa/`.
 
 ## Open questions for the user
 
@@ -187,11 +217,16 @@ round" → round 2 above.
      star token), MMS romanization (Latin: NFKD + strip marks; other scripts later), the
      anchored placement and the heard-word refinement.
    - App: `Job::Words` also runs the aligner (~25 s CPU a song, once); `word_timing::fill`
-     uses the result. Same auto-sync setting; no new UI.
+     uses the result.
+   - **Opt-in, its own download** (Cameron, 2026-11-13): not part of the auto-sync engine
+     download. Auto-sync on still fetches only today's engine; the aligner (+~370 MB) is a
+     separate switch beside it, and without it word timing stays as v1.23.0 does it.
+   - Text: drop `-` (CTC blank) when romanizing; expand spelled letter runs
+     ("D.O.P.A.M.I.N.E") to letter names.
    - Then the same aligner can serve line auto-sync (`plans/auto-synced-lyrics.md` phase 2).
    Recommended: yes. Several days of work; ships as a minor release.
-2. Songs the engine barely hears (dopamine's French, the 5 below the 0.35 gate) have no truth
-   to score against; they'd be judged by you, by eye, once it's in the app.
+2. Songs the engine barely hears (the 5 below the 0.35 gate) have no truth to score against;
+   they'd be judged by you, by eye, once it's in the app. Dopamine is looked at above.
 
 ## Things not to do
 
