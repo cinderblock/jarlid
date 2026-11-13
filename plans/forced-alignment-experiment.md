@@ -174,10 +174,35 @@ Cameron's yes.
   0.02–0.08). Those stay on the syllable spread; hand-timing is the only real fix.
 - **Vocal stem made it worse here:** 119 lyric words heard vs 131 on the mix (lost "Tu es
   tout ce que je veux" at 1:47, "J'déteste…", "Mais rien…"). Third time stems don't pay.
-- **Spelled-out words mislead the aligner.** "Ma D.O.P.A.M.I.N.E" romanizes to the word
-  `dopamine`, but it is sung as letters (dee-oh-pee…, ~2.5 s); anchored moved it 1.1–1.6 s
-  late. Fix: expand dotted/hyphenated letter runs to letter names before aligning (and
-  optionally highlight letter by letter).
+- ~~Spelled-out words mislead the aligner.~~ **Wrong, corrected by looking at the
+  spectrogram:** "Ma D.O.P.A.M.I.N.E" is sung as the *word* "dopamine", stretched (the engine
+  heard "My day, okay, I mean" = "Ma do-pa-mine", from 5.7 s). The aligner put it at 5.75 s,
+  which is right; today's syllable spread put it at 7.4 s. No letter-name expansion needed.
+
+### Looking at spectrograms (2026-11-13, Cameron: "look at the waveforms to see the syllables?")
+
+Tool: `<scratchpad>/tools/plot.py <stem.wav> <case.json> <t0> <t1> <out.png> label=out.json…`
+(mel spectrogram of the vocal stem, loudness, heard words in green, one tick row per
+placement). Plots in `<scratchpad>/plots/`.
+
+- **Misheard words carry syllable timing on foreign lines.** Dopamine's intro "Tu es tout ce
+  que je veux" was heard as "To it, two squash, your book, book", whose times sit on the
+  visible syllable onsets. Rule tried (`tools/misheard.py`): in a gap of unheard lyric words,
+  if the unmatched heard words there are as many, pair them in order. **On the 27 truth
+  songs it doesn't help:** on top of combo 0.06 / 0.35 / 66% vs 0.06 / 0.34 / 67% (slack 1:
+  0.36 / 65%). On English songs the leftover heard words are ad-libs and backing vocals. It
+  also made dopamine's "Je veux, je veux" worse (today's even spread matched the onsets
+  there). Not shipping.
+- **Dopamine's outro** (backing vocals over the lead, 134–147 s): the aligner crams words
+  ("et tout ce que je" inside 0.2 s); today's even spread looks more plausible. A stricter
+  aligner score gate would keep the spread, but **on the truth set it hurts:** anchored
+  th 0.05 / 0.1 / 0.15 / 0.2 → p90 0.34 / 0.34 / 0.35 / 0.36, unheard ≤0.1 s 49 / 47 / 45 / 44%.
+  So low-score placements still beat the spread on average; dopamine's outro is the
+  exception. Keep th 0.05.
+- **Eyeballing vs the aligner:** the aligner reads the audio at 20 ms frames; reading a
+  plot is ~0.1 s at best and can't hear. Looking is good for diagnosis (it caught the
+  "dopamine" mistake above) and for hand-fixing a few hard passages, not as a step in the
+  app.
 - **Bug found and fixed in the scratch tools:** `-` is the aligner's CTC blank, so any
   hyphenated word ("Da-ra-da", "D-O-P-A-M-I-N-E", "Ooh-ooh") made the whole line's alignment
   throw. Romanization now drops `-`. Only 2 hyphenated words in the truth set, so the scores
@@ -203,6 +228,7 @@ Cameron's yes.
 - [x] Step 7: int8 ONNX, 317 MB, keeps the gain.
 - [x] Step 8: round 2: combo 0.06 / 0.34 / 67% on 27 songs; int8-MatMul model 355 MB, ~22 s a song.
 - [x] Dopamine deep-dive (mix, stem, aligner): findings above; scratch in `<scratchpad>/dopa/`.
+- [x] Spectrogram look: misheard-word timing and stricter gates tested, neither ships.
 
 ## Open questions for the user
 
@@ -221,12 +247,13 @@ round" → round 2 above.
    - **Opt-in, its own download** (Cameron, 2026-11-13): not part of the auto-sync engine
      download. Auto-sync on still fetches only today's engine; the aligner (+~370 MB) is a
      separate switch beside it, and without it word timing stays as v1.23.0 does it.
-   - Text: drop `-` (CTC blank) when romanizing; expand spelled letter runs
-     ("D.O.P.A.M.I.N.E") to letter names.
+   - Text: drop `-` (CTC blank) when romanizing.
    - Then the same aligner can serve line auto-sync (`plans/auto-synced-lyrics.md` phase 2).
    Recommended: yes. Several days of work; ships as a minor release.
 2. Songs the engine barely hears (the 5 below the 0.35 gate) have no truth to score against;
    they'd be judged by you, by eye, once it's in the app. Dopamine is looked at above.
+3. Hand-time dopamine's intro and outro from the spectrogram into its override (backup
+   beside it)? Offered, not asked for.
 
 ## Things not to do
 
