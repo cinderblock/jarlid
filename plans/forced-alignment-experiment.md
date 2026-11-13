@@ -35,12 +35,13 @@ Cameron's yes.
 
 ## Plan / steps
 
-1. Baseline on all 39 truth songs: hear the 31 not yet heard (Parakeet, mix). ← current
+1. Baseline on all 38 truth songs: hear the 30 not yet heard (Parakeet, mix).
 2. Venv: torch + torchaudio (MMS_FA) + demucs, CPU.
 3. Vocal stems for the 39 (htdemucs, `--two-stems vocals`).
 4. Variant (b): Parakeet on the stems → same `words` scorer.
 5. Variant (c): MMS_FA per line window on the stem (and on the mix, to separate the two effects).
 6. Compare; write up; recommend.
+7. int8 ONNX aligner: size and accuracy. ← done; waiting on Cameron (open questions)
 
 ## Findings
 
@@ -101,25 +102,50 @@ Cameron's yes.
 - The confidence threshold barely matters between 0.05 and 0.1; 0.2 is slightly worse.
 - The oracle's 0.21 s p90 says a better per-word chooser has headroom; the line-confidence rule
   is the simplest that works.
+- **Parakeet on the vocal stem** (today's method, stem instead of mix): 27 credible songs
+  0.09 / 0.36 / 55% / 85% vs 0.09 / 0.40 / 56% / 84% on the mix; matched words 5,085 vs 4,926.
+  Hybrid with Parakeet-on-stem as the fallback: identical to hybrid with Parakeet-on-mix.
+  Vocal isolation is not worth its cost for word timing.
+- **Shippable aligner:** the bare wav2vec2 network exports to ONNX (opset 17) once torchaudio's
+  wrapper is peeled off (`_Wav2Vec2Model.forward` builds a shape list the exporter can't
+  trace); the caller does layer-norm on the audio, log-softmax, and appends a zero "star"
+  column. fp32 1,262 MB; dynamic int8 (`quantize_dynamic`, QInt8) **317 MB**. Same frame
+  argmax as torch on a test clip. Hybrid on the mix, 27 credible songs: fp32 0.06 / 0.39 / 65%
+  / 85%, **int8 0.06 / 0.41 / 64% / 84%**. int8 keeps nearly all the gain. It ran 52 min for 38
+  songs on 3 threads (~80 s a song) vs torch fp32's 25 min, under a contended budget; speed
+  not yet measured cleanly. `tools/export_onnx.py`; `FA_ONNX=<path>` makes `fa.py` use it.
+- **What the gain is and isn't.** Hybrid moves words from "close" to "very close" (≤ 0.1 s:
+  56% → 64–67%; median 0.09 → 0.06 s). It barely moves the tail (p90 0.40 → 0.36–0.41 s), and
+  the tail is what a listener notices. The oracle (best of FA and today per word: p90 0.21 s)
+  says a better per-word chooser could reach the tail. Not measured at all: songs Parakeet
+  barely hears (the 5 below the app's gate, dopamine's French lines), where FA would replace
+  syllable spreading outright — likely the biggest visible win, but there's no truth for them.
 - The compute budget is often full with other threads' builds: a 1-slot demucs test waited
   39 min, then ran out a 30-min tool timeout. Heavy stages now run from one hidden driver
   (`tools/run_experiment.py`, launched with `pythonw`, log `<scratchpad>/experiment.log`).
 
 ## Progress log
 
-- [ ] Step 1: hearing the 30 unheard truth songs (8 were heard before), running.
+- [x] Step 1: all 38 heard.
 - [x] Step 2: venv at `C:\Users\camer\.cache\jarlid-align\venv` (torch/torchaudio 2.8.0 CPU,
   demucs 4.1.0). Scripts in `<scratchpad>/tools`: `separate.py`, `fa.py`, `score.py`,
   `run_experiment.py`. Steps 1, 3, 4, 5 run in order from `run_experiment.py` (launched
   2026-11-13 2:50 AM PST).
-- [ ] Step 3
-- [ ] Step 4
-- [ ] Step 5
-- [ ] Step 6
+- [x] Step 3: stems for 38 (153 min).
+- [x] Step 4: Parakeet on stems.
+- [x] Step 5: FA on stems and mix.
+- [x] Step 6: results above.
+- [x] Step 7: int8 ONNX, 317 MB, keeps the gain.
 
 ## Open questions for the user
 
-(none yet)
+1. What looked off when you watched it (words early/late, wrong word lit, songs with no
+   word highlighting)? Decides whether the tail or the unheard songs come first.
+2. Next: (a) one more offline round on the tail and on unheard songs (a per-word chooser;
+   checking FA on dopamine and the 5 below-gate songs by ear), then decide on shipping; or
+   (b) ship the hybrid now: int8 aligner in the sidecar via ONNX Runtime, +317 MB engine
+   download, ~1 min CPU per song once. Recommended: (a) — the shipped gain today is mostly
+   invisible, and the download is big.
 
 ## Things not to do
 
