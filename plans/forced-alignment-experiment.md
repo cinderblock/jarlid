@@ -44,12 +44,22 @@ Cameron's yes.
 
 ## Findings
 
-(none yet)
+- Truth set is 38 songs: `truth.json`'s 39 minus Grim Reaper's saved edit, whose word times are
+  the ones this work generated (its LRCLIB record stays in). Molly has no cached audio.
+- MMS_FA model: 1.18 GB download (torch hub cache, `C:\Users\camer\.cache\torch\hub`).
+- First run, Wings, FA on the **mix**: median 0.10 / p90 0.48 / 53% within 0.1 s, against
+  today's method on the same song 0.06 / 0.16 / 82%. Worse on the mix; stems not yet tried.
+- The compute budget is often full with other threads' builds: a 1-slot demucs test waited
+  39 min, then ran out a 30-min tool timeout. Heavy stages now run from one hidden driver
+  (`tools/run_experiment.py`, launched with `pythonw`, log `<scratchpad>/experiment.log`).
 
 ## Progress log
 
-- [ ] Step 1
-- [ ] Step 2
+- [ ] Step 1: hearing the 30 unheard truth songs (8 were heard before), running.
+- [x] Step 2: venv at `C:\Users\camer\.cache\jarlid-align\venv` (torch/torchaudio 2.8.0 CPU,
+  demucs 4.1.0). Scripts in `<scratchpad>/tools`: `separate.py`, `fa.py`, `score.py`,
+  `run_experiment.py`. Steps 1, 3, 4, 5 run in order from `run_experiment.py` (launched
+  2026-11-13 2:50 AM PST).
 - [ ] Step 3
 - [ ] Step 4
 - [ ] Step 5
