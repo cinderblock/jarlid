@@ -76,6 +76,31 @@ Cameron's yes.
   | best-of (oracle) | 0.05 / 0.32 / 69% / 86% | |
 
   Agreement-based selection (FA when within 0.2 s of baseline) does less: 0.08 / 0.45 / 56%.
+- **All 38 songs (2026-11-13 7:00 AM PST).** The suspect-truth check run over all of them flags
+  11: the five above plus Chlorine, Elevator Eyes, i don't cry when i'm high, life's a bitch,
+  Sweet Dreams (0.6 s), Time of my Life. In each, FA and baseline agree (signed median within
+  0.05 s) and both sit 0.12–0.6 s after LRCLIB's word times. Not an audio-version offset: the
+  LRC line tags of the flagged songs scatter around the first heard word like every other
+  song's (about ±0.3 s across the whole set). LRCLIB's in-line word times are simply bunched
+  early in those records.
+- **Result on the 27 songs with credible truth** (error of every word but each line's first):
+
+  | variant | median | p90 | ≤ 0.1 s | ≤ 0.25 s |
+  | --- | --- | --- | --- | --- |
+  | today (Parakeet on mix + `words`) | 0.09 | 0.40 | 56% | 84% |
+  | FA on mix | 0.07 | 0.63 | 60% | 78% |
+  | FA on vocals | 0.07 | 0.60 | 61% | 79% |
+  | **hybrid on vocals** (FA when line confidence ≥ 0.1, else today) | **0.06** | **0.36** | **67%** | 85% |
+  | hybrid on mix (same rule) | 0.06 | 0.39 | 65% | 85% |
+  | best of FA-vocals and today, per word (oracle) | 0.04 | 0.21 | 77% | 92% |
+
+  All 38 (bad truth included): today 0.11 / 0.50 / 47%, hybrid vocals 0.08 / 0.48 / 55%.
+- **The aligner is the gain; vocal isolation adds ~2 points.** Hybrid on the mix gets most of
+  it. Separation is the expensive step: htdemucs took 153 min for 38 songs on 3 CPU threads
+  (~4 min a song); FA took 25–32 min for 38 (~45 s a song).
+- The confidence threshold barely matters between 0.05 and 0.1; 0.2 is slightly worse.
+- The oracle's 0.21 s p90 says a better per-word chooser has headroom; the line-confidence rule
+  is the simplest that works.
 - The compute budget is often full with other threads' builds: a 1-slot demucs test waited
   39 min, then ran out a 30-min tool timeout. Heavy stages now run from one hidden driver
   (`tools/run_experiment.py`, launched with `pythonw`, log `<scratchpad>/experiment.log`).
