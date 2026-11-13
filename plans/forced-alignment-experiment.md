@@ -55,6 +55,27 @@ Cameron's yes.
   Sweet Dreams 0.61 / 1.13, Elevator Eyes 0.34 / 0.67, Running with the Wolves p90 2.79.
   Some of the worst may be LRCLIB truth that is itself off (as with Rapunzel); check those
   by ear before trusting them either way.
+- **FA on the vocal stem, first 20 songs** (2026-11-13 5:45 AM PST, `cases/fa-stem-early/`):
+  median 0.09 / p90 0.64 / 54% ≤ 0.1 s, against baseline 0.10 / 0.45 / 50% on the same songs.
+  Very precise where it works (d e a d 0.04 / 0.08 / 93%; Good Girl Era 0.03 / 0.10 / 91%),
+  badly wrong where it fails (Thriving median 0.42).
+- **Where FA fails: lines of vocables.** Thriving's "(la- la- la- …)" / "(da- da- …)" lines get
+  confidence ≈ 0 on every word and are squeezed ~0.6–1.1 s early; its ordinary lines are within
+  0.1 s. FA's own per-line confidence flags these.
+- **Five songs' LRCLIB word times look early, not our methods late:** Rapunzel, Sleepwalker,
+  SEX MACHINA, boys will be boys, Fired My Therapist. Both methods sit 0.12–0.28 s after
+  "truth" yet agree with each other within 0.04 s (signed medians), and they hear the audio
+  independently. Scored separately as "credible" = the other 15.
+- **Hybrid, per line: FA when its line's mean confidence ≥ 0.1, else baseline.**
+
+  | variant | 20 songs (med / p90 / ≤0.1 / ≤0.25) | 15 credible |
+  | --- | --- | --- |
+  | baseline | 0.10 / 0.45 / 50% / 78% | 0.08 / 0.34 / 58% / 86% |
+  | FA stem | 0.09 / 0.64 / 54% / 72% | 0.06 / 0.61 / 65% / 81% |
+  | **hybrid** | 0.08 / 0.43 / 58% / 79% | **0.06 / 0.30 / 70% / 88%** |
+  | best-of (oracle) | 0.05 / 0.32 / 69% / 86% | |
+
+  Agreement-based selection (FA when within 0.2 s of baseline) does less: 0.08 / 0.45 / 56%.
 - The compute budget is often full with other threads' builds: a 1-slot demucs test waited
   39 min, then ran out a 30-min tool timeout. Heavy stages now run from one hidden driver
   (`tools/run_experiment.py`, launched with `pythonw`, log `<scratchpad>/experiment.log`).
