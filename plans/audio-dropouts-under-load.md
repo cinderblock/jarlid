@@ -644,6 +644,31 @@ callbacks were 22–44 ms against a 30 ms buffer. Without the storm, the longest
 under build load is 8–16 ms, under that. Whether clusters still add up to an audible gap is for
 the listening test.
 
+### Still glitchy without the storm (2026-11-13 4:50–5:50 PM PST)
+
+- The user heard glitches again during the build. Jarlid logged a burst of 7 late callbacks at
+  **4:50:13–4:50:15 PM PST** (22–42 ms waits, 30 ms buffer) and **2 device underruns at
+  5:01:25 PM PST** (34 and 38 ms), after which its adaptive buffer went to 60 ms for 10 minutes
+  as designed. No gateway mDNS at the time (VLAN-7: 0 multicast in 5 s).
+- Not autosync: of 1,627 late callbacks in the whole log, 309 fell while the speech engine was
+  loaded and 1,318 did not (and Chrome glitches too).
+- A 2.4 min DPC + stack trace (`k10.etl`, 4:53:35–4:55:59 PM PST, 100% CPU) caught no glitch:
+  8 vmswitch DPCs of 8–16 ms, nothing else over 1 ms except tcpip (9 at 1–2 ms).
+- **Glitch trap:** in-memory rolling trace (`xperf -buffering`, 600 x 1 MB, ~1 min of
+  history at 100% CPU), saved with `xperf -flush "NT Kernel Logger" -f trap.etl` 3 s after
+  the Jarlid log shows `late callback|device underrun`. Script:
+  `<scratchpad>/trap2.ps1`. Saving was tested (8 s = 80 MB, 0 events lost).
+  - First run (4:59–5:24 PM) matched only "late callback", so it **missed the 5:01:25
+    underruns**. Its build launch (`bash -lc` via `Start-Process`) silently never ran. Both
+    fixed: it now launches `srmctl.exe` directly and matches underruns too.
+  - Second run (5:25–5:50 PM): the build waited for a slot behind another session's job, then
+    compiled 10m44s and failed on `jarlid` lib errors from uncommitted work in the shared tree
+    (not this thread's). Jarlid played ~5:28–5:50 PM at 99–100% CPU with **no** late callback
+    or underrun.
+  - Third run: passive, 2 hours from ~5:55 PM PST, no build of its own.
+- Rate now: 2 glitch events in ~65 min of play under load, against several per minute in the
+  storm days. Much better, not gone.
+
 ### Open questions for the user
 
 1. *(Moot: the loop stopped. The user allowed only a temporary test, never a permanent rule.)*
