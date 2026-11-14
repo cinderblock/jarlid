@@ -620,6 +620,30 @@ touched.
 - Jarlid has not run since 2026-11-12 4:07 PM PST, so there's no log check yet. Next: the user
   listens under load.
 
+### Controlled test: Rust build, no storm (2026-11-13 ~4:40 PM PST)
+
+The user asked whether it was the storm or the Rust builds. The `dpc8` comparison was
+confounded: the baseline ran at 100% CPU with rustc, `dpc8` at 79% with no rustc. So, the same
+load again: a from-scratch release build of `app/src-tauri` (empty `CARGO_TARGET_DIR` and
+`CARGO_BUILD_BUILD_DIR` in the scratchpad, 4 slots via `srmctl`, normal priority) and a DPC
+trace (`dpc9.etl`, 79 s) once 4 rustc were running. CPU 100% in all six samples. I219-V
+4,819 packets/s; 8 multicast on VLAN-7 (no storm).
+
+Long vmswitch DPCs (all on CPU 0) per second, three conditions:
+
+- **Storm + rustc** (baseline `dpc4`, Nov 10): 4 ms or more ~7.6/s; over 8 ms ~5.4/s; longest
+  16–32 ms.
+- **rustc, no storm** (`dpc9`): 4 ms or more 2.3/s (184 in 79 s); over 8 ms 0.1/s (8, all
+  8–16 ms); longest 8–16 ms. vmswitch 5.9% of CPU 0.
+- **No rustc, no storm** (`dpc8`, 79% CPU, 22,768 packets/s): 4 ms or more 0.2/s; none over 8 ms.
+
+**Both matter.** CPU load from the build stretches vmswitch DPCs by itself (likely contention
+from the busy hyperthread sibling and memory bandwidth; not proven), even at a fifth of the
+packet rate. The storm multiplied it: ~50x more DPCs over 8 ms and the 16–32 ms ones. The late
+callbacks were 22–44 ms against a 30 ms buffer. Without the storm, the longest single DPC
+under build load is 8–16 ms, under that. Whether clusters still add up to an audible gap is for
+the listening test.
+
 ### Open questions for the user
 
 1. *(Moot: the loop stopped. The user allowed only a temporary test, never a permanent rule.)*
