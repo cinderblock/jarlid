@@ -10,6 +10,7 @@
 //!
 //! - [`text`] — the one normalisation both sides are compared in.
 //! - [`align`] — lyric words ↔ heard words, then line start times.
+//! - [`ctc`] — forced alignment of known words on an acoustic model's emission.
 //! - [`draft`] — when there are no lyric words to align, the heard words as timed lines.
 //! - [`lrc`] — reading and writing LRC.
 //! - [`repeat`] — repeats the model missed (a chorus heard once), placed by matching the music.
@@ -18,6 +19,7 @@
 //! - [`words`] — word starts inside lines whose starts are already known.
 
 pub mod align;
+pub mod ctc;
 pub mod draft;
 pub mod lrc;
 pub mod repeat;

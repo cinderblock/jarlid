@@ -11,6 +11,7 @@ license = "MIT"
 # result. See `plans/auto-synced-lyrics.md`.
 [dependencies]
 rustfft = "6"
+unicode-normalization = "0.1.26"
 
 [dev-dependencies]
 serde_json = "1"
