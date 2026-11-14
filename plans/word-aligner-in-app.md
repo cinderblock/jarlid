@@ -70,10 +70,10 @@ Without it, word timing stays exactly as v1.23.0 does it.
 
 ## Plan / steps
 
-1. [ ] `ctc` module + tests against torchaudio reference (a saved emission + expected spans). ← current
-2. [ ] `words::refine` + port of anchored/combo; check on the truth set with the saved emissions
+1. [x] `ctc` module + tests against torchaudio reference (`144d708`).
+2. [x] `refine` (`f5adae8`) — + port of anchored/combo; check on the truth set with the saved emissions
    (`emit-mix-int8mm` pickles → JSON) that Rust reproduces combomm's 0.06 / 0.34 / 67%.
-3. [ ] Sidecar: ort + `loadAligner` + `emit`; protocol 2; local test on a song.
+3. [ ] Sidecar: ort + `loadAligner` + `emit`; protocol 2; local test on a song. ← current
 4. [ ] Manifest/component: aligner section, separate install/status/remove.
 5. [ ] App: setting, Settings switch, job wiring, storage, `fill` uses it; end-to-end locally
    with a development manifest.
@@ -87,9 +87,18 @@ Without it, word timing stays exactly as v1.23.0 does it.
 - torchaudio's `_Wav2Vec2Model` wrapper can't be traced; the export is of `model.model`, so
   layer_norm before and log_softmax + star column after are the caller's job.
 
+- The Python experiment's combo had a bug the Rust port doesn't: on a line with a hyphen
+  ("copy- paste", 147 such lines in the truth set) its whole-line alignment threw, fell back to
+  0.25 s steps with score 0, and the combo step still snapped heard words to those. Rust:
+  0.06 / 0.35 / 67% / 85% vs the experiment's 0.06 / 0.34 / 67% / 86%. On hyphen-free lines
+  the two differ by > 0.05 s on 53 of 11,068 words (the Rust check reads f16-saved emissions).
+- Check command: `WORDS_EMIT=<scratch>/emit-rust WORDS_VARIANT=rust-combo cargo run --release
+  -p autosync --example words -- <cases>`, then `score2.py base rust-combo`.
+
 ## Progress log
 
 - [x] Plan written (2026-11-13).
+- [x] Steps 1–2: alignment and placement in `crates/autosync`, verified against the experiment.
 
 ## Open questions for the user
 
