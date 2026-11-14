@@ -11,6 +11,11 @@
 //!
 //! Run: cargo run --release -p autosync --example words -- <case.json>…
 //! `WORDS_<FIELD>=<value>` overrides a parameter (`WORDS_SLACK=0.4`).
+//!
+//! `WORDS_EMIT=<dir>` also refines the result with forced alignment ([`autosync::refine`]),
+//! reading each case's per-line emissions from `<dir>/<case>.json` (`[{"t0","ratio","frames",
+//! "offset"}|null,…]`) and `<dir>/<case>.f32` (little-endian f32, `frames × 29` per line), and
+//! writes the refined starts to `<case dir>/<WORDS_VARIANT or "refined">/<case>.out.json`.
 
 use autosync::words::{time_words, Line, Params};
 use autosync::Heard;
@@ -64,6 +69,9 @@ fn main() {
         overrides(&mut p);
         let out = time_words(&lines, &heard, &p);
         let base = time_words(&lines, &[], &p);
+        if let Ok(dir) = std::env::var("WORDS_EMIT") {
+            refined(f, &dir, &lines, &out);
+        }
         let _ = std::fs::write(
             f.trim_end_matches(".json").to_string() + ".out.json",
             serde_json::to_string(
@@ -127,6 +135,53 @@ fn main() {
             bs.1
         );
     }
+}
+
+/// Refine `out` with the case's saved emissions and write it beside the case, in a variant dir.
+fn refined(case: &str, dir: &str, lines: &[Line], out: &[autosync::words::LineWords]) {
+    use autosync::refine::{refine, LineEmission, Params};
+    let path = std::path::Path::new(case);
+    let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+    let dir = std::path::Path::new(dir);
+    let head: Value = match std::fs::read_to_string(dir.join(format!("{stem}.json"))) {
+        Ok(s) => serde_json::from_str(&s).expect("emission header"),
+        Err(_) => return,
+    };
+    let raw = std::fs::read(dir.join(format!("{stem}.f32"))).expect("emission data");
+    let floats: Vec<f32> = raw
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
+        .collect();
+    let emissions: Vec<Option<LineEmission>> = head
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| {
+            let frames = h["frames"].as_u64()? as usize;
+            let offset = h["offset"].as_u64()? as usize;
+            Some(LineEmission {
+                t0: h["t0"].as_f64()?,
+                ratio: h["ratio"].as_f64()?,
+                data: floats[offset..offset + frames * autosync::ctc::CLASSES].to_vec(),
+            })
+        })
+        .collect();
+    let r = refine(lines, out, &emissions, &Params::default());
+    let variant = std::env::var("WORDS_VARIANT").unwrap_or_else(|_| "refined".into());
+    let outdir = path.parent().unwrap().join(variant);
+    std::fs::create_dir_all(&outdir).unwrap();
+    std::fs::write(
+        outdir.join(format!("{stem}.out.json")),
+        serde_json::to_string(
+            &r.iter()
+                .map(|l| json!({"starts": l.starts, "matched": l.matched}))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
 }
 
 /// Median, p90, share within 0.1 s, share within 0.25 s.

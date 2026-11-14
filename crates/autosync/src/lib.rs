@@ -13,6 +13,7 @@
 //! - [`ctc`] — forced alignment of known words on an acoustic model's emission.
 //! - [`draft`] — when there are no lyric words to align, the heard words as timed lines.
 //! - [`lrc`] — reading and writing LRC.
+//! - [`refine`] — word starts corrected by forced alignment ([`ctc`]).
 //! - [`repeat`] — repeats the model missed (a chorus heard once), placed by matching the music.
 //! - [`score`] — how close a result is to a known-good synced copy.
 //! - [`window`] — cutting a track into overlapping windows for the model, and stitching back.
@@ -22,6 +23,7 @@ pub mod align;
 pub mod ctc;
 pub mod draft;
 pub mod lrc;
+pub mod refine;
 pub mod repeat;
 pub mod score;
 pub mod text;

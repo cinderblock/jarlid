@@ -56,6 +56,9 @@ pub struct LineWords {
     /// How many of its words (the first one aside, which is the line's start) were matched to a
     /// timed word, rather than spread between matched ones.
     pub matched: usize,
+    /// Which words start where they were heard. The first word is the line's start, not heard,
+    /// so always `false`.
+    pub heard: Vec<bool>,
 }
 
 /// The smallest gap kept between consecutive word starts, seconds.
@@ -264,6 +267,7 @@ fn fill_line(
         return LineWords {
             starts: Vec::new(),
             matched: 0,
+            heard: Vec::new(),
         };
     }
     let limit = line.end.max(line.start + MIN_GAP * n as f64);
@@ -307,7 +311,15 @@ fn fill_line(
             starts[k] = starts[k - 1] + MIN_GAP;
         }
     }
-    LineWords { starts, matched }
+    let mut heard = vec![false; n];
+    for &(k, _) in &anchors[1..] {
+        heard[k] = true;
+    }
+    LineWords {
+        starts,
+        matched,
+        heard,
+    }
 }
 
 /// Words `a..b` between anchors at `ta` and `tb`, each taking time by its syllables.
