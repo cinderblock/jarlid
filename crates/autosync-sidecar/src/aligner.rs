@@ -2,7 +2,7 @@
 //!
 //! Meta's MMS forced-alignment network (wav2vec 2.0, 1,130 languages), exported to ONNX with its
 //! matrix multiplies quantized to int8, run by ONNX Runtime. Both are optional downloads: the
-//! runtime (`onnxruntime.dll`) is loaded from the engine directory at run time rather than
+//! runtime (`onnxruntime.dll`) is loaded from a path the app gives at run time rather than
 //! linked, so this executable starts and hears without it. See
 //! `plans/word-aligner-in-app.md`.
 //!
@@ -27,11 +27,12 @@ pub struct Aligner {
 static RUNTIME: OnceLock<Result<ort::environment::Environment, String>> = OnceLock::new();
 
 impl Aligner {
-    /// Load ONNX Runtime from `dir` and the model at `model`, running on `threads` CPU threads.
-    pub fn load(dir: &Path, model: &Path, threads: u32) -> Result<Self, String> {
+    /// Load ONNX Runtime from `runtime` (once per process) and the model at `model`, running on
+    /// `threads` CPU threads.
+    pub fn load(runtime: &Path, model: &Path, threads: u32) -> Result<Self, String> {
         let env = RUNTIME
             .get_or_init(|| {
-                ort::init_from(dir.join("onnxruntime.dll"))
+                ort::init_from(runtime)
                     .map_err(|e| format!("loading onnxruntime.dll: {e}"))?
                     .with_name("jarlid-aligner")
                     .build()

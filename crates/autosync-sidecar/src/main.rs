@@ -123,10 +123,17 @@ fn work(dir: &Path, rx: mpsc::Receiver<Command>, shared: &Shared) {
                     Err(message) => emit(&Event::Error { id: None, message }),
                 }
             }
-            Command::LoadAligner { model, threads } => {
+            Command::LoadAligner {
+                model,
+                runtime,
+                threads,
+            } => {
                 aligner = None;
                 let began = Instant::now();
-                match aligner::Aligner::load(dir, Path::new(&model), threads) {
+                let runtime = runtime
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| dir.join("onnxruntime.dll"));
+                match aligner::Aligner::load(&runtime, Path::new(&model), threads) {
                     Ok(a) => {
                         emit(&Event::AlignerLoaded {
                             ms: began.elapsed().as_millis() as u64,

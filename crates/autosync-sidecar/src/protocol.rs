@@ -24,7 +24,7 @@
 //! aligner.
 //!
 //! ```text
-//! → {"op":"loadAligner","model":"C:\\…\\mms-fa-int8.onnx","threads":3}
+//! → {"op":"loadAligner","model":"C:\\…\\mms-fa-int8.onnx","runtime":"C:\\…\\onnxruntime.dll","threads":3}
 //! ← {"ev":"alignerLoaded","ms":900}
 //! → {"op":"emit","id":"TR:123","wav":"C:\\…\\TR123.wav","spans":[[11.2,14.9],…]}
 //! ← {"ev":"emission","id":"TR:123","k":0,"t0":11.2,"ratio":0.02,"frames":185,"data":"…"}
@@ -56,9 +56,13 @@ pub enum Command {
         #[serde(default)]
         from: f64,
     },
-    /// Load (or replace) the forced-alignment model. Needs `onnxruntime.dll` in the engine dir.
+    /// Load (or replace) the forced-alignment model. `runtime` is the path of `onnxruntime.dll`
+    /// (default: the one in the engine dir). The runtime loads once per process: a later
+    /// `loadAligner` replaces only the model.
     LoadAligner {
         model: String,
+        #[serde(default)]
+        runtime: Option<String>,
         #[serde(default = "default_threads")]
         threads: u32,
     },
@@ -186,6 +190,7 @@ mod tests {
             c,
             Command::LoadAligner {
                 model: "m.onnx".into(),
+                runtime: None,
                 threads: 3
             }
         );
