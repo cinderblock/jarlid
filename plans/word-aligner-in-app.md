@@ -89,10 +89,15 @@ Without it, word timing stays exactly as v1.23.0 does it.
    `tsc` clean; ignored end-to-end test `sidecar_emits_for_the_aligner` passes against the
    real sidecar (aligner loads in ~1 s). **Not exercised:** the in-app download and switch,
    which needs the app on screen; Cameron's first use after release is that test.
-6. [ ] **Waiting on Cameron** (open question 1): upload the model asset (`aligner-model-v1`),
-   then bump `crates/autosync-sidecar` to 0.2.0 and tag `autosync-v0.2.0` (public repo: free
-   CI).
-7. [ ] Pin the new manifest URL + SHA-256 in `component.rs`; app release only when asked.
+6. [x] Cameron: "yes" (2026-11-13). Model published as release
+   [aligner-model-v1](https://github.com/cinderblock/jarlid/releases/tag/aligner-model-v1)
+   (not latest; ranged downloads work). Engine
+   [autosync-v0.2.0](https://github.com/cinderblock/jarlid/releases/tag/autosync-v0.2.0)
+   (`b2b3d2f`) built by CI; manifest SHA-256 `6fc9e75c…e3f7f9`, checked against a fresh
+   download.
+7. [x] Pinned in `component.rs` (`0134ef7`); the ignored `pinned_release` test passes against
+   it. Existing installs re-fetch the ~45 MB of engine files and keep the speech model.
+   App release [v1.24.0](https://github.com/cinderblock/jarlid/releases/tag/v1.24.0) (`86be96f`): run succeeded, installer, signature and `latest.json` published, it is the latest release.
 
 ## Findings / gotchas
 
@@ -130,7 +135,9 @@ Without it, word timing stays exactly as v1.23.0 does it.
 
 ## Open questions for the user
 
-1. **Publish the model?** Confirmed from torchaudio's MMS_FA docs: Meta released the MMS
+Answered 2026-11-13 ("yes"): published, see step 6.
+
+1. ~~Publish the model?~~ Confirmed from torchaudio's MMS_FA docs: Meta released the MMS
    forced-alignment weights under CC-BY-NC 4.0 (non-commercial, attribution). Jarlid is free,
    so distributing our int8 export with attribution fits, but the aligner could never ship in
    anything sold. The upload: a release `aligner-model-v1` on cinderblock/jarlid (not
