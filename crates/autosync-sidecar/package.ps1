@@ -21,17 +21,22 @@ $version = [regex]::Match($cargo, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Valu
 $protocol = [regex]::Match((Get-Content (Join-Path $PSScriptRoot "src\protocol.rs") -Raw), 'pub const PROTOCOL: u32 = (\d+);').Groups[1].Value
 if (-not $version -or -not $protocol) { throw "could not read version or protocol" }
 
-$files = Get-ChildItem $Dist -File |
-    Where-Object { $_.Extension -in ".exe", ".dll" } |
-    Sort-Object Name |
-    ForEach-Object {
-        [ordered]@{
-            name   = $_.Name
-            url    = "$($BaseUrl.TrimEnd('/'))/$($_.Name)"
-            sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-            size   = $_.Length
-        }
+$entry = {
+    param($f)
+    [ordered]@{
+        name   = $f.Name
+        url    = "$($BaseUrl.TrimEnd('/'))/$($f.Name)"
+        sha256 = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+        size   = $f.Length
     }
+}
+# ONNX Runtime is the optional aligner's, not the engine's: listed under `aligner`, so the
+# engine download never fetches it.
+$alignerDlls = @("onnxruntime.dll")
+$files = Get-ChildItem $Dist -File |
+    Where-Object { $_.Extension -in ".exe", ".dll" -and $_.Name -notin $alignerDlls } |
+    Sort-Object Name |
+    ForEach-Object { & $entry $_ }
 if (-not ($files | Where-Object { $_.name -eq "jarlid-autosync.exe" })) { throw "jarlid-autosync.exe missing from $Dist" }
 
 $manifest = [ordered]@{
@@ -39,6 +44,15 @@ $manifest = [ordered]@{
     protocol = [int]$protocol
     files    = @($files)
     model    = Get-Content (Join-Path $PSScriptRoot "model.json") -Raw | ConvertFrom-Json
+}
+$runtime = Get-ChildItem $Dist -File | Where-Object { $_.Name -in $alignerDlls }
+if ($runtime) {
+    # The aligner model is pinned like the speech model (aligner.json): our int8 export of Meta's
+    # MMS forced-alignment model, uploaded once to its own release.
+    $manifest.aligner = [ordered]@{
+        files = @($runtime | Sort-Object Name | ForEach-Object { & $entry $_ })
+        model = Get-Content (Join-Path $PSScriptRoot "aligner.json") -Raw | ConvertFrom-Json
+    }
 }
 # LF, no BOM: the hash the app pins is of these exact bytes.
 $json = ($manifest | ConvertTo-Json -Depth 5) -replace "`r`n", "`n"

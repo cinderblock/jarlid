@@ -50,6 +50,10 @@ jobs:
         shell: pwsh
         run: crates/autosync-sidecar/build-engine.ps1 -Out dist -Jobs 4
 
+      - name: Fetch ONNX Runtime (for the optional aligner)
+        shell: pwsh
+        run: crates/autosync-sidecar/fetch-onnxruntime.ps1 -Out dist
+
       - name: Package
         shell: pwsh
         run: |
