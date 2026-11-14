@@ -73,8 +73,10 @@ Without it, word timing stays exactly as v1.23.0 does it.
 1. [x] `ctc` module + tests against torchaudio reference (`144d708`).
 2. [x] `refine` (`f5adae8`) — + port of anchored/combo; check on the truth set with the saved emissions
    (`emit-mix-int8mm` pickles → JSON) that Rust reproduces combomm's 0.06 / 0.34 / 67%.
-3. [ ] Sidecar: ort + `loadAligner` + `emit`; protocol 2; local test on a song. ← current
-4. [ ] Manifest/component: aligner section, separate install/status/remove.
+3. [x] Sidecar: ort + `loadAligner` + `emit` (`8caa9ed`); protocol number unchanged (added
+   messages only). The real sidecar on Wings scores the same as the saved emissions.
+4. [ ] Manifest/component: aligner section, separate install/status/remove; `package.ps1`
+   lists `onnxruntime.dll` under `aligner`, not `files`. ← current
 5. [ ] App: setting, Settings switch, job wiring, storage, `fill` uses it; end-to-end locally
    with a development manifest.
 6. [ ] Engine release + model asset (ask before publishing; see open questions).
@@ -94,11 +96,24 @@ Without it, word timing stays exactly as v1.23.0 does it.
   the two differ by > 0.05 s on 53 of 11,068 words (the Rust check reads f16-saved emissions).
 - Check command: `WORDS_EMIT=<scratch>/emit-rust WORDS_VARIANT=rust-combo cargo run --release
   -p autosync --example words -- <cases>`, then `score2.py base rust-combo`.
+- **Wings is not independent truth for word times.** Its word starts were built from the
+  engine's heard words (`plans/lyric-sections.md`, 2026-11-10), so heard words score 0.000 there
+  and anything that moves them looks worse (Wings 82% → 66% within 0.1 s). The plans calling
+  Wings "hand-timed" mean its *lines*. Per step on the 27 songs: anchored alone 59% / p90 0.34;
+  heard-word refinement alone 64% / 0.40; both 67% / 0.35. The refinement helps 24 of 27 songs.
+- **Caveat:** LRCLIB's word times may themselves be machine-made (the 11 excluded songs clearly
+  are), which could flatter an aligner. There is no fully independent word-level truth; Cameron
+  judging by eye in the app is the real test.
+- Real sidecar: Wings (47 lines) took 59 s on 3 threads at low priority on a busy machine;
+  model load 4.8 s. ORT: `onnxruntime-win-x64-1.31.1.zip` (sha256 `5869e26b…4b2c`); its
+  `lib/onnxruntime.dll` is 17.3 MB (sha256 `cb2fa518…db0c`), cached in
+  `C:\Users\camer\.cache\jarlid-align\ort-1.31.1`. Test driver: `<scratch>/tools/sidecar_emit.py`.
 
 ## Progress log
 
 - [x] Plan written (2026-11-13).
 - [x] Steps 1–2: alignment and placement in `crates/autosync`, verified against the experiment.
+- [x] Step 3: sidecar `loadAligner` / `emit` (`8caa9ed`).
 
 ## Open questions for the user
 
