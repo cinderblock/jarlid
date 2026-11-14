@@ -1,6 +1,6 @@
 [package]
 name = "autosync-sidecar"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Jarlid's downloadable speech sidecar: timed words from audio, over a JSON-lines pipe"
 authors = ["Cameron Tacklind <cameron@tacklind.com>"]
