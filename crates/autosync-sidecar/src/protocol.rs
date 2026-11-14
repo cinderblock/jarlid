@@ -17,6 +17,19 @@
 //! → {"op":"cancel","id":"TR:123"}
 //! ← {"ev":"cancelled","id":"TR:123"}
 //! ```
+//!
+//! Since 0.2.0, the optional forced aligner (its own download; see `aligner.rs`): the emission
+//! of each span of the track, for the app to align known words on. Added messages only, so the
+//! protocol number stands; the app only sends these to an engine whose manifest lists the
+//! aligner.
+//!
+//! ```text
+//! → {"op":"loadAligner","model":"C:\\…\\mms-fa-int8.onnx","threads":3}
+//! ← {"ev":"alignerLoaded","ms":900}
+//! → {"op":"emit","id":"TR:123","wav":"C:\\…\\TR123.wav","spans":[[11.2,14.9],…]}
+//! ← {"ev":"emission","id":"TR:123","k":0,"t0":11.2,"ratio":0.02,"frames":185,"data":"…"}
+//! ← {"ev":"done","id":"TR:123","ms":21000}
+//! ```
 
 use serde::{Deserialize, Serialize};
 
@@ -43,7 +56,20 @@ pub enum Command {
         #[serde(default)]
         from: f64,
     },
-    /// Stop a transcription, queued or running.
+    /// Load (or replace) the forced-alignment model. Needs `onnxruntime.dll` in the engine dir.
+    LoadAligner {
+        model: String,
+        #[serde(default = "default_threads")]
+        threads: u32,
+    },
+    /// The aligner's emission over each of `spans` (seconds) of `wav` (as for `transcribe`), in
+    /// order, then `done`.
+    Emit {
+        id: String,
+        wav: String,
+        spans: Vec<(f64, f64)>,
+    },
+    /// Stop a transcription or emission, queued or running.
     Cancel { id: String },
     /// Exit. Closing stdin does the same.
     Quit,
@@ -88,6 +114,21 @@ pub enum Event {
         of: usize,
         words: Vec<Word>,
     },
+    AlignerLoaded {
+        ms: u64,
+    },
+    /// The emission over span `k` of an `emit`: `frames` rows of `autosync::ctc::CLASSES`
+    /// log-probabilities (star column included), row-major little-endian f32, base64. Frame `f`
+    /// starts at `t0 + f × ratio` seconds. `data` is absent when the span is too short to align.
+    Emission {
+        id: String,
+        k: usize,
+        t0: f64,
+        ratio: f64,
+        frames: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+    },
     Done {
         id: String,
         ms: u64,
@@ -126,6 +167,26 @@ mod tests {
                 id: "a".into(),
                 wav: "a.wav".into(),
                 from: 0.0
+            }
+        );
+        let c: Command = serde_json::from_str(
+            r#"{"op":"emit","id":"a","wav":"a.wav","spans":[[1.0,2.5],[3,4]]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c,
+            Command::Emit {
+                id: "a".into(),
+                wav: "a.wav".into(),
+                spans: vec![(1.0, 2.5), (3.0, 4.0)]
+            }
+        );
+        let c: Command = serde_json::from_str(r#"{"op":"loadAligner","model":"m.onnx"}"#).unwrap();
+        assert_eq!(
+            c,
+            Command::LoadAligner {
+                model: "m.onnx".into(),
+                threads: 3
             }
         );
         let c: Command = serde_json::from_str(r#"{"op":"quit"}"#).unwrap();

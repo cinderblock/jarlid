@@ -168,7 +168,20 @@ fn refined(case: &str, dir: &str, lines: &[Line], out: &[autosync::words::LineWo
             })
         })
         .collect();
-    let r = refine(lines, out, &emissions, &Params::default());
+    let mut p = Params::default();
+    if let Some(v) = std::env::var("WORDS_REFINE_WINDOW")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        p.window = v;
+    }
+    if let Some(v) = std::env::var("WORDS_REFINE_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        p.threshold = v;
+    }
+    let r = refine(lines, out, &emissions, &p);
     let variant = std::env::var("WORDS_VARIANT").unwrap_or_else(|_| "refined".into());
     let outdir = path.parent().unwrap().join(variant);
     std::fs::create_dir_all(&outdir).unwrap();

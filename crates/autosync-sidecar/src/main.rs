@@ -10,6 +10,7 @@
 //! Two threads: this one reads commands, and a worker owns the engine and runs them in order. The
 //! split is what lets a cancel interrupt a transcription mid-window instead of waiting behind it.
 
+mod aligner;
 mod engine;
 mod protocol;
 mod wav;
@@ -22,6 +23,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 
 use autosync::window;
+use base64::Engine as _;
 use protocol::{Command, Event, Word, PROTOCOL};
 
 /// What the reader thread and the worker share: which job is running, and which have been
@@ -99,6 +101,7 @@ fn engine_dir() -> PathBuf {
 
 fn work(dir: &Path, rx: mpsc::Receiver<Command>, shared: &Shared) {
     let mut engine: Option<engine::Engine> = None;
+    let mut aligner: Option<aligner::Aligner> = None;
     for command in rx {
         match command {
             Command::Load {
@@ -120,28 +123,113 @@ fn work(dir: &Path, rx: mpsc::Receiver<Command>, shared: &Shared) {
                     Err(message) => emit(&Event::Error { id: None, message }),
                 }
             }
-            Command::Transcribe { id, wav, from } => {
-                *shared.current.lock().unwrap() = Some(id.clone());
-                shared.abort.store(false, Ordering::Relaxed);
-                // Checked after `current` is set, so a cancel can't slip between the two.
-                let event = if shared.cancelled.lock().unwrap().contains(&id) {
-                    Event::Cancelled { id: id.clone() }
-                } else {
-                    match engine.as_mut() {
-                        Some(e) => transcribe(e, &id, Path::new(&wav), from, shared),
-                        None => Event::Error {
-                            id: Some(id.clone()),
-                            message: "no model loaded".into(),
-                        },
+            Command::LoadAligner { model, threads } => {
+                aligner = None;
+                let began = Instant::now();
+                match aligner::Aligner::load(dir, Path::new(&model), threads) {
+                    Ok(a) => {
+                        emit(&Event::AlignerLoaded {
+                            ms: began.elapsed().as_millis() as u64,
+                        });
+                        aligner = Some(a);
                     }
-                };
-                emit(&event);
-                *shared.current.lock().unwrap() = None;
-                shared.cancelled.lock().unwrap().remove(&id);
+                    Err(message) => emit(&Event::Error { id: None, message }),
+                }
             }
+            Command::Transcribe { id, wav, from } => {
+                run_job(shared, &id, || match engine.as_mut() {
+                    Some(e) => transcribe(e, &id, Path::new(&wav), from, shared),
+                    None => Event::Error {
+                        id: Some(id.clone()),
+                        message: "no model loaded".into(),
+                    },
+                })
+            }
+            Command::Emit { id, wav, spans } => run_job(shared, &id, || match aligner.as_mut() {
+                Some(a) => emissions(a, &id, Path::new(&wav), &spans, shared),
+                None => Event::Error {
+                    id: Some(id.clone()),
+                    message: "no aligner loaded".into(),
+                },
+            }),
             // Handled on the reader thread; never sent here.
             Command::Cancel { .. } | Command::Quit => {}
         }
+    }
+}
+
+/// Run one job: mark it current, run it unless it was cancelled before it started, report how it
+/// ended, then forget it.
+fn run_job(shared: &Shared, id: &str, job: impl FnOnce() -> Event) {
+    *shared.current.lock().unwrap() = Some(id.to_string());
+    shared.abort.store(false, Ordering::Relaxed);
+    // Checked after `current` is set, so a cancel can't slip between the two.
+    let event = if shared.cancelled.lock().unwrap().contains(id) {
+        Event::Cancelled { id: id.to_string() }
+    } else {
+        job()
+    };
+    emit(&event);
+    *shared.current.lock().unwrap() = None;
+    shared.cancelled.lock().unwrap().remove(id);
+}
+
+/// The aligner's emission over each span of `wav`, reported one by one. Returns the closing event.
+fn emissions(
+    aligner: &mut aligner::Aligner,
+    id: &str,
+    wav: &Path,
+    spans: &[(f64, f64)],
+    shared: &Shared,
+) -> Event {
+    let began = Instant::now();
+    let fail = |message: String| Event::Error {
+        id: Some(id.to_string()),
+        message,
+    };
+    let samples = match std::fs::read(wav)
+        .map_err(|e| e.to_string())
+        .and_then(|b| wav::read(&b))
+    {
+        Ok(s) => s,
+        Err(e) => return fail(format!("{}: {e}", wav.display())),
+    };
+    let rate = window::RATE as f64;
+    for (k, &(t0, t1)) in spans.iter().enumerate() {
+        if shared.abort.load(Ordering::Relaxed) {
+            return Event::Cancelled { id: id.to_string() };
+        }
+        let a = ((t0.max(0.0) * rate) as usize).min(samples.len());
+        let b = ((t1.max(0.0) * rate) as usize).clamp(a, samples.len());
+        let seg = &samples[a..b];
+        let (frames, ratio, data) = if seg.len() < aligner::MIN_SAMPLES {
+            (0, 0.0, None)
+        } else {
+            match aligner.emit(seg) {
+                Ok(e) => {
+                    let frames = e.len() / autosync::ctc::CLASSES;
+                    let bytes: Vec<u8> = e.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    (
+                        frames,
+                        seg.len() as f64 / frames.max(1) as f64 / rate,
+                        Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+                    )
+                }
+                Err(e) => return fail(e),
+            }
+        };
+        emit(&Event::Emission {
+            id: id.to_string(),
+            k,
+            t0: a as f64 / rate,
+            ratio,
+            frames,
+            data,
+        });
+    }
+    Event::Done {
+        id: id.to_string(),
+        ms: began.elapsed().as_millis() as u64,
     }
 }
 
