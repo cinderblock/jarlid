@@ -20,12 +20,12 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Where the published manifest lives. Released from an `autosync-v*` tag by
 /// `.github/workflows/autosync-sidecar.yml`.
 const MANIFEST_URL: &str =
-    "https://github.com/cinderblock/jarlid/releases/download/autosync-v0.1.0/autosync-manifest.json";
+    "https://github.com/cinderblock/jarlid/releases/download/autosync-v0.2.0/autosync-manifest.json";
 
 /// SHA-256 of that manifest, as `package.ps1` printed it in the release run. Moving to a new
 /// engine release means changing the URL and this together; empty would leave auto-sync
 /// unavailable in release builds.
-const MANIFEST_SHA256: &str = "2e41a04a9cc001f7f36e94b83397e7906861fb1a96d4469daf133f20f8152f45";
+const MANIFEST_SHA256: &str = "6fc9e75ca4f69b692051b3a7438de4f8f0dce92792725a2fa1f430c132e3f7f9";
 
 /// The sidecar protocol this app speaks. Must match `crates/autosync-sidecar/src/protocol.rs`.
 pub const PROTOCOL: u32 = 1;
