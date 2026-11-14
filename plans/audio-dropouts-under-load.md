@@ -598,9 +598,32 @@ touched.
 - Lead, not yet checked: each query arrives twice at the PC. With the UniFi gateway on LAN-1
   and the switch on LAN-2, a duplicate suggests the same frame reaches VLAN 7 by two paths.
 
+### The loop stopped; long DPCs gone (2026-11-13 4:20–4:30 PM PST)
+
+- After the device-list read, the user pressed **"Clear and Rescan"** on the gateway.
+- **The gateway's mDNS loop has stopped.** A 10 s pktmon capture of all UDP 5353 (2,248
+  packets) holds nothing from 192.168.1.x; `VLAN-7` received 0 multicast and sent 11 unicast
+  in 10 s (it was ~95 unicast/s). It stopped some time between the VLAN-5 disable
+  (2026-11-12) and now. Clear and Rescan is the likely trigger, but the rate was not measured
+  in between, so that's not proven.
+- **The "each query arrives twice" duplicates were not a network loop.** In the 2026-11-10
+  captures (`rr.pcapng`, `rr4.pcapng`) every packet from .254 has its own IP ID, sequential
+  (delta 1) and microseconds apart, all from MAC `10:c4:ca:68:ce:b1`, TTL 255, no VLAN tag. The
+  gateway sent each AAAA `Noook.local` QU query in back-to-back bursts itself. The UniFi
+  two-path theory is **disproven**, so the UniFi read (approved) was not needed or done.
+- **DPC trace under real load** (`dpc8.etl`, 60 s from ~4:25 PM PST; CPU 76%, I219-V receiving
+  22,768 packets/s, 27.6 MB/s, about 13x the packet rate of the baseline): `vmswitch.sys` was
+  11.9% of CPU 0, about the same share, but in short slices. 441,014 DPCs; **12 of 4–8 ms,
+  none over 8 ms**. Baseline (`dpc4`, 3 min, 1,700 packets/s): 1,365 of 4 ms or more, 968 over
+  8 ms, 22 of 16–32 ms. Per second, long DPCs fell from ~7.6/s to ~0.2/s with 13x the traffic.
+  So the long DPCs came from the gateway's mDNS storm, not from traffic volume.
+- Jarlid has not run since 2026-11-12 4:07 PM PST, so there's no log check yet. Next: the user
+  listens under load.
+
 ### Open questions for the user
 
-1. Block this PC's answers (firewall rule: inbound UDP 5353 from 192.168.1.254 on
+1. *(Moot: the loop stopped. The user allowed only a temporary test, never a permanent rule.)*
+   Block this PC's answers (firewall rule: inbound UDP 5353 from 192.168.1.254 on
    `vEthernet (VLAN-7)`) as a test, to see whether the gateway backs off when unanswered.
    Side effect: the gateway can't learn the PC's name (cosmetic in its device list). Needs a yes.
 2. ~~Can the user check the gateway's device list?~~ Read 2026-11-13: it knows Noook's name
