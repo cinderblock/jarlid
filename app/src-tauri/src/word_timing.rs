@@ -10,9 +10,15 @@
 //!
 //! The LRC's line starts are never moved: whoever set them, LRCLIB's uploader or the listener,
 //! is trusted. Only the words inside each line are placed.
+//!
+//! **Sharper word timing.** With the optional forced aligner installed, auto-sync also refines
+//! this placement against the audio (`autosync::refine`) and keeps the result per line
+//! ([`RefinedLine`]). [`fill`] uses a line's refined starts while its text and start are still
+//! the ones they were made for, and this module's own placement otherwise.
 
-use autosync::words::{time_words, Line, Params};
+use autosync::words::{time_words, Line, LineWords, Params};
 use autosync::Heard;
+use serde::{Deserialize, Serialize};
 
 use crate::lyricsfile::{TimedLine, TimedWord};
 
@@ -23,72 +29,87 @@ const ENGINE_GATE: f64 = 0.35;
 /// How long a song's last line is taken to last, when nothing follows it.
 const LAST_LINE_SECONDS: f64 = 6.0;
 
+/// One line's word starts as the forced aligner refined them, for the line with this text and
+/// start (as the LRC had it when they were made).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct RefinedLine {
+    pub text: String,
+    pub start: f64,
+    pub starts: Vec<f64>,
+}
+
+impl RefinedLine {
+    fn fits(&self, t: f64, text: &str) -> bool {
+        (self.start - t).abs() < 0.011
+            && self.text.trim() == text.trim()
+            && self.starts.len() == text.split_whitespace().count()
+    }
+}
+
+/// What [`fill`] places, before it is written into the lyrics: every LRC line as a span, the
+/// word starts placed for each, and which lines it fills (lines that already have their words
+/// keep them).
+pub struct Placement {
+    pub lines: Vec<(String, f64, f64)>,
+    pub placed: Vec<LineWords>,
+    pub fills: Vec<bool>,
+}
+
+impl Placement {
+    /// The lines as `autosync` takes them.
+    pub fn spans(&self) -> Vec<Line<'_>> {
+        self.lines
+            .iter()
+            .map(|(text, start, end)| Line {
+                text,
+                start: *start,
+                end: *end,
+            })
+            .collect()
+    }
+
+    /// Whether `refined` has every line this fills with more than one word.
+    pub fn refined_by(&self, refined: &[RefinedLine]) -> bool {
+        self.lines
+            .iter()
+            .zip(&self.fills)
+            .filter(|((text, _, _), fills)| **fills && needs_words(text))
+            .all(|((text, start, _), _)| refined.iter().any(|r| r.fits(*start, text)))
+    }
+}
+
 /// Give `lyrics.timing` word starts for every LRC line that has none, from the record's own
-/// Lyricsfile words and `heard` (the engine's). Leaves it alone when there's no LRC,
-/// when every line already has its words, or when there's nothing to place them by.
-pub fn fill(lyrics: &mut crate::lyrics::Lyrics, heard: impl FnOnce() -> Option<Vec<Heard>>) {
-    if lyrics.draft.is_some() {
-        return;
-    }
-    let Some(synced) = lyrics.synced.as_deref() else {
+/// Lyricsfile words and `heard` (the engine's), or from `refined` for the lines it has. Leaves
+/// it alone when there's no LRC, when every line already has its words, or when there's nothing
+/// to place them by.
+pub fn fill(
+    lyrics: &mut crate::lyrics::Lyrics,
+    heard: impl FnOnce() -> Option<Vec<Heard>>,
+    refined: impl FnOnce() -> Option<Vec<RefinedLine>>,
+) {
+    let Some(p) = placement(lyrics, heard) else {
         return;
     };
-    let lrc = autosync::lrc::parse(synced);
+    let refined = refined().unwrap_or_default();
     let existing = lyrics.timing.as_deref().unwrap_or_default();
-    let have: Vec<Option<&TimedLine>> = lrc.iter().map(|l| exact(existing, l.t, &l.text)).collect();
-    let wants = lrc
-        .iter()
-        .zip(&have)
-        .any(|(l, h)| needs_words(&l.text) && h.is_none());
-    if !wants {
-        return;
-    }
-
-    // The record's own words and the engine's, together: a Lyricsfile can time only some lines.
-    // Both are taken as they are (`Params::lead` is 0: the engine's word starts land on sung
-    // words' starts, measured on the ground-truth songs in the plan).
-    let mut evidence: Vec<Heard> = lyricsfile_words(existing);
-    let gate = if evidence.is_empty() {
-        ENGINE_GATE
-    } else {
-        0.0
-    };
-    evidence.extend(heard().unwrap_or_default());
-    if evidence.is_empty() {
-        return;
-    }
-    evidence.sort_by(|a, b| a.start.total_cmp(&b.start));
-    let params = Params::default();
-
-    let lines = lines_of(&lrc, lyrics.duration);
-    let timed = time_words(&lines, &evidence, &params);
-
-    let placeable: usize = lines
-        .iter()
-        .zip(&have)
-        .filter(|(_, h)| h.is_none())
-        .map(|(l, _)| l.text.split_whitespace().count().saturating_sub(1))
-        .sum();
-    let matched: usize = timed
-        .iter()
-        .zip(&have)
-        .filter(|(_, h)| h.is_none())
-        .map(|(t, _)| t.matched)
-        .sum();
-    if placeable > 0 && (matched as f64) < gate * placeable as f64 {
-        return;
-    }
-
+    let lrc = autosync::lrc::parse(lyrics.synced.as_deref().unwrap_or_default());
     let mut out: Vec<TimedLine> = Vec::with_capacity(lrc.len());
-    for ((l, h), t) in lrc.iter().zip(&have).zip(&timed) {
-        if let Some(h) = h {
-            out.push((*h).clone());
+    for ((l, fills), t) in lrc.iter().zip(&p.fills).zip(&p.placed) {
+        if !fills {
+            if let Some(h) = exact(existing, l.t, &l.text) {
+                out.push(h.clone());
+            }
             continue;
         }
+        let starts = refined
+            .iter()
+            .find(|r| r.fits(l.t, &l.text))
+            .map(|r| &r.starts)
+            .unwrap_or(&t.starts);
         let words: Vec<TimedWord> = l
             .text
             .split_whitespace()
-            .zip(&t.starts)
+            .zip(starts)
             .map(|(w, &start)| TimedWord {
                 text: w.to_string(),
                 start,
@@ -114,6 +135,72 @@ pub fn fill(lyrics: &mut crate::lyrics::Lyrics, heard: impl FnOnce() -> Option<V
     }
     out.sort_by(|a, b| a.start.total_cmp(&b.start));
     lyrics.timing = Some(out);
+}
+
+/// The placement [`fill`] makes, or `None` when it would leave the lyrics alone.
+pub fn placement(
+    lyrics: &crate::lyrics::Lyrics,
+    heard: impl FnOnce() -> Option<Vec<Heard>>,
+) -> Option<Placement> {
+    if lyrics.draft.is_some() {
+        return None;
+    }
+    let lrc = autosync::lrc::parse(lyrics.synced.as_deref()?);
+    let existing = lyrics.timing.as_deref().unwrap_or_default();
+    let have: Vec<bool> = lrc
+        .iter()
+        .map(|l| exact(existing, l.t, &l.text).is_some())
+        .collect();
+    let wants = lrc
+        .iter()
+        .zip(&have)
+        .any(|(l, h)| needs_words(&l.text) && !h);
+    if !wants {
+        return None;
+    }
+
+    // The record's own words and the engine's, together: a Lyricsfile can time only some lines.
+    // Both are taken as they are (`Params::lead` is 0: the engine's word starts land on sung
+    // words' starts, measured on the ground-truth songs in the plan).
+    let mut evidence: Vec<Heard> = lyricsfile_words(existing);
+    let gate = if evidence.is_empty() {
+        ENGINE_GATE
+    } else {
+        0.0
+    };
+    evidence.extend(heard().unwrap_or_default());
+    if evidence.is_empty() {
+        return None;
+    }
+    evidence.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let params = Params::default();
+
+    let lines = lines_of(&lrc, lyrics.duration);
+    let timed = time_words(&lines, &evidence, &params);
+
+    let placeable: usize = lines
+        .iter()
+        .zip(&have)
+        .filter(|(_, h)| !**h)
+        .map(|(l, _)| l.text.split_whitespace().count().saturating_sub(1))
+        .sum();
+    let matched: usize = timed
+        .iter()
+        .zip(&have)
+        .filter(|(_, h)| !**h)
+        .map(|(t, _)| t.matched)
+        .sum();
+    if placeable > 0 && (matched as f64) < gate * placeable as f64 {
+        return None;
+    }
+    Some(Placement {
+        lines: lines
+            .iter()
+            .map(|l| (l.text.to_string(), l.start, l.end))
+            .collect(),
+        placed: timed,
+        fills: have.iter().map(|h| !h).collect(),
+    })
 }
 
 /// Whether hearing the song would give `lyrics` word times it lacks: it has timed lines without
@@ -227,7 +314,7 @@ mod tests {
                 ],
             }]),
         );
-        fill(&mut l, || None);
+        fill(&mut l, || None, || None);
         let t = l.timing.unwrap();
         assert_eq!(t.len(), 2);
         assert_eq!(t[0].start, 10.0);
@@ -249,14 +336,18 @@ mod tests {
             "[00:01.00] one two\n[00:03.00] three four\n",
             Some(vec![own.clone()]),
         );
-        fill(&mut l, || {
-            Some(vec![Heard {
-                text: "four".into(),
-                start: 3.65,
-                end: 4.0,
-                p: 0.9,
-            }])
-        });
+        fill(
+            &mut l,
+            || {
+                Some(vec![Heard {
+                    text: "four".into(),
+                    start: 3.65,
+                    end: 4.0,
+                    p: 0.9,
+                }])
+            },
+            || None,
+        );
         let t = l.timing.unwrap();
         assert_eq!(t[0], own);
         assert_eq!(t[1].words.len(), 2);
@@ -271,15 +362,70 @@ mod tests {
     #[test]
     fn engine_words_below_the_gate_are_not_shown() {
         let mut l = lyrics("[00:01.00] a b c d e f\n[00:05.00] g h i j k l\n", None);
-        fill(&mut l, || {
-            Some(vec![Heard {
-                text: "b".into(),
-                start: 1.6,
-                end: 1.8,
-                p: 1.0,
-            }])
-        });
+        fill(
+            &mut l,
+            || {
+                Some(vec![Heard {
+                    text: "b".into(),
+                    start: 1.6,
+                    end: 1.8,
+                    p: 1.0,
+                }])
+            },
+            || None,
+        );
         assert!(l.timing.is_none());
+    }
+
+    #[test]
+    fn refined_starts_are_used_only_for_the_line_they_were_made_for() {
+        let heard = || {
+            Some(vec![
+                Heard {
+                    text: "two".into(),
+                    start: 1.5,
+                    end: 1.8,
+                    p: 1.0,
+                },
+                Heard {
+                    text: "four".into(),
+                    start: 3.5,
+                    end: 3.8,
+                    p: 1.0,
+                },
+            ])
+        };
+        let refined = vec![
+            RefinedLine {
+                text: "one two".into(),
+                start: 1.0,
+                starts: vec![1.0, 1.42],
+            },
+            // Made when the second line started earlier: not used.
+            RefinedLine {
+                text: "three four".into(),
+                start: 2.5,
+                starts: vec![2.5, 3.1],
+            },
+        ];
+        let mut l = lyrics("[00:01.00] one two\n[00:03.00] three four\n", None);
+        let p = placement(&l, heard).unwrap();
+        assert!(!p.refined_by(&refined));
+        assert!(p.refined_by(
+            &refined[..1]
+                .iter()
+                .cloned()
+                .chain([RefinedLine {
+                    text: "three four".into(),
+                    start: 3.0,
+                    starts: vec![3.0, 3.4],
+                }])
+                .collect::<Vec<_>>()
+        ));
+        fill(&mut l, heard, || Some(refined.clone()));
+        let t = l.timing.unwrap();
+        assert_eq!(t[0].words[1].start, 1.42);
+        assert_eq!(t[1].words[1].start, 3.5);
     }
 
     #[test]
@@ -328,7 +474,7 @@ mod tests {
     #[test]
     fn nothing_to_go_on_leaves_it_alone() {
         let mut l = lyrics("[00:01.00] a b\n", None);
-        fill(&mut l, || None);
+        fill(&mut l, || None, || None);
         assert!(l.timing.is_none());
     }
 }

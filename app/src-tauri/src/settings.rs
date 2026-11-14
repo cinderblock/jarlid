@@ -234,6 +234,10 @@ pub struct AutoSync {
     /// the listener to review. On with auto-sync: it costs nothing more to download, and a draft
     /// is only ever shown as one (`plans/draft-lyrics.md`).
     pub drafts: bool,
+    /// Sharper word timing: refine where each word starts with a forced aligner, an extra
+    /// download of about 370 MB on top of the engine's. Off unless asked for; turning it off
+    /// deletes that download (`plans/word-aligner-in-app.md`).
+    pub aligner: bool,
 }
 
 impl Default for AutoSync {
@@ -242,6 +246,7 @@ impl Default for AutoSync {
             enabled: false,
             gpu: true,
             drafts: true,
+            aligner: false,
         }
     }
 }
@@ -658,7 +663,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false,"autoSync":{"enabled":false,"gpu":true,"drafts":true}}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false,"autoSync":{"enabled":false,"gpu":true,"drafts":true,"aligner":false}}"#
         );
 
         let daily = Settings {
@@ -685,6 +690,7 @@ mod tests {
                 enabled: true,
                 gpu: false,
                 drafts: false,
+                aligner: true,
             },
         };
         let text = serde_json::to_string(&daily).unwrap();

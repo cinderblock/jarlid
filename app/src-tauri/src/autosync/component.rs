@@ -41,6 +41,28 @@ pub struct Manifest {
     pub protocol: u32,
     pub files: Vec<Entry>,
     pub model: Entry,
+    /// The optional forced aligner for sharper word timing: never part of the engine download,
+    /// fetched only when the listener asks for it ([`install_aligner`]). Absent in manifests from
+    /// before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aligner: Option<AlignerPart>,
+}
+
+/// The aligner's files: ONNX Runtime (`onnxruntime.dll`) and the alignment model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlignerPart {
+    pub files: Vec<Entry>,
+    pub model: Entry,
+}
+
+impl AlignerPart {
+    pub fn total_bytes(&self) -> u64 {
+        self.files.iter().map(|f| f.size).sum::<u64>() + self.model.size
+    }
+
+    fn entries(&self) -> impl Iterator<Item = &Entry> {
+        self.files.iter().chain(std::iter::once(&self.model))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +99,36 @@ impl Installed {
         for f in &self.manifest.files {
             let path = self.engine_dir.join(&f.name);
             let got = sha256_file(&path).map_err(|e| format!("{}: {e}", f.name))?;
+            if got != f.sha256 {
+                return Err(format!("{} does not match its download; reinstall", f.name));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The installed aligner, ready to load into the sidecar.
+#[derive(Debug, Clone)]
+pub struct AlignerInstalled {
+    pub part: AlignerPart,
+    pub dir: PathBuf,
+}
+
+impl AlignerInstalled {
+    pub fn runtime(&self) -> PathBuf {
+        self.dir.join("onnxruntime.dll")
+    }
+
+    pub fn model(&self) -> PathBuf {
+        self.dir.join(&self.part.model.name)
+    }
+
+    /// Re-hash the runtime DLL against the manifest, as [`Installed::verify_code`] does for the
+    /// engine, before the sidecar loads it.
+    pub fn verify_code(&self) -> Result<(), String> {
+        for f in &self.part.files {
+            let got =
+                sha256_file(&self.dir.join(&f.name)).map_err(|e| format!("{}: {e}", f.name))?;
             if got != f.sha256 {
                 return Err(format!("{} does not match its download; reinstall", f.name));
             }
@@ -165,6 +217,102 @@ pub fn status(app: &AppHandle) -> Status {
             version: i.manifest.version,
         },
         None => Status::NotInstalled,
+    }
+}
+
+/// The aligner's own folder, beside the engine's: engine updates replace `engine-<version>` and
+/// prune `models`, and must not take the aligner with them.
+fn aligner_dir(app: &AppHandle) -> Option<PathBuf> {
+    Some(root(app)?.join("aligner"))
+}
+
+/// The aligner, if the installed engine's manifest has one and all its files are here at the
+/// sizes it gives.
+pub fn aligner_installed(app: &AppHandle) -> Option<AlignerInstalled> {
+    let part = installed(app)?.manifest.aligner?;
+    let dir = aligner_dir(app)?;
+    let complete = part.entries().all(|f| {
+        dir.join(&f.name)
+            .metadata()
+            .map(|m| m.len() == f.size)
+            .unwrap_or(false)
+    });
+    complete.then_some(AlignerInstalled { part, dir })
+}
+
+/// Where the aligner stands, without touching the network. `Unavailable` until the engine is
+/// installed from a manifest that offers one.
+pub fn aligner_status(app: &AppHandle) -> Status {
+    if installed(app).and_then(|i| i.manifest.aligner).is_none() {
+        return Status::Unavailable;
+    }
+    match aligner_installed(app) {
+        Some(a) => Status::Installed {
+            bytes: a.part.total_bytes(),
+            version: a.part.model.name,
+        },
+        None => Status::NotInstalled,
+    }
+}
+
+/// Download and verify the aligner the installed engine's manifest lists, as [`install`] does
+/// for the engine (resuming, keeping files already right). Removes aligner files the manifest no
+/// longer lists.
+pub async fn install_aligner(
+    app: &AppHandle,
+    stop: &AtomicBool,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<AlignerInstalled, String> {
+    let part = installed(app)
+        .ok_or("the speech engine isn't installed")?
+        .manifest
+        .aligner
+        .ok_or("this engine has no aligner")?;
+    let http = reqwest::Client::builder()
+        .user_agent(concat!("Jarlid/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let dir = aligner_dir(app).ok_or("no data directory")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let total = part.total_bytes();
+    let mut done = 0u64;
+    for entry in part.entries() {
+        if stop.load(Ordering::Relaxed) {
+            return Err("stopped".into());
+        }
+        let base = done;
+        fetch(&http, entry, &dir.join(&entry.name), stop, |n| {
+            progress(base + n, total)
+        })
+        .await?;
+        done += entry.size;
+        progress(done, total);
+    }
+    if let Ok(listing) = std::fs::read_dir(&dir) {
+        for e in listing.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !part.entries().any(|f| f.name == name) && !name.ends_with(".part") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    aligner_installed(app).ok_or_else(|| "the aligner's files did not check out".into())
+}
+
+/// Whether any of the aligner is on disk, a partial download included.
+pub fn aligner_on_disk(app: &AppHandle) -> bool {
+    aligner_dir(app).is_some_and(|d| d.exists())
+}
+
+/// Delete the aligner. The sidecar must not have it loaded: Windows won't delete a DLL in use.
+pub fn remove_aligner(app: &AppHandle) -> Result<(), String> {
+    let Some(dir) = aligner_dir(app) else {
+        return Ok(());
+    };
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -418,6 +566,22 @@ mod tests {
         .unwrap();
         assert_eq!(m.total_bytes(), 100);
         assert_eq!(m.files[0].name, "jarlid-autosync.exe");
+        assert!(m.aligner.is_none());
+    }
+
+    #[test]
+    fn the_aligner_is_its_own_part_of_the_manifest() {
+        let m: Manifest = serde_json::from_str(
+            r#"{"version":"0.2.0","protocol":1,
+                "files":[{"name":"jarlid-autosync.exe","url":"u","sha256":"ab","size":10}],
+                "model":{"name":"m.bin","url":"v","sha256":"cd","size":90},
+                "aligner":{"files":[{"name":"onnxruntime.dll","url":"w","sha256":"ef","size":7}],
+                           "model":{"name":"a.onnx","url":"x","sha256":"01","size":300}}}"#,
+        )
+        .unwrap();
+        // The engine download is unchanged by it.
+        assert_eq!(m.total_bytes(), 100);
+        assert_eq!(m.aligner.unwrap().total_bytes(), 307);
     }
 
     /// Against the real release: the pinned manifest checks out, and a file it lists downloads

@@ -49,6 +49,12 @@ const autosyncGpuItem = $("set-autosync-gpu-item");
 const autosyncGpu = $<HTMLInputElement>("set-autosync-gpu");
 const autosyncDraftsItem = $("set-autosync-drafts-item");
 const autosyncDrafts = $<HTMLInputElement>("set-autosync-drafts");
+const autosyncAlignerItem = $("set-autosync-aligner-item");
+const autosyncAligner = $<HTMLInputElement>("set-autosync-aligner");
+const autosyncAlignerStatusEl = $("set-autosync-aligner-status");
+const autosyncAlignerProgress = $("set-autosync-aligner-progress");
+const autosyncAlignerProgressFill = $("set-autosync-aligner-progress-fill");
+const autosyncAlignerRetry = $<HTMLButtonElement>("set-autosync-aligner-retry");
 const autosyncActionItem = $("set-autosync-remove-item");
 const autosyncActionBtn = $<HTMLButtonElement>("set-autosync-remove");
 const flagsStatus = $("set-flags-status");
@@ -78,6 +84,8 @@ interface AutoSync {
   enabled: boolean;
   gpu: boolean;
   drafts: boolean;
+  /** Sharper word timing: the forced aligner, its own download. */
+  aligner: boolean;
 }
 /** Where the downloadable speech engine stands; see `autosync::Status`. */
 type AutoSyncStatus =
@@ -145,8 +153,10 @@ const outputSel = createSelect($("set-output-device"), [{ value: FOLLOW_DEFAULT,
 const CACHE_SIZES_MB = [256, 512, 1024, 2048, 5120, 10240];
 
 /** For a settings file written before auto-sync existed. Matches `AutoSync::default`. */
-const NO_AUTOSYNC: AutoSync = { enabled: false, gpu: true, drafts: true };
+const NO_AUTOSYNC: AutoSync = { enabled: false, gpu: true, drafts: true, aligner: false };
 let autosyncStatus: AutoSyncStatus = { state: "unavailable" };
+/** The aligner's download, as `autosync::autosync_aligner_status` reports it. */
+let alignerStatus: AutoSyncStatus = { state: "unavailable" };
 
 /** For a settings file written before the cache existed. Matches `AudioCache::default`. */
 const NO_CACHE: AudioCache = { enabled: false, maxMb: 1024 };
@@ -290,6 +300,7 @@ function setEnabled(on: boolean) {
   autosyncEnabled.disabled = !on;
   autosyncGpu.disabled = !on;
   autosyncDrafts.disabled = !on;
+  autosyncAligner.disabled = !on;
 }
 
 /** Defaults for a settings file written before blending existed. */
@@ -439,6 +450,7 @@ function render(s: Settings) {
   autosyncGpu.checked = autoSync.gpu;
   // Files from before drafts existed lack the field; the backend fills in its default, on.
   autosyncDrafts.checked = autoSync.drafts ?? true;
+  autosyncAligner.checked = autoSync.aligner ?? false;
   reflectAutosync();
   const sched = s.checkSchedule;
   scheduleSel.setOptions(scheduleOptions(sched));
@@ -531,6 +543,7 @@ async function persist() {
       enabled: autosyncEnabled.checked,
       gpu: autosyncGpu.checked,
       drafts: autosyncDrafts.checked,
+      aligner: autosyncAligner.checked,
     },
   };
   timeInput.hidden = next.checkSchedule.kind !== "dailyAt";
@@ -630,6 +643,15 @@ autosyncEnabled.addEventListener("change", () => {
 });
 autosyncGpu.addEventListener("change", () => void persist());
 autosyncDrafts.addEventListener("change", () => void persist());
+// Like auto-sync itself: turning it on is the consent to its download, and off deletes it.
+autosyncAligner.addEventListener("change", () => {
+  reflectAutosync();
+  void persist();
+});
+autosyncAlignerRetry.addEventListener("click", async () => {
+  alignerStatus = await invoke<AutoSyncStatus>("autosync_aligner_install").catch(() => alignerStatus);
+  reflectAutosync();
+});
 
 /**
  * Show the section only where this build can offer it, then say where the engine stands.
@@ -672,6 +694,39 @@ function reflectAutosync() {
   autosyncActionBtn.dataset.action = action;
   autosyncActionBtn.dataset.armed = "";
   autosyncActionBtn.textContent = { "": "", cancel: "Stop download", retry: "Try again", remove: "Remove", download: "Download" }[action];
+  reflectAligner();
+}
+
+/**
+ * Sharper word timing: offered once the installed engine has an aligner to fetch, and only
+ * while auto-sync is on. Its one switch is both the consent to the download and, turned off,
+ * the way to delete it, so it says where the download stands right under it.
+ */
+function reflectAligner() {
+  const st = alignerStatus;
+  autosyncAlignerItem.hidden = !autosyncEnabled.checked || st.state === "unavailable";
+  const on = autosyncAligner.checked;
+  autosyncAlignerProgress.hidden = !(on && st.state === "downloading");
+  autosyncAlignerRetry.hidden = !(on && st.state === "failed");
+  let text = "";
+  switch (st.state) {
+    case "notInstalled":
+      text = on ? "Not downloaded yet." : "";
+      break;
+    case "downloading": {
+      const pct = st.total ? Math.floor((st.done / st.total) * 100) : 0;
+      autosyncAlignerProgressFill.style.width = `${pct}%`;
+      text = on ? `Downloading… ${formatBytes(st.done)} of ${formatBytes(st.total)} (${pct}%)` : "";
+      break;
+    }
+    case "installed":
+      text = on ? `Installed, ${formatBytes(st.bytes)}.` : "";
+      break;
+    case "failed":
+      text = on ? `The download didn't finish: ${st.message}` : "";
+      break;
+  }
+  autosyncAlignerStatusEl.textContent = text;
 }
 
 async function refreshAutosyncStatus() {
@@ -680,11 +735,26 @@ async function refreshAutosyncStatus() {
   } catch {
     autosyncStatus = { state: "unavailable" };
   }
+  try {
+    alignerStatus = await invoke<AutoSyncStatus>("autosync_aligner_status");
+  } catch {
+    alignerStatus = { state: "unavailable" };
+  }
   reflectAutosync();
 }
 
+void listen<AutoSyncStatus>("autosync://aligner", (e) => {
+  alignerStatus = e.payload;
+  reflectAligner();
+});
+
 void listen<AutoSyncStatus>("autosync://status", (e) => {
   autosyncStatus = e.payload;
+  // A finished engine download is what makes the aligner available.
+  if (e.payload.state === "installed" || e.payload.state === "notInstalled") {
+    void refreshAutosyncStatus();
+    return;
+  }
   reflectAutosync();
 });
 

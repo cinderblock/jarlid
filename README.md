@@ -60,7 +60,11 @@ anywhere in it.
   timeline, the playing line lights each word as it is sung. They are published to LRCLIB as a
   [Lyricsfile](https://github.com/tranxuanthang/lyricsfile), LRCLIB's format for word timing.
   LRCLIB derives ordinary line-synced lyrics from it, so players that don't know word timing
-  still get the lines, pauses included.
+  still get the lines, pauses included. Lyrics timed only line by line get their words placed
+  too: from the record's own word times, or, with auto-sync, from what the speech engine heard.
+  **Sharper word timing** *(opt-in, a further ~370 MB)* refines those with a forced aligner
+  (Meta's MMS model, CC BY-NC 4.0) that finds each known word in the singing: on the test songs,
+  words starting within 0.1 s of where they're sung go from 56% to 67%.
 - **Song sections**: labels such as `Chorus:`, `[Verse 2: Artist]` or `(Bridge)` in a song's
   lyrics show as quiet section headings over the lines they introduce, never as sung lines.
   Synced lyrics take their headings from the plain lyrics, lined up line by line. Labels are

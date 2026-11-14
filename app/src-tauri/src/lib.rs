@@ -626,6 +626,8 @@ pub fn run() {
             autosync::autosync_status,
             autosync::autosync_install,
             autosync::autosync_remove,
+            autosync::autosync_aligner_status,
+            autosync::autosync_aligner_install,
             timeline::track_envelope,
             timeline::heard_words,
             player_cmd,

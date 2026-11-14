@@ -53,6 +53,10 @@ pub struct AutoSyncCtl {
     /// The download's progress, or why it failed, while there is one to report.
     status: Mutex<Option<Status>>,
     last_used: Mutex<Option<Instant>>,
+    /// The same three for the aligner's download.
+    aligner_installing: AtomicBool,
+    stop_aligner: Arc<AtomicBool>,
+    aligner_status: Mutex<Option<Status>>,
 }
 
 /// Start-up: clear what an earlier run left mid-job, and start the idle reaper.
@@ -84,6 +88,7 @@ pub fn init(app: &AppHandle) {
 /// The setting changed: start or stop accordingly.
 pub fn apply(app: &AppHandle, setting: &crate::settings::AutoSync) {
     let ctl = app.state::<AutoSyncCtl>();
+    apply_aligner(app, setting);
     if !setting.enabled {
         ctl.stop_install.store(true, Ordering::Relaxed);
         let app = app.clone();
@@ -252,8 +257,12 @@ enum Job {
     /// never checked for it. Only the audio is needed, not the engine (see `autosync::repeat`).
     Repeats(String, Stored),
     /// The lines are timed (LRCLIB's, or the listener's edit) but not their words: hear the song
-    /// and keep what was heard, for `word_timing` to place the words by.
+    /// and keep what was heard, for `word_timing` to place the words by. With the aligner on,
+    /// refine those words too, from the same audio.
     Words,
+    /// Heard before (or placeable without hearing), but not yet refined by the aligner for these
+    /// lines: just the aligner, no hearing.
+    Refine,
 }
 
 async fn run(
@@ -280,13 +289,21 @@ async fn run(
     .await?;
     // Only words without timings, or no words at all: real timings, and the listener's own
     // edits, always win. Their words are placed inside them, once the song has been heard.
+    // The aligner, when it is wanted and here.
+    let aligner = setting
+        .aligner
+        .then(|| component::aligner_installed(app))
+        .flatten();
     let job = if lyrics.overridden || lyrics.synced.is_some() {
-        if !crate::word_timing::wants_hearing(&lyrics) || heard(app, &key).is_some() {
+        if crate::word_timing::wants_hearing(&lyrics) && heard(app, &key).is_none() {
+            Job::Words
+        } else if aligner.is_some() && wants_refining(app, &key, &lyrics) {
+            Job::Refine
+        } else {
             return Ok(());
         }
-        Job::Words
     } else {
-        match lyrics.plain {
+        match lyrics.plain.clone() {
             Some(plain) => match current(app, &key, &plain) {
                 // Done before for these words — or tried, and failed the gate. Not again until
                 // they change, or the aligner does and the song has to be heard again to re-time
@@ -327,6 +344,7 @@ async fn run(
             Job::Draft => "drafting",
             Job::Repeats(..) => "looking for missed repeats",
             Job::Words => "timing words",
+            Job::Refine => "sharpening word timings",
         }
     );
 
@@ -383,6 +401,11 @@ async fn run(
     };
 
     let gpu = setting.gpu;
+    if let (Job::Refine, Some(aligner)) = (&job, &aligner) {
+        let result = refine_words(app, installed, aligner, track, &key, &lyrics, &wav, gpu).await;
+        let _ = std::fs::remove_file(&wav);
+        return result;
+    }
     let result = match &job {
         Job::Align(plain) => {
             let lines: Vec<&str> = plain.lines().collect();
@@ -410,8 +433,15 @@ async fn run(
             let shown = |_: &[autosync::Heard], _: usize, _: usize| Shown::default();
             hear(app, installed, track, &wav, from, gpu, shown).await
         }
-        Job::Repeats(..) => unreachable!("handled before the engine runs"),
+        Job::Repeats(..) | Job::Refine => unreachable!("handled before the engine runs"),
     };
+    // Words heard for word timings: with the aligner on, refine them while the audio is here.
+    if let (Job::Words, Ok(Some(heard)), Some(aligner)) = (&job, &result, &aligner) {
+        store_words_heard(app, installed, track, &key, heard);
+        let refined = refine_words(app, installed, aligner, track, &key, &lyrics, &wav, gpu).await;
+        let _ = std::fs::remove_file(&wav);
+        return refined;
+    }
     let _ = std::fs::remove_file(&wav);
     let Some(heard) = result? else {
         // Cancelled: a skip made it moot. Nothing stored, so it is tried again if it comes back.
@@ -425,31 +455,10 @@ async fn run(
             return Ok(());
         }
         Job::Words => {
-            eprintln!(
-                "[autosync] {} — {}: {} words heard, for word timings",
-                track.artist_name,
-                track.song_title,
-                heard.len()
-            );
-            store_heard(
-                app,
-                &key,
-                &StoredHeard {
-                    engine: installed.manifest.version.clone(),
-                    created: unix_now(),
-                    heard: heard
-                        .iter()
-                        .map(|w| (w.text.clone(), w.start, w.end, w.p))
-                        .collect(),
-                },
-            );
-            let _ = app.emit(
-                "autosync://words",
-                json!({ "title": track.song_title, "artist": track.artist_name }),
-            );
+            store_words_heard(app, installed, track, &key, &heard);
             return Ok(());
         }
-        Job::Repeats(..) => unreachable!("handled before the engine runs"),
+        Job::Repeats(..) | Job::Refine => unreachable!("handled before the engine runs"),
     };
     let (lrc, coverage, repeats) = time(&plain, &heard, duration, Repeats::Find(features.as_ref()));
     let ok = lrc.is_some();
@@ -626,6 +635,7 @@ async fn hear(
             Some(JobEvent::Done) => break,
             Some(JobEvent::Cancelled) => return Ok(None),
             Some(JobEvent::Error(e)) => return Err(e),
+            Some(JobEvent::Emission { .. }) => {}
             None => return Err("the speech engine went away".into()),
         }
     }
@@ -781,6 +791,8 @@ fn start_install(app: &AppHandle) {
                 *ctl.status.lock().unwrap() = None;
                 // The engine can now fetch the next song whole for analysis.
                 crate::native::apply_audio_cache(&app, &crate::settings::get(&app));
+                // Sharper word timing waits on the engine's manifest to know what to fetch.
+                apply_aligner(&app, &crate::settings::get(&app).auto_sync);
                 kick(&app);
                 component::status(&app)
             }
@@ -835,15 +847,131 @@ pub async fn autosync_remove(app: AppHandle) -> Result<Status, String> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    ctl.stop_aligner.store(true, Ordering::Relaxed);
     component::remove(&app)?;
-    for dir in [results_dir(&app), drafts_dir(&app)].into_iter().flatten() {
+    for dir in [results_dir(&app), drafts_dir(&app), refined_dir(&app)]
+        .into_iter()
+        .flatten()
+    {
         let _ = std::fs::remove_dir_all(dir);
     }
     *ctl.status.lock().unwrap() = None;
+    *ctl.aligner_status.lock().unwrap() = None;
+    emit_aligner(&app, &component::aligner_status(&app));
     crate::native::apply_audio_cache(&app, &crate::settings::get(&app));
     let status = component::status(&app);
     component::emit(&app, &status);
     Ok(status)
+}
+
+// ---- the aligner download (sharper word timing) ---------------------------------------------
+
+/// The aligner setting or the engine changed: fetch the aligner if it's wanted and missing, or
+/// delete it if it's no longer wanted. Turning it off is the way to free its 370 MB.
+fn apply_aligner(app: &AppHandle, setting: &crate::settings::AutoSync) {
+    let wanted = setting.enabled && setting.aligner;
+    let ctl = app.state::<AutoSyncCtl>();
+    if wanted {
+        if component::aligner_status(app) == Status::NotInstalled {
+            start_aligner_install(app);
+        }
+        return;
+    }
+    ctl.stop_aligner.store(true, Ordering::Relaxed);
+    if setting.aligner || !component::aligner_on_disk(app) {
+        // On but auto-sync off: kept, just not used. Or nothing to remove.
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let ctl = app.state::<AutoSyncCtl>();
+        // Wait out a download that is stopping, then the sidecar has to let go of the DLL.
+        for _ in 0..50 {
+            if !ctl.aligner_installing.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        ctl.sidecar.lock().await.take();
+        if let Err(e) = component::remove_aligner(&app) {
+            eprintln!("[autosync] removing the aligner: {e}");
+        }
+        if let Some(dir) = refined_dir(&app) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        *ctl.aligner_status.lock().unwrap() = None;
+        emit_aligner(&app, &component::aligner_status(&app));
+    });
+}
+
+fn start_aligner_install(app: &AppHandle) {
+    let ctl = app.state::<AutoSyncCtl>();
+    if ctl.aligner_installing.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    ctl.stop_aligner.store(false, Ordering::Relaxed);
+    let stop = ctl.stop_aligner.clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut last_emit = Instant::now() - Duration::from_secs(1);
+        let progress_app = app.clone();
+        let result = component::install_aligner(&app, &stop, |done, total| {
+            let status = Status::Downloading { done, total };
+            *progress_app
+                .state::<AutoSyncCtl>()
+                .aligner_status
+                .lock()
+                .unwrap() = Some(status.clone());
+            if last_emit.elapsed() > Duration::from_millis(250) || done == total {
+                last_emit = Instant::now();
+                emit_aligner(&progress_app, &status);
+            }
+        })
+        .await;
+        let ctl = app.state::<AutoSyncCtl>();
+        ctl.aligner_installing.store(false, Ordering::SeqCst);
+        let status = match result {
+            Ok(_) => {
+                *ctl.aligner_status.lock().unwrap() = None;
+                kick(&app);
+                component::aligner_status(&app)
+            }
+            Err(_) if stop.load(Ordering::Relaxed) => {
+                *ctl.aligner_status.lock().unwrap() = None;
+                component::aligner_status(&app)
+            }
+            Err(message) => {
+                eprintln!("[autosync] aligner download failed: {message}");
+                let failed = Status::Failed { message };
+                *ctl.aligner_status.lock().unwrap() = Some(failed.clone());
+                failed
+            }
+        };
+        emit_aligner(&app, &status);
+    });
+}
+
+fn emit_aligner(app: &AppHandle, status: &Status) {
+    let _ = app.emit("autosync://aligner", status);
+}
+
+#[tauri::command]
+pub fn autosync_aligner_status(app: AppHandle) -> Status {
+    app.state::<AutoSyncCtl>()
+        .aligner_status
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| component::aligner_status(&app))
+}
+
+/// Retry the aligner's download (after a failure).
+#[tauri::command]
+pub fn autosync_aligner_install(app: AppHandle) -> Status {
+    if component::aligner_status(&app) == Status::NotInstalled {
+        start_aligner_install(&app);
+    }
+    autosync_aligner_status(app)
 }
 
 // ---- results --------------------------------------------------------------------------------
@@ -1064,6 +1192,185 @@ fn store_heard(app: &AppHandle, key: &str, s: &StoredHeard) {
     if let Ok(json) = serde_json::to_vec(s) {
         let _ = std::fs::write(path, json);
     }
+}
+
+/// Keep what was heard of a line-timed song, for its word timings, and tell the lyrics pane.
+fn store_words_heard(
+    app: &AppHandle,
+    installed: &component::Installed,
+    track: &pandora::Track,
+    key: &str,
+    heard: &[autosync::Heard],
+) {
+    eprintln!(
+        "[autosync] {} — {}: {} words heard, for word timings",
+        track.artist_name,
+        track.song_title,
+        heard.len()
+    );
+    store_heard(
+        app,
+        key,
+        &StoredHeard {
+            engine: installed.manifest.version.clone(),
+            created: unix_now(),
+            heard: heard
+                .iter()
+                .map(|w| (w.text.clone(), w.start, w.end, w.p))
+                .collect(),
+        },
+    );
+    let _ = app.emit(
+        "autosync://words",
+        json!({ "title": track.song_title, "artist": track.artist_name }),
+    );
+}
+
+/// Bumped when refining changes enough that stored results should be made again.
+const REFINE_VERSION: u32 = 1;
+
+/// A song's word starts as the aligner refined them, line by line.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredRefined {
+    version: u32,
+    /// The aligner model that made them (its file name).
+    model: String,
+    created: u64,
+    lines: Vec<crate::word_timing::RefinedLine>,
+}
+
+/// Beside what was heard, in the cache dir: it can be made again.
+fn refined_dir(app: &AppHandle) -> Option<PathBuf> {
+    Some(app.path().app_cache_dir().ok()?.join("lyrics-refined"))
+}
+
+fn stored_refined(app: &AppHandle, key: &str) -> Option<StoredRefined> {
+    let path = crate::lyrics::hashed_file(refined_dir(app)?, key)?;
+    let s: StoredRefined = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    (s.version == REFINE_VERSION).then_some(s)
+}
+
+/// The refined word starts for a song, when sharper word timing is on. For `word_timing::fill`.
+pub fn refined_words(app: &AppHandle, key: &str) -> Option<Vec<crate::word_timing::RefinedLine>> {
+    if !crate::settings::get(app).auto_sync.aligner {
+        return None;
+    }
+    Some(stored_refined(app, key)?.lines)
+}
+
+/// Whether the aligner would refine lines of `lyrics` it hasn't yet: the words can be placed
+/// (from what was heard, or the record's own word times), and some line they'd be placed in
+/// has no refined starts made for it as it is now.
+fn wants_refining(app: &AppHandle, key: &str, lyrics: &crate::lyrics::Lyrics) -> bool {
+    let Some(p) = crate::word_timing::placement(lyrics, || heard_words(app, key)) else {
+        return false;
+    };
+    let refined = stored_refined(app, key)
+        .map(|s| s.lines)
+        .unwrap_or_default();
+    !p.refined_by(&refined)
+}
+
+/// Refine the word starts of `lyrics`' line-timed lines with the aligner, on the song's audio in
+/// `wav`, and keep them. Lines refined before for their current text and start keep theirs.
+#[allow(clippy::too_many_arguments)]
+async fn refine_words(
+    app: &AppHandle,
+    installed: &component::Installed,
+    aligner: &component::AlignerInstalled,
+    track: &pandora::Track,
+    key: &str,
+    lyrics: &crate::lyrics::Lyrics,
+    wav: &Path,
+    gpu: bool,
+) -> Result<(), String> {
+    let heard = heard_words(app, key);
+    let Some(p) = crate::word_timing::placement(lyrics, || heard) else {
+        return Ok(());
+    };
+    let lines = p.spans();
+    let duration = if track.track_length > 0 {
+        track.track_length as f64
+    } else {
+        0.0
+    };
+    // Only lines this fills, of more than one word: the rest show no word timing.
+    let todo: Vec<usize> = (0..lines.len())
+        .filter(|&i| p.fills[i] && lines[i].text.split_whitespace().nth(1).is_some())
+        .collect();
+    if todo.is_empty() {
+        return Ok(());
+    }
+    let spans: Vec<(f64, f64)> = todo
+        .iter()
+        .map(|&i| autosync::refine::window(&lines[i], duration))
+        .collect();
+
+    let sidecar = sidecar(app, installed, gpu).await?;
+    {
+        let (s, a) = (sidecar.clone(), aligner.clone());
+        tokio::task::spawn_blocking(move || s.load_aligner(&a, threads()))
+            .await
+            .map_err(|e| e.to_string())??;
+    }
+    let began = Instant::now();
+    let mut rx = sidecar.emit(&track.pandora_id, wav, &spans)?;
+    let mut emissions: Vec<Option<autosync::refine::LineEmission>> = vec![None; lines.len()];
+    loop {
+        match rx.recv().await {
+            Some(JobEvent::Emission { k, emission }) => {
+                if let Some(&i) = todo.get(k) {
+                    emissions[i] = emission;
+                }
+            }
+            Some(JobEvent::Done) => break,
+            // A skip made it moot; tried again if the song comes back.
+            Some(JobEvent::Cancelled) => return Ok(()),
+            Some(JobEvent::Error(e)) => return Err(e),
+            Some(JobEvent::Words { .. }) => {}
+            None => return Err("the speech engine went away".into()),
+        }
+    }
+    let refined = autosync::refine::refine(
+        &lines,
+        &p.placed,
+        &emissions,
+        &autosync::refine::Params::default(),
+    );
+    // Every line, refined or not (too short to align): kept, so the song isn't done again.
+    let out: Vec<crate::word_timing::RefinedLine> = todo
+        .iter()
+        .map(|&i| crate::word_timing::RefinedLine {
+            text: lines[i].text.to_string(),
+            start: lines[i].start,
+            starts: refined[i].starts.clone(),
+        })
+        .collect();
+    eprintln!(
+        "[autosync] {} — {}: word timings sharpened on {} of {} lines in {:.0} s",
+        track.artist_name,
+        track.song_title,
+        todo.iter().filter(|&&i| emissions[i].is_some()).count(),
+        todo.len(),
+        began.elapsed().as_secs_f64()
+    );
+    if let Some(path) = refined_dir(app).and_then(|d| crate::lyrics::hashed_file(d, key)) {
+        let stored = StoredRefined {
+            version: REFINE_VERSION,
+            model: aligner.part.model.name.clone(),
+            created: unix_now(),
+            lines: out,
+        };
+        if let Ok(json) = serde_json::to_vec(&stored) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+    let _ = app.emit(
+        "autosync://words",
+        json!({ "title": track.song_title, "artist": track.artist_name }),
+    );
+    Ok(())
 }
 
 /// [`heard`] as the aligner takes it.

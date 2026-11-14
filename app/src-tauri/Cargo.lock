@@ -2116,6 +2116,7 @@ version = "1.23.0"
 dependencies = [
  "audio",
  "autosync",
+ "base64 0.22.1",
  "engine",
  "if-addrs",
  "pandora",

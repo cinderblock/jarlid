@@ -16,11 +16,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
+use autosync::refine::LineEmission;
 use autosync::Heard;
+use base64::Engine as _;
 use serde::Deserialize;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-use super::component::{Installed, PROTOCOL};
+use super::component::{AlignerInstalled, Installed, PROTOCOL};
 
 /// How long to wait for the model to load before giving up on the sidecar.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(120);
@@ -33,6 +35,11 @@ pub enum JobEvent {
         done: usize,
         of: usize,
         words: Vec<Heard>,
+    },
+    /// The aligner's emission over span `k` of an `emit`; `None` when it was too short.
+    Emission {
+        k: usize,
+        emission: Option<LineEmission>,
     },
     Done,
     Cancelled,
@@ -48,6 +55,16 @@ enum Event {
     Loaded {
         ms: u64,
         engine: String,
+    },
+    AlignerLoaded {
+        ms: u64,
+    },
+    Emission {
+        id: String,
+        k: usize,
+        t0: f64,
+        ratio: f64,
+        data: Option<String>,
     },
     Words {
         id: String,
@@ -76,12 +93,17 @@ struct Word {
 }
 
 type Routes = Arc<Mutex<HashMap<String, UnboundedSender<JobEvent>>>>;
+/// Whoever is waiting for the aligner to load.
+type Waiter = Arc<Mutex<Option<mpsc::Sender<Result<(), String>>>>>;
 
 pub struct Sidecar {
     child: Mutex<Child>,
     stdin: Mutex<ChildStdin>,
     routes: Routes,
     alive: Arc<AtomicBool>,
+    aligner_waiter: Waiter,
+    /// The aligner model this process has loaded, if any.
+    aligner: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl Sidecar {
@@ -121,11 +143,13 @@ impl Sidecar {
 
         let routes: Routes = Arc::default();
         let alive = Arc::new(AtomicBool::new(true));
+        let aligner_waiter: Waiter = Arc::default();
         let (started_tx, started_rx) = mpsc::channel::<Result<(), String>>();
         {
             let routes = routes.clone();
             let alive = alive.clone();
-            std::thread::spawn(move || read(stdout, routes, alive, started_tx));
+            let waiter = aligner_waiter.clone();
+            std::thread::spawn(move || read(stdout, routes, alive, started_tx, waiter));
         }
 
         let sidecar = Self {
@@ -133,6 +157,8 @@ impl Sidecar {
             stdin: Mutex::new(stdin),
             routes,
             alive,
+            aligner_waiter,
+            aligner: Mutex::new(None),
         };
         sidecar.send(&serde_json::json!({
             "op": "load",
@@ -174,6 +200,55 @@ impl Sidecar {
         Ok(rx)
     }
 
+    /// Load the aligner into this process, unless it already has this one. Blocking: call from
+    /// a blocking thread.
+    pub fn load_aligner(&self, aligner: &AlignerInstalled, threads: u32) -> Result<(), String> {
+        let model = aligner.model();
+        if self.aligner.lock().unwrap().as_ref() == Some(&model) {
+            return Ok(());
+        }
+        aligner.verify_code()?;
+        let (tx, rx) = mpsc::channel();
+        *self.aligner_waiter.lock().unwrap() = Some(tx);
+        self.send(&serde_json::json!({
+            "op": "loadAligner",
+            "model": model,
+            "runtime": aligner.runtime(),
+            "threads": threads,
+        }))?;
+        match rx.recv_timeout(LOAD_TIMEOUT) {
+            Ok(Ok(())) => {
+                *self.aligner.lock().unwrap() = Some(model);
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("the aligner did not load in time".into()),
+        }
+    }
+
+    /// Queue the aligner's emissions over `spans` (seconds) of `wav`. They arrive in order on the
+    /// returned channel, then `Done`, `Cancelled` or `Error`. Load the aligner first.
+    pub fn emit(
+        &self,
+        id: &str,
+        wav: &std::path::Path,
+        spans: &[(f64, f64)],
+    ) -> Result<UnboundedReceiver<JobEvent>, String> {
+        let (tx, rx) = unbounded_channel();
+        self.routes.lock().unwrap().insert(id.to_string(), tx);
+        let sent = self.send(&serde_json::json!({
+            "op": "emit",
+            "id": id,
+            "wav": wav,
+            "spans": spans,
+        }));
+        if let Err(e) = sent {
+            self.routes.lock().unwrap().remove(id);
+            return Err(e);
+        }
+        Ok(rx)
+    }
+
     pub fn cancel(&self, id: &str) {
         let _ = self.send(&serde_json::json!({ "op": "cancel", "id": id }));
     }
@@ -203,6 +278,7 @@ fn read(
     routes: Routes,
     alive: Arc<AtomicBool>,
     started: mpsc::Sender<Result<(), String>>,
+    aligner_waiter: Waiter,
 ) {
     let mut started = Some(started);
     let mut start = |result: Result<(), String>| {
@@ -253,6 +329,24 @@ fn read(
                     .collect();
                 route(&id, JobEvent::Words { done, of, words }, false);
             }
+            Event::AlignerLoaded { ms } => {
+                eprintln!("[autosync] aligner loaded in {ms} ms");
+                if let Some(tx) = aligner_waiter.lock().unwrap().take() {
+                    let _ = tx.send(Ok(()));
+                }
+            }
+            Event::Emission {
+                id,
+                k,
+                t0,
+                ratio,
+                data,
+            } => {
+                let emission =
+                    data.and_then(|d| decode(&d))
+                        .map(|data| LineEmission { t0, ratio, data });
+                route(&id, JobEvent::Emission { k, emission }, false);
+            }
             Event::Done { id } => route(&id, JobEvent::Done, true),
             Event::Cancelled { id } => route(&id, JobEvent::Cancelled, true),
             Event::Error {
@@ -261,21 +355,56 @@ fn read(
             } => route(&id, JobEvent::Error(message), true),
             Event::Error { id: None, message } => {
                 eprintln!("[autosync] {message}");
-                start(Err(message));
+                // A failed aligner load is the one error without a job that isn't the start's.
+                match aligner_waiter.lock().unwrap().take() {
+                    Some(tx) => {
+                        let _ = tx.send(Err(message));
+                    }
+                    None => start(Err(message)),
+                }
             }
         }
     }
 
     alive.store(false, Ordering::Relaxed);
     start(Err("the speech engine exited while starting".into()));
+    if let Some(tx) = aligner_waiter.lock().unwrap().take() {
+        let _ = tx.send(Err("the speech engine exited".into()));
+    }
     for (_, tx) in routes.lock().unwrap().drain() {
         let _ = tx.send(JobEvent::Error("the speech engine exited".into()));
     }
 }
 
+/// An emission's rows: base64 of little-endian f32, `autosync::ctc::CLASSES` to a frame.
+fn decode(b64: &str) -> Option<Vec<f32>> {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    if bytes.len() % (4 * autosync::ctc::CLASSES) != 0 {
+        return None;
+    }
+    Some(
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_emissions_and_rejects_ragged_ones() {
+        let row: Vec<f32> = (0..autosync::ctc::CLASSES).map(|i| -(i as f32)).collect();
+        let bytes: Vec<u8> = row.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        assert_eq!(decode(&b64), Some(row));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes[..8]);
+        assert_eq!(decode(&b64), None);
+    }
 
     /// End to end against a real engine: start it, hear a track, check the words come back in
     /// order and on the track's clock. Needs an engine directory holding the DLLs, the sidecar
@@ -335,6 +464,81 @@ mod tests {
                     JobEvent::Words { .. } => {}
                     other => panic!("unexpected {other:?}"),
                 }
+            }
+        });
+        assert!(sidecar.alive());
+    }
+
+    /// End to end against a real engine with the aligner: load it into a running sidecar, ask
+    /// for emissions over a few spans of a track, and check each comes back decoded, in order,
+    /// on the track's clock. Same variables as above, plus a directory holding
+    /// `onnxruntime.dll` and the aligner model, and the model's file name:
+    ///
+    /// ```text
+    /// JARLID_AUTOSYNC_TEST_ALIGNER=<dir> JARLID_AUTOSYNC_TEST_ALIGNER_MODEL=<name.onnx> \
+    /// cargo test -- --ignored sidecar_emits_for_the_aligner
+    /// ```
+    #[test]
+    #[ignore = "needs a built engine, both models and a WAV; see the doc comment"]
+    fn sidecar_emits_for_the_aligner() {
+        use super::super::component::{AlignerPart, Entry, Manifest};
+        let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
+        let entry = |name: &str| Entry {
+            name: name.into(),
+            url: String::new(),
+            sha256: String::new(),
+            size: 0,
+        };
+        // Nothing listed to verify: the test runs files it was pointed at.
+        let installed = Installed {
+            manifest: Manifest {
+                version: "test".into(),
+                protocol: PROTOCOL,
+                files: Vec::new(),
+                model: entry("m"),
+                aligner: None,
+            },
+            engine_dir: var("JARLID_AUTOSYNC_TEST_ENGINE").into(),
+            model: var("JARLID_AUTOSYNC_TEST_MODEL").into(),
+        };
+        let aligner = AlignerInstalled {
+            part: AlignerPart {
+                files: Vec::new(),
+                model: entry(&var("JARLID_AUTOSYNC_TEST_ALIGNER_MODEL")),
+            },
+            dir: var("JARLID_AUTOSYNC_TEST_ALIGNER").into(),
+        };
+        let wav = std::path::PathBuf::from(var("JARLID_AUTOSYNC_TEST_WAV"));
+        let sidecar = Sidecar::start(&installed, false, 3).expect("start");
+        sidecar.load_aligner(&aligner, 3).expect("aligner");
+        // Loaded once: asking again is free.
+        sidecar.load_aligner(&aligner, 3).expect("aligner again");
+
+        let spans = [(10.0, 13.5), (20.0, 20.05), (30.0, 34.0)];
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut rx = sidecar.emit("e1", &wav, &spans).unwrap();
+            let mut got = Vec::new();
+            loop {
+                match rx.recv().await.expect("event") {
+                    JobEvent::Emission { k, emission } => got.push((k, emission)),
+                    JobEvent::Done => break,
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+            assert_eq!(got.iter().map(|g| g.0).collect::<Vec<_>>(), [0, 1, 2]);
+            // Too short to align: no emission.
+            assert!(got[1].1.is_none());
+            for &(k, (t0, t1)) in [(0, spans[0]), (2, spans[2])].iter() {
+                let e = got[k].1.as_ref().expect("emission");
+                assert!((e.t0 - t0).abs() < 1e-3);
+                // About 50 frames a second, covering the span.
+                let covered = e.frames() as f64 * e.ratio;
+                assert!((covered - (t1 - t0)).abs() < 0.05, "{covered}");
+                assert!((e.ratio - 0.02).abs() < 0.001, "{}", e.ratio);
             }
         });
         assert!(sidecar.alive());

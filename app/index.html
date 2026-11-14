@@ -387,6 +387,24 @@
               </div>
             </div>
 
+            <div class="set-item" id="set-autosync-aligner-item" hidden>
+              <b class="set-item-title">Sharper word timing</b>
+              <div class="set-item-text">
+                <p>Places each word of line-timed lyrics more precisely, by matching the words
+                  to the singing itself. A further download of about 370 MB, and about half a
+                  minute of background work per song, once. Turning it off deletes it.</p>
+                <p>Uses Meta's MMS forced-alignment model (CC BY-NC 4.0).</p>
+                <p id="set-autosync-aligner-status" class="set-item-status"></p>
+                <div class="set-progress" id="set-autosync-aligner-progress" hidden>
+                  <div class="set-progress-fill" id="set-autosync-aligner-progress-fill"></div>
+                </div>
+                <button id="set-autosync-aligner-retry" class="btn" hidden>Try again</button>
+              </div>
+              <div class="set-item-ctl">
+                <input id="set-autosync-aligner" type="checkbox" aria-label="Sharper word timing" />
+              </div>
+            </div>
+
             <div class="set-item" id="set-autosync-remove-item" hidden>
               <b class="set-item-title">Speech engine</b>
               <div class="set-item-text">
