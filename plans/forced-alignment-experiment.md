@@ -235,7 +235,10 @@ placement). Plots in `<scratchpad>/plots/`.
 Answered 2026-11-13: what looked off was where unheard words were assumed to be; "another
 round" → round 2 above.
 
-1. Build it into the app? What it would take:
+**Answered 2026-11-13: build it (yes) → `plans/word-aligner-in-app.md`. Hand-time dopamine
+(sure) → done, see below.**
+
+1. ~~Build it into the app?~~ Yes; being built in `plans/word-aligner-in-app.md`. What it takes:
    - Engine (sidecar): ONNX Runtime (`ort` crate, its DLL ~15 MB) running the int8-MatMul
      MMS_FA model (+355 MB download, a new engine version); a new op that returns per-line
      emissions (or does the alignment itself).
@@ -252,8 +255,18 @@ round" → round 2 above.
    Recommended: yes. Several days of work; ships as a minor release.
 2. Songs the engine barely hears (the 5 below the 0.35 gate) have no truth to score against;
    they'd be judged by you, by eye, once it's in the app. Dopamine is looked at above.
-3. Hand-time dopamine's intro and outro from the spectrogram into its override (backup
-   beside it)? Offered, not asked for.
+3. ~~Hand-time dopamine's intro and outro?~~ Done 2026-11-13, in its override
+   (`545b7f6f3922d6ba.json`, backup `.before-hand-timing.bak` beside it), 18 lines:
+   - Intro "Tu es tout ce que je veux" ×2 from the misheard words' times ("To it, two squash,
+     your book, book", which sit on the syllable onsets); line 2's "Tu" is sung at ~1.99 s but
+     stays at the line start, 1.86 s (the line starts aren't moved).
+   - "Je veux, je veux" from the onsets: 3.69 / 3.98 / 4.62 / 4.85 s.
+   - All nine "Ma D.O.P.A.M.I.N.E" lines: the second word moved 1.3–4 s earlier, to where
+     "do-" is sung (the aligner's start where it gave one, else line start + 0.27 s).
+   - Outro (134.5–146 s): less sure, backing vocals over the lead. "I need, I need" and the
+     outro "(Tu es tout ce que je veux, veux)" / "(Je veux, je veux)" reuse the intro's
+     rhythm, which matches the onsets visible there (e.g. "I" at 138.73 s on a clear burst);
+     "(You're everything I want, want)" from the bursts at +0.7 / +0.95 / +1.25 s.
 
 ## Things not to do
 

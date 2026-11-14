@@ -51,22 +51,30 @@ Without it, word timing stays exactly as v1.23.0 does it.
    `romanize` (casefold, NFKD, strip marks, `’`→`'`, keep dictionary letters, drop `-` and `*`),
    `log_softmax` + star column, `forced_align` (CTC Viterbi with blank, like
    `torchaudio.functional.forced_align`), token spans → per-word (start frame, mean prob).
-2. **`crates/autosync::words`**: `LineWords` gains which words were heard (pins). New
-   `refine(lines, today, emissions, params)` = anchored placement for unheard words in each gap
-   (tail gap aligned with a trailing star), then heard words moved to the aligner's whole-line
-   start when within 0.25 s, then the 0.03 s minimum gap.
-3. **Sidecar 0.2.0, protocol 2:** `loadAligner {model, threads}` (ort session, onnxruntime.dll
-   from the engine dir) and `emit {id, wav, spans:[[t0,t1],…]}` → one `emission {id, k, t0,
-   ratio, frames, data}` per span (data: base64 f32 log-probs incl. star column, or null when
-   the span is too short), then `done`. Cancel as for `transcribe`.
+2. **`crates/autosync::words`**: `LineWords` gains which words were heard (pins).
+   **`crates/autosync::refine`**: `refine(lines, placed, emissions, params)` = anchored
+   placement for unheard words in each gap (tail gap aligned with a trailing star), then heard
+   words moved to the aligner's whole-line start when within 0.25 s, then the 0.03 s minimum
+   gap. `window(line, duration)` = the span to emit over (−0.15 s / +0.35 s).
+3. **Sidecar 0.2.0, protocol still 1** (added messages only): `loadAligner {model, runtime,
+   threads}` (ort session; `runtime` = path of onnxruntime.dll, loaded once per process) and
+   `emit {id, wav, spans:[[t0,t1],…]}` → one `emission {id, k, t0, ratio, frames, data}` per
+   span (base64 f32 log-probs incl. star column; no data when under 0.1 s), then `done`.
 4. **Manifest:** an optional `aligner: {files:[onnxruntime.dll], model:{…}}` section; the engine
-   download fetches only `files` + `model` as today. A separate install fetches the aligner part.
-5. **App:** setting `autosync.aligner` (off by default), a switch on the Settings page beside
-   auto-sync, shown once the engine is installed, with its size inline. `Job::Words` (and a new
-   pass for songs already heard) runs `emit` for the song's lines and stores the per-line
-   aligned starts with the heard words; `word_timing::fill` uses them when the lines still match.
-6. **Release:** the model can't come from a URL pinned elsewhere (it's our export), so it's a
-   release asset. Engine release `autosync-v0.2.0` built by CI; model asset uploaded once.
+   download fetches only `files` + `model` as before. The aligner installs into
+   `<data>/autosync/aligner/` (not the engine dir, which engine updates replace).
+5. **App:** setting `autoSync.aligner` (off by default). Settings: "Sharper word timing" switch
+   under auto-sync, shown once the installed engine offers an aligner; on = download + use,
+   off = delete. Status, progress and a retry button inline. Jobs: `Job::Words` refines right
+   after hearing (same WAV); `Job::Refine` refines songs heard before, without hearing. Results
+   per line in `<cache>/lyrics-refined/<fnv>.json` (`{version, model, created, lines:[{text,
+   start, starts}]}`); `word_timing::fill` uses a line's refined starts while its text and
+   start match. `word_timing::placement` is shared by the job and `fill`, so both start from the
+   same base placement. Only songs with real synced/override lines; auto-synced songs are out
+   of scope for now.
+6. **Release:** the model is our export, so it is a release asset (`aligner-model-v1`,
+   pinned in `crates/autosync-sidecar/aligner.json`). ONNX Runtime 1.31.1 is fetched by CI
+   (`fetch-onnxruntime.ps1`, pinned zip hash) and re-hosted in the engine release.
 
 ## Plan / steps
 
@@ -75,12 +83,16 @@ Without it, word timing stays exactly as v1.23.0 does it.
    (`emit-mix-int8mm` pickles → JSON) that Rust reproduces combomm's 0.06 / 0.34 / 67%.
 3. [x] Sidecar: ort + `loadAligner` + `emit` (`8caa9ed`); protocol number unchanged (added
    messages only). The real sidecar on Wings scores the same as the saved emissions.
-4. [ ] Manifest/component: aligner section, separate install/status/remove; `package.ps1`
-   lists `onnxruntime.dll` under `aligner`, not `files`. ← current
-5. [ ] App: setting, Settings switch, job wiring, storage, `fill` uses it; end-to-end locally
-   with a development manifest.
-6. [ ] Engine release + model asset (ask before publishing; see open questions).
-7. [ ] Pin the new manifest in `component.rs`; README; app release only when asked.
+4. [x] Manifest/component: aligner section, separate install/status/remove (`e7895c8`);
+   packaging (`97aa880`), dry-run checked: `onnxruntime.dll` lands only under `aligner`.
+5. [x] App: setting, Settings switch, jobs, storage, `fill` (`e7895c8`). 140 app tests pass;
+   `tsc` clean; ignored end-to-end test `sidecar_emits_for_the_aligner` passes against the
+   real sidecar (aligner loads in ~1 s). **Not exercised:** the in-app download and switch,
+   which needs the app on screen; Cameron's first use after release is that test.
+6. [ ] **Waiting on Cameron** (open question 1): upload the model asset (`aligner-model-v1`),
+   then bump `crates/autosync-sidecar` to 0.2.0 and tag `autosync-v0.2.0` (public repo: free
+   CI).
+7. [ ] Pin the new manifest URL + SHA-256 in `component.rs`; app release only when asked.
 
 ## Findings / gotchas
 
@@ -113,14 +125,18 @@ Without it, word timing stays exactly as v1.23.0 does it.
 
 - [x] Plan written (2026-11-13).
 - [x] Steps 1–2: alignment and placement in `crates/autosync`, verified against the experiment.
-- [x] Step 3: sidecar `loadAligner` / `emit` (`8caa9ed`).
+- [x] Step 3: sidecar `loadAligner` / `emit` (`8caa9ed`, runtime path `0a22a51`).
+- [x] Steps 4–5: app download, switch, jobs, storage (`e7895c8`); packaging (`97aa880`).
 
 ## Open questions for the user
 
-1. **Model license.** Confirmed from torchaudio's MMS_FA docs: Meta released the MMS forced-alignment weights under CC-BY-NC 4.0
-   (non-commercial, attribution). Jarlid is free and open, so distributing our int8 export
-   with attribution should be fine, but it does mean the aligner can't ship in anything sold.
-   I'll show you the exact asset and notes before uploading anything.
+1. **Publish the model?** Confirmed from torchaudio's MMS_FA docs: Meta released the MMS
+   forced-alignment weights under CC-BY-NC 4.0 (non-commercial, attribution). Jarlid is free,
+   so distributing our int8 export with attribution fits, but the aligner could never ship in
+   anything sold. The upload: a release `aligner-model-v1` on cinderblock/jarlid (not
+   "latest"), one asset `mms-fa-int8.onnx` (355,119,008 bytes, sha256 `1f20360f…168e`), notes
+   naming the source (torchaudio `MMS_FA`, Meta's MMS), the license, and that it is an int8
+   (MatMul) ONNX export. Then the engine release. Recommended: yes.
 
 ## Things not to do
 
