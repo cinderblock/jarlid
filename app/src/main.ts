@@ -1242,19 +1242,26 @@ histEl.addEventListener(
 // Preload art off-screen, then fade it in — avoids broken-image flashes and
 // softens the stale-art-then-correct-art swap Pandora's DOM produces on load.
 let artToken = 0;
-/** A new cover is loading, and will fade itself in when it has. */
-let artLoading = false;
+/** The cover loading now, which will fade itself in when it has; empty when none is. */
+let artLoading = "";
+/**
+ * A cover that would not load, and when. The speaker's state arrives every second, so without
+ * this a broken URL would be fetched every second; it is tried again after {@link ART_RETRY_MS}.
+ */
+let artFailed = { url: "", at: 0 };
+const ART_RETRY_MS = 15_000;
 function setArt(url: string, fallback: string) {
-  if (!url || artEl.src === url) return;
+  if (!url || artEl.src === url || url === artLoading) return;
+  if (url === artFailed.url && Date.now() - artFailed.at < ART_RETRY_MS) return;
   const token = ++artToken;
-  artLoading = true;
+  artLoading = url;
   const img = new Image();
   img.onload = () => {
     if (token !== artToken) return; // newer art superseded this one
     artEl.style.opacity = "0";
     setTimeout(() => {
       if (token !== artToken) return;
-      artLoading = false;
+      artLoading = "";
       artEl.src = url;
       bg.style.backgroundImage = `url("${url}")`;
       artEl.style.opacity = "1";
@@ -1262,12 +1269,23 @@ function setArt(url: string, fallback: string) {
   };
   img.onerror = () => {
     if (token !== artToken) return;
+    artFailed = { url, at: Date.now() };
+    artLoading = "";
     if (fallback && fallback !== url) return setArt(fallback, "");
-    // Nothing to show instead: keep what was there rather than an empty frame.
-    artLoading = false;
-    artEl.style.opacity = "1";
+    // Nothing to show instead. What is there is the last song's cover, and an empty frame is
+    // better than a wrong one.
+    clearArt();
   };
   img.src = url;
+}
+
+/** An empty frame: the song playing has no cover to show, so no other song's stays up. */
+function clearArt() {
+  ++artToken; // a cover still loading belongs to a song that is no longer the one on screen
+  artLoading = "";
+  artEl.removeAttribute("src");
+  bg.style.backgroundImage = "";
+  artEl.style.opacity = "1";
 }
 
 /**
@@ -2671,6 +2689,11 @@ const localPlaying = () => Date.now() - lastLocalPlayingAt < 1600;
 const remoteKey = (r: RemoteState) => `R|${r.title}|${r.artist}|${r.album}`;
 
 function renderRemote(r: RemoteState) {
+  // The cover is followed on every state, not only when the track changes: the speaker can
+  // name the new song a poll before it has its cover, and a song without one must not keep
+  // showing the last song's.
+  if (r.art) setArt(r.art, "");
+  else clearArt();
   const key = remoteKey(r);
   if (key === currentKey) return;
   titleInner.textContent = r.title || "—";
@@ -2678,7 +2701,6 @@ function renderRemote(r: RemoteState) {
   albumEl.textContent = r.album || "";
   requestAnimationFrame(measureTitle);
   requestAnimationFrame(measureByline);
-  if (r.art) setArt(r.art, "");
   currentKey = key;
   syncedLines = null;
   activeLineIdx = NO_LINE;

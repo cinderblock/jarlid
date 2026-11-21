@@ -277,6 +277,10 @@ body {
   background: rgba(var(--wash), 0.04);
   transition: opacity 0.25s ease;
 }
+/* No cover for this song: the empty frame, without the browser's alt text written in it. */
+#art:not([src]) {
+  color: transparent;
+}
 
 /* The full column, not the width of its text: `.stage` centres its children, so
    without a width this shrink-wraps to the longer line and each marquee clips at

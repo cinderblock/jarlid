@@ -694,6 +694,15 @@ pub fn start(app: tauri::AppHandle, ctl: RemoteCtl) {
                         failures = 0;
                         let (playing, has_track) = (st.playing, !st.title.is_empty());
                         if st != last {
+                            // What the speaker named and which cover it gave, on each change
+                            // of either: a wrong cover on screen is otherwise impossible to
+                            // place after the fact.
+                            if st.title != last.title || st.art != last.art {
+                                eprintln!(
+                                    "[remote] track: {:?} by {:?}, art {:?}",
+                                    st.title, st.artist, st.art
+                                );
+                            }
                             let _ = app.emit("remote://state", &st);
                             last = st;
                         }
