@@ -27,7 +27,7 @@ use windows::Win32::System::Threading::{
     THREAD_PRIORITY_TIME_CRITICAL,
 };
 
-use crate::{Decoder, Error, Format, Result, Source, Tempo, Voice};
+use crate::{Decoder, Error, Format, Result, Scope, Source, Tempo, Voice};
 
 /// How much audio the callback mixes in one pass, in samples.
 ///
@@ -295,6 +295,8 @@ struct Shared {
     /// Set once the incoming voice has finished fading up, i.e. the blend is over and the
     /// outgoing track is silent. The owner watches this and completes the handover.
     blend_done: AtomicBool,
+    /// What has just played, mixed and before the volume, for a visualizer. See [`Scope`].
+    scope: Arc<Scope>,
 }
 
 /// A prefetched track, read by the mixer.
@@ -766,6 +768,7 @@ fn open_stream(
                                 }
                                 *slot = $convert(*mixed * *gain);
                             }
+                            callback_shared.scope.push(&mix[..produced], channel_count);
                             written += produced;
                             if produced < usable {
                                 break;
@@ -783,6 +786,7 @@ fn open_stream(
                     callback_shared
                         .device_audio
                         .store(device.audio as u64, Ordering::Relaxed);
+                    callback_shared.scope.set_latency(device.audio as u64);
 
                     // Silence we were forced to invent because the queue ran dry: the dropout,
                     // counted. Two exclusions, both cases where an empty queue is expected rather
@@ -1117,6 +1121,7 @@ impl Player {
             beat_phase: AtomicU32::new(0.0f32.to_bits()),
             blend_frames: AtomicU64::new(0),
             blend_done: AtomicBool::new(false),
+            scope: Arc::new(Scope::new(format.sample_rate)),
         });
 
         // One slot, because one blend at a time is all that means anything. `rtrb` carries any
@@ -1605,6 +1610,12 @@ impl Player {
     pub fn blend_position(&self) -> Duration {
         let frames = self.shared.blend_frames.load(Ordering::Relaxed);
         Duration::from_secs_f64(frames as f64 / self.format.sample_rate.max(1) as f64)
+    }
+
+    /// What has just been heard, for a visualizer. Outlives the player; once it is gone the
+    /// scope simply stops advancing.
+    pub fn scope(&self) -> Arc<Scope> {
+        Arc::clone(&self.shared.scope)
     }
 
     /// The measured tempo of what is playing, or `None` before enough of it has been heard.

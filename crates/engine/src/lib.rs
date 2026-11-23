@@ -1070,6 +1070,11 @@ impl Engine {
         self.audio.output_rate()
     }
 
+    /// A tap on what is being heard, for a visualizer. See [`audio::Scope`].
+    pub fn scope(&self) -> Option<std::sync::Arc<audio::Scope>> {
+        self.audio.scope()
+    }
+
     pub fn is_paused(&self) -> bool {
         self.audio.is_paused()
     }

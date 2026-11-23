@@ -102,6 +102,12 @@ anywhere in it.
   every flagged song. Flags stay on your computer, and each keeps a copy of the lyrics it was
   made on. For auto-synced lyrics it also keeps what the speech engine heard, so the song can
   be re-timed later without hearing it again.
+- **A visualizer for songs with no lyrics** *(on by default; Settings → Appearance)*: the
+  lyrics pane fills with the music instead, drawn on the graphics card (WebGPU) in the manner
+  of MilkDrop and the old iTunes visualizer: each frame flows on from the last, zooming,
+  turning and rippling with the beat, the waveform drawn fresh into it, and the picture drifts
+  into a new scene every so often. The spectrum and waveform are taken from what the speaker is
+  playing, in time with it. Not in speaker mode, where the audio never passes through Jarlid.
 - **Native Windows media integration**: hardware media keys and the volume-flyout / lock-screen
   media panel (title, artist, album art, live state) via a real SMTC session, fed from the player
   itself rather than inferred from a page. Plus a **taskbar thumbnail toolbar** (thumbs down ·

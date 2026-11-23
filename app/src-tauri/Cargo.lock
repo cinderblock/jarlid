@@ -2122,6 +2122,7 @@ dependencies = [
  "pandora",
  "reqwest 0.12.28",
  "resvg",
+ "rustfft",
  "serde",
  "serde_json",
  "serde_yaml",

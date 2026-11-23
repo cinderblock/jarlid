@@ -273,6 +273,9 @@ struct Published {
     blending: AtomicBool,
     /// Set once a blend has handed over, so the engine can move its queue on. Cleared when read.
     blend_completed: AtomicBool,
+    /// The live player's tap on what is being heard, for a visualizer. Replaced with each new
+    /// player; one that has gone simply stops advancing, which reads as silence.
+    scope: Mutex<Option<Arc<audio::Scope>>>,
 }
 
 /// The track the thread is responsible for. Present whenever there is something to (re)build a
@@ -567,6 +570,9 @@ impl AudioThread {
                                     new_player.started_at().as_secs_f64(),
                                     new_player.device_buffer().as_millis()
                                 );
+                                if let Ok(mut slot) = thread_state.scope.lock() {
+                                    *slot = Some(new_player.scope());
+                                }
                                 player = Some(new_player);
                             }
                             Err(audio::Error::Device(e)) => {
@@ -1058,6 +1064,11 @@ impl AudioThread {
 
     pub fn position(&self) -> Duration {
         Duration::from_millis(self.published.position_ms.load(Ordering::Relaxed))
+    }
+
+    /// What is being heard, for a visualizer; `None` before anything has played.
+    pub fn scope(&self) -> Option<Arc<audio::Scope>> {
+        self.published.scope.lock().ok()?.clone()
     }
 
     pub fn buffered(&self) -> Duration {

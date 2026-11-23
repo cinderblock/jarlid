@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { createSelect, type Option } from "./select";
 import { setTheme, themePref, type ThemePref } from "./theme";
 import { recentsOrder, setRecentsOrder, type RecentsOrder } from "./recents";
+import { setVisualizerEnabled, visualizerEnabled } from "./visualizer";
 import { FLAGS_CHANGED, TAGS, describe, type Flag, type TrackFlags } from "./flags";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -38,6 +39,7 @@ const cacheUsageItem = $("set-cache-usage-item");
 const cacheUsage = $("set-cache-usage");
 const cacheClearBtn = $<HTMLButtonElement>("set-cache-clear");
 const debugLog = $<HTMLInputElement>("set-debug-log");
+const visualizerOn = $<HTMLInputElement>("set-visualizer");
 const debugLogPath = $("set-debug-log-path");
 const debugLogShow = $<HTMLButtonElement>("set-debug-log-show");
 const autosyncSection = $("set-autosync-section");
@@ -114,6 +116,8 @@ interface Settings {
   /** Write everything the app logs to a file; see `debug_log.rs`. */
   debugLog: boolean;
   autoSync: AutoSync;
+  /** The lyrics pane's visualizer; see `settings::Visualizer`. */
+  visualizer: { enabled: boolean };
 }
 
 /** The value used for "follow the Windows default", which is `null` on the wire. */
@@ -258,6 +262,7 @@ export async function applyStoredAppearance() {
     const s = await invoke<Settings>("get_settings");
     if (s.theme && s.theme !== themePref()) setTheme(s.theme);
     if (s.recentsOrder && s.recentsOrder !== recentsOrder()) setRecentsOrder(s.recentsOrder);
+    if (s.visualizer && s.visualizer.enabled !== visualizerEnabled()) setVisualizerEnabled(s.visualizer.enabled);
   } catch {
     // Unreadable settings means the cached preferences stand.
   }
@@ -297,6 +302,7 @@ function setEnabled(on: boolean) {
   cacheEnabled.disabled = !on;
   cacheSizeSel.setDisabled(!on);
   debugLog.disabled = !on;
+  visualizerOn.disabled = !on;
   autosyncEnabled.disabled = !on;
   autosyncGpu.disabled = !on;
   autosyncDrafts.disabled = !on;
@@ -445,6 +451,7 @@ function render(s: Settings) {
   cacheEnabled.checked = (s.audioCache ?? NO_CACHE).enabled;
   reflectCache();
   debugLog.checked = s.debugLog ?? false;
+  visualizerOn.checked = s.visualizer.enabled;
   const autoSync = s.autoSync ?? NO_AUTOSYNC;
   autosyncEnabled.checked = autoSync.enabled;
   autosyncGpu.checked = autoSync.gpu;
@@ -539,6 +546,7 @@ async function persist() {
     outputDevice: readOutput(),
     audioCache: readCache(),
     debugLog: debugLog.checked,
+    visualizer: { enabled: visualizerOn.checked },
     autoSync: {
       enabled: autosyncEnabled.checked,
       gpu: autosyncGpu.checked,
@@ -564,6 +572,7 @@ async function persist() {
       render(current);
       setTheme(current.theme ?? "system");
       setRecentsOrder(current.recentsOrder ?? "newestRight");
+      setVisualizerEnabled(current.visualizer.enabled);
       applyVolume(current.volume ?? 100);
       // The device was moved optimistically too, so put playback back where the
       // stored settings say it belongs.
@@ -635,6 +644,12 @@ cacheEnabled.addEventListener("change", () => {
 });
 
 debugLog.addEventListener("change", () => void persist());
+
+// Applied at once, like the theme: a song with no lyrics behind this page shows the change.
+visualizerOn.addEventListener("change", () => {
+  setVisualizerEnabled(visualizerOn.checked);
+  void persist();
+});
 
 // Turning it on is the consent to download: the backend starts as soon as it is saved.
 autosyncEnabled.addEventListener("change", () => {

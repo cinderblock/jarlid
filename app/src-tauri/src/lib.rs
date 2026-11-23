@@ -15,6 +15,7 @@ mod thumbbar;
 mod timeline;
 mod updates;
 mod upnp;
+mod visualizer;
 mod word_timing;
 
 use tauri::{Emitter, Listener, Manager};
@@ -574,6 +575,7 @@ pub fn run() {
         .manage(diagnostics::Diagnostics::default())
         .manage(autosync::AutoSyncCtl::default())
         .manage(timeline::TimelineCtl::default())
+        .manage(visualizer::VisualizerCtl::default())
         // Remember main-window position/size across launches.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
@@ -597,6 +599,8 @@ pub fn run() {
             native::native_account,
             settings::get_settings,
             settings::set_settings,
+            visualizer::visualizer_start,
+            visualizer::visualizer_stop,
             updates::update_action,
             updates::update_status,
             native::native_cmd,

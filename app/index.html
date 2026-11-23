@@ -165,6 +165,19 @@
             </div>
 
             <div class="set-item">
+              <b class="set-item-title">Visualizer when a song has no lyrics</b>
+              <div class="set-item-text">
+                <p>Fills the lyrics pane with the music itself, drawn by the graphics card from
+                  what is playing on this computer. Not for a speaker, whose audio never passes
+                  through Jarlid.</p>
+              </div>
+              <div class="set-item-ctl">
+                <input id="set-visualizer" type="checkbox"
+                  aria-label="Visualizer when a song has no lyrics" />
+              </div>
+            </div>
+
+            <div class="set-item">
               <b class="set-item-title">Recently played</b>
               <div class="set-item-text">
                 <p>Which end of the strip under the transport the song that just finished
@@ -692,7 +705,15 @@
             <svg viewBox="0 0 24 24"><path d="M5 21V4"/><path d="M5 4h12l-2.5 4.5L17 13H5"/></svg>
           </button>
         </div>
-        <div id="lyrics"></div>
+        <!-- The lyrics, and over them the visualizer for a song that has none
+             (visualizer.ts). The stage is what the two share: the pane's room below the head. -->
+        <div class="lyrics-stage">
+          <div id="lyrics"></div>
+          <div id="visualizer" aria-hidden="true">
+            <canvas id="visualizer-canvas"></canvas>
+            <p id="visualizer-msg" hidden></p>
+          </div>
+        </div>
 
         <!-- The version picker. Like edit mode, it lives in the pane: a version is judged
              by watching it run against the song, so the preview has to be the pane. -->

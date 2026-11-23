@@ -21,10 +21,13 @@ pub mod beats;
 // Also ungated: it is arithmetic that runs in the output callback, where a mistake is audible
 // and a sound card is the worst possible place to discover one.
 mod mixer;
+// The tap a visualizer reads: atomics only, written from the output callback.
+mod scope;
 
 #[cfg(windows)]
 pub use media_foundation::Decoder;
 pub use mixer::{Curve, Pcm, Voice, MAX_CHANNELS};
+pub use scope::{Scope, SCOPE_LEN};
 #[cfg(windows)]
 pub use player::{
     default_output_name, output_devices, output_ready, CallbackThread, CallbackTiming, Output,

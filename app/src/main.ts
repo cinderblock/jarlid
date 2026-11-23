@@ -17,6 +17,7 @@ import { dropLabels, splitSections, timedHeads } from "./sections";
 import { fillMarked, fillWords } from "./draft-marks";
 import { wordTimesFor } from "./edit-lines";
 import { RECENTS_ORDER_CHANGED, recentsOrder } from "./recents";
+import * as visualizer from "./visualizer";
 import * as stationStats from "./station-stats";
 import * as findSong from "./find-song";
 import {
@@ -174,6 +175,7 @@ let paneSong = "";
 
 /// Empty the pane for `meta`'s rows. Returns whether the last track's rows were kept above.
 function clearPane(meta: { title: string; artist: string }): boolean {
+  paneEmpty = false;
   const song = `${meta.title}|${meta.artist}`;
   // A carried-over block still on screen is left alone: it is a track further back.
   const rows = [...lyricsEl.children].filter((c) => !c.classList.contains("lyric-outgoing"));
@@ -233,7 +235,8 @@ function dropOutgoing() {
 lyricsEl.addEventListener("scrollend", dropOutgoing);
 
 /// A one-line message in place of rows. Nothing drives the scroll for it, so a carry-over
-/// from the last track scrolls down to it here.
+/// from the last track scrolls down to it here. The visualizer takes the message's place when
+/// it is on; the status line says the same thing.
 function paintEmpty(text: string, meta: { title: string; artist: string }) {
   const carried = clearPane(meta);
   const div = document.createElement("div");
@@ -241,7 +244,22 @@ function paintEmpty(text: string, meta: { title: string; artist: string }) {
   div.textContent = text;
   lyricsEl.appendChild(div);
   if (carried) lyricsEl.scrollTo({ top: songTop(), behavior: "smooth" });
+  paneEmpty = true;
+  refreshVisualizer();
 }
+
+// ---- the visualizer, for a song with nothing to read ---------------------------
+/// The pane holds a message rather than the current track's rows.
+let paneEmpty = false;
+
+/// Show the visualizer when the pane has nothing of this track's to show, the listener wants
+/// it, and the music is on this computer: a speaker's audio never passes through here.
+function refreshVisualizer() {
+  const on = paneEmpty && visualizer.visualizerEnabled() && !remoteMode && !lyricEditor.isEditing();
+  lyricsEl.classList.toggle("visualized", on);
+  visualizer.setShown(on);
+}
+window.addEventListener(visualizer.VISUALIZER_PREF_CHANGED, refreshVisualizer);
 
 /// `doubt` is set when the lines are a draft: per line, the words the speech engine was unsure
 /// of. Draft rows are styled as such, row by row, so a draft's look never carries over to the
@@ -254,6 +272,7 @@ function renderSyncedLyrics(
   heads?: (string | undefined)[]
 ) {
   clearPane(meta);
+  refreshVisualizer();
   stopPlainFollow();
   lyricsEl.classList.add("synced");
   introEl = introBar = null;
@@ -298,6 +317,7 @@ function renderPlainLyrics(
 ) {
   lyricsEl.classList.remove("synced");
   const carried = clearPane(meta);
+  refreshVisualizer();
   introEl = introBar = null;
   paneLines = lines;
   lines.forEach((ln, i) => {
@@ -1371,7 +1391,7 @@ async function loadLyricsFor(
     paintEmpty("Lyrics unavailable", meta);
     const delay = LYRICS_RETRY_DELAYS_MS[attempt];
     if (delay === undefined) {
-      lyricsStatus.textContent = "Lyrics";
+      lyricsStatus.textContent = "Lyrics unavailable";
       return;
     }
     lyricsStatus.textContent = "Lyrics · will retry";
@@ -1495,10 +1515,10 @@ function paintLyrics(res: Lyrics, note: string) {
     paintEmpty("No lyrics found", lastMeta);
     lyricsStatus.textContent =
       res.noDraft === "noSinging"
-        ? "Lyrics · no singing heard to draft"
+        ? "No lyrics · no singing heard to draft"
         : res.noDraft === "unclear"
-          ? "Lyrics · the singing was too unclear to draft"
-          : "Lyrics";
+          ? "No lyrics · the singing was too unclear to draft"
+          : "No lyrics found";
   }
 }
 
@@ -1603,8 +1623,11 @@ lyricsEditBtn.addEventListener("click", () => {
         lyricsVersionsBtn.hidden = true;
         lyricFlags.trackChanged();
       }
+      refreshVisualizer();
     },
   });
+  // The editor's rows are on the pane now, even for a song that had none.
+  refreshVisualizer();
   refreshPublishChip();
   lyricFlags.refresh();
 });
@@ -2731,6 +2754,7 @@ function updateMode() {
 function setRemoteMode(want: boolean) {
   remoteMode = want;
   document.body.classList.toggle("remote", remoteMode);
+  refreshVisualizer();
   // The strip is `display: none` in remote mode, which forgets its scroll position; coming
   // back it has to be parked again, as on the player's first reveal.
   if (!remoteMode) showNewestEnd();

@@ -218,6 +218,23 @@ pub struct Settings {
     pub debug_log: bool,
     /// Generate synced lyrics on this machine when LRCLIB has only plain ones. See `autosync`.
     pub auto_sync: AutoSync,
+    /// The music visualizer in the lyrics pane. See `visualizer`.
+    pub visualizer: Visualizer,
+}
+
+/// The music visualizer. Drawn by the page; analysed in `visualizer`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Visualizer {
+    /// Show it in place of the lyrics when a song has none. On unless turned off: it costs
+    /// nothing while lyrics are showing, and an empty pane is the alternative.
+    pub enabled: bool,
+}
+
+impl Default for Visualizer {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// Auto-synced lyrics. See `autosync`.
@@ -663,7 +680,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false,"autoSync":{"enabled":false,"gpu":true,"drafts":true,"aligner":false}}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false,"autoSync":{"enabled":false,"gpu":true,"drafts":true,"aligner":false},"visualizer":{"enabled":true}}"#
         );
 
         let daily = Settings {
@@ -692,6 +709,7 @@ mod tests {
                 drafts: false,
                 aligner: true,
             },
+            visualizer: Visualizer { enabled: false },
         };
         let text = serde_json::to_string(&daily).unwrap();
         assert!(text.contains(r#""updatePolicy":"notifyOnly""#), "{text}");

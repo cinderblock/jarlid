@@ -48,6 +48,8 @@ autosync = { path = "../../crates/autosync" }
 tauri-plugin-single-instance = "2.4.3"
 serde_yaml = "0.9"
 base64 = "0.22"
+# The visualizer's spectrum (see src/visualizer.rs). Already in the tree through autosync.
+rustfft = "6"
 
 # The LRCLIB publish token costs ~2^24 SHA-256 hashes. Unoptimised that is minutes
 # rather than seconds, which would make publishing unusable in a `tauri dev` build.
