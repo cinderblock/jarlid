@@ -199,6 +199,12 @@ function clearPane(meta: { title: string; artist: string }): boolean {
   brk.appendChild(label);
   out.appendChild(brk);
   lyricsEl.appendChild(out);
+  // Room for the old rows to scroll out of sight however little the new track brings: a
+  // message, or a few rows, is far shorter than the pane, and without this the scroll down to
+  // it would stop short with the last song's rows still on screen. Drawn by `#lyrics::after`
+  // only while a carried-over block exists, so it goes with them.
+  const pad = parseFloat(getComputedStyle(lyricsEl).paddingTop);
+  lyricsEl.style.setProperty("--carry-room", `${Math.max(0, lyricsEl.clientHeight - 2 * pad)}px`);
   return true;
 }
 

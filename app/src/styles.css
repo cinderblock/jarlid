@@ -1324,6 +1324,14 @@ body.remote #remote-vol-wrap {
   height: 1px;
   background: rgba(var(--wash), 0.14);
 }
+/* While the last track's rows are kept above, the new track may bring too little to scroll
+   them away: one message, or a handful of rows. This keeps a pane's height of room below
+   them until the block is dropped (see clearPane in main.ts). */
+#lyrics:has(> .lyric-outgoing)::after {
+  content: "";
+  display: block;
+  height: var(--carry-room);
+}
 
 /* ---- history detail modal ---- */
 #hist-modal {
