@@ -18,3 +18,12 @@ Partly eased (2026-11-15, plans/lyric-editor-text-editing.md): `editText` now ke
 words an edit didn't touch and leaves only the touched ones untimed. A line with an untimed word
 still saves without word timing (`toTiming` needs every word), so the alignment asked for here
 is still open.
+
+## `cargo clippy -D warnings` fails on code that predates the current toolchain
+
+With clippy 1.100, `cargo clippy --all-targets -- -D warnings` fails in both workspaces on
+lints the code was written before: `chunks_exact_to_as_chunks` (`crates/audio/src/player.rs`,
+`prefetch.rs`), `neg_cmp_op_on_partial_ord` (`crates/audio/src/beats.rs`),
+`manual_is_multiple_of`, unnecessary pointer casts (`app/src-tauri/src/lib.rs`), and dead
+`Blend::rate_for` / `can_match` (`app/src-tauri/src/settings.rs`). Reproduce: run it in
+`crates/` or `app/src-tauri/`. Matters because a real new warning is lost among them.
