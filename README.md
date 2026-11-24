@@ -102,12 +102,18 @@ anywhere in it.
   every flagged song. Flags stay on your computer, and each keeps a copy of the lyrics it was
   made on. For auto-synced lyrics it also keeps what the speech engine heard, so the song can
   be re-timed later without hearing it again.
-- **A visualizer for songs with no lyrics** *(on by default; Settings → Appearance)*: the
-  lyrics pane fills with the music instead, drawn on the graphics card (WebGPU) in the manner
-  of MilkDrop and the old iTunes visualizer: each frame flows on from the last, zooming,
-  turning and rippling with the beat, the waveform drawn fresh into it, and the picture drifts
-  into a new scene every so often. The spectrum and waveform are taken from what the speaker is
-  playing, in time with it. Not in speaker mode, where the audio never passes through Jarlid.
+- **A music visualizer** *(Settings → Visualizer)*, drawn on the graphics card (WebGPU) in
+  the manner of MilkDrop and the old iTunes visualizer: each frame flows on from the last,
+  zooming, turning and rippling with the beat, the waveform drawn fresh into it, and the
+  picture drifts into a new scene every so often. The spectrum and waveform are taken from
+  what the speaker is playing, in time with it. It can run in three places:
+  - in the lyrics pane when a song has no lyrics (on by default);
+  - behind the whole window, dimmed under the UI;
+  - in a window of its own, for another screen: double-click or F11 for full screen. It can
+    show the synced lyrics over the picture, like subtitles, a line at a time or one big word
+    at a time (`L` cycles them).
+
+  Not in speaker mode, where the audio never passes through Jarlid.
 - **Native Windows media integration**: hardware media keys and the volume-flyout / lock-screen
   media panel (title, artist, album art, live state) via a real SMTC session, fed from the player
   itself rather than inferred from a page. Plus a **taskbar thumbnail toolbar** (thumbs down ·

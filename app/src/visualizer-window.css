@@ -1,0 +1,121 @@
+/* The visualizer's own window (visualizer.html). Always on black: the picture is light, and
+   the room it is watched in is usually dark. */
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  font-family: "Inter", "Segoe UI", system-ui, Avenir, Helvetica, Arial, sans-serif;
+  user-select: none;
+}
+/* The pointer goes once it stops moving, so it doesn't sit on the picture in full screen. */
+body.still {
+  cursor: none;
+}
+[hidden] {
+  display: none !important;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+#stage.on {
+  opacity: 1;
+}
+#canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+#msg {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  padding: 0 10%;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* ---- subtitles ---- */
+#subtitles {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: grid;
+}
+/* Each line or word is its own element, so the outgoing one can fade while the next comes in.
+   All of them sit in the same grid cell. */
+#subtitles > * {
+  grid-area: 1 / 1;
+  justify-self: center;
+  text-align: center;
+  text-wrap: balance;
+  font-weight: 700;
+  text-shadow:
+    0 0 12px rgba(0, 0, 0, 0.9),
+    0 2px 28px rgba(0, 0, 0, 0.8);
+  transition: opacity 0.35s ease;
+}
+#subtitles > .gone {
+  opacity: 0;
+}
+/* A line: along the bottom, like a film's. */
+#subtitles > .line {
+  align-self: end;
+  max-width: 86vw;
+  margin-bottom: 7vh;
+  font-size: clamp(1.4rem, 4.2vmin, 3.4rem);
+  line-height: 1.25;
+  animation: line-in 0.3s ease-out;
+}
+@keyframes line-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.3em);
+  }
+}
+/* A word: alone, large, in the middle, landing with a punch. */
+#subtitles > .word {
+  align-self: center;
+  max-width: 92vw;
+  font-size: clamp(2.6rem, 14vmin, 11rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  overflow-wrap: anywhere;
+  animation: word-in 0.22s cubic-bezier(0.2, 1.6, 0.4, 1);
+}
+@keyframes word-in {
+  from {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+
+/* What a key just did ("Lyrics: words"), briefly. */
+#hint {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+#hint.show {
+  opacity: 1;
+}

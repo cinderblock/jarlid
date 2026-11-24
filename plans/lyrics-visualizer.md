@@ -7,6 +7,9 @@
 2. An optional, GPU-rendered music visualizer, in the manner of MilkDrop / Winamp / the old
    iTunes visualizer (the user's steer, 2026-11-23).
 3. When a song has no lyrics, the pane shows the visualizer instead of "No lyrics found".
+4. (2026-11-23, round 2) An option to run the visualizer behind the whole main window.
+5. An option to run it in its own window, which can be fullscreened.
+6. In that window, optional lyrics one line at a time, like subtitles.
 
 ## Decisions
 
@@ -35,6 +38,16 @@
 - **Remote (speaker) mode**: no local samples, so no visualizer; "No lyrics found" as before.
 - **Setting**: Appearance → "Visualizer when a song has no lyrics", on by default.
 
+- **Round 2 shape**: the renderer becomes a class (`visualizer-render.ts`) any canvas can
+  host; one analysis channel per webview (Rust keys subscribers by webview label), shared by
+  every view on that page. Background mode: a fixed canvas above the art scrim, dimmed, under
+  the UI; it replaces the pane visualizer while on. Standalone window: `visualizer.html`, a
+  second Vite entry, label `visualizer`, opened and closed by Rust from the `window` setting;
+  closing it turns the setting off; double-click / F11 fullscreen, Esc leaves. Subtitles: the
+  main window emits the current synced line (`lyrics://line`) on change; the window shows it.
+  Settings: `visualizer { noLyrics, background, window, windowLyrics }` (renamed from
+  `enabled`, never released).
+
 ## Progress
 
 - [x] Carry-over fix (`23b6242`)
@@ -46,7 +59,13 @@
 - [x] README feature line
 - [x] Checks: `cargo test` (audio, engine, app), `bun run build`, `bun test`, clippy clean on
       the new code
-- [ ] Watched in the real app with real music (user)
+- [x] Watched in the real app with real music (user: "looking good")
+- [x] Round 2: renderer as a class (`visualizer-render.ts`), per-webview analysis
+- [x] Background mode
+- [x] Standalone window + fullscreen (`visualizer.html`, `visualizer-window.ts`)
+- [x] Subtitle lyrics in the window: off / line / word (`subtitles.ts`, tested); `L` cycles
+- [x] Settings (own Visualizer section), README, checks, commit
+- [ ] Watched in the real app: background mode, the window, full screen, subtitles (user)
 
 ## Findings
 
@@ -57,5 +76,9 @@
   the 1333 needed; with it, 1333.
 - Tauri `Channel<InvokeResponseBody>` with `Raw` bytes arrives in JS as an `ArrayBuffer`
   (small payloads via eval, larger via the channel fetch command).
+- The window page was checked headless the same way: word mode and line mode both render over
+  the picture with a stubbed event bridge. Background mode was not screenshotted.
+- The visualizer window gets its own capability (`capabilities/visualizer.json`) for
+  fullscreen and events; app commands need no capability.
 - `cargo clippy -D warnings` already fails on pre-existing code with the current toolchain;
   logged in `ISSUES.md`.

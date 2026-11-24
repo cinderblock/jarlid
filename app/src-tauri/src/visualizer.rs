@@ -11,13 +11,17 @@
 //! - [`WAVE`] points of the waveform itself, the last ~20 ms, scaled to the song's recent peak
 //!   so a quiet song's wave is as tall as a loud one's.
 //!
-//! It runs only while the page has a visualizer on screen: [`visualizer_start`] starts the
-//! thread, [`visualizer_stop`] (or the page going away) ends it.
+//! It runs only while a page has a visualizer on screen: [`visualizer_start`] starts a thread
+//! for that webview, [`visualizer_stop`] (or the page going away) ends it. The main window and
+//! the visualizer's own window each have one.
+//!
+//! The visualizer's own window ([`WINDOW`]) is opened and closed from its setting by [`apply`].
 //!
 //! Levels are relative to the song's own loudest recent moment rather than to full scale, so a
 //! quiet acoustic track fills the picture as well as a loud master does. Band power is summed
 //! over each band, so music, which is roughly pink, comes out roughly level across the bands.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,8 +29,14 @@ use std::time::{Duration, Instant};
 use rustfft::num_complex::Complex32;
 use rustfft::FftPlanner;
 use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::native::NativeEngine;
+use crate::settings;
+
+/// The visualizer window's label, and its page (a second Vite entry).
+pub const WINDOW: &str = "visualizer";
+const WINDOW_PAGE: &str = "visualizer.html";
 
 pub const BANDS: usize = 64;
 const FFT_LEN: usize = 4096;
@@ -50,20 +60,23 @@ const WAVE_PEAK_FALL_PER_S: f32 = 0.5;
 /// Floats per frame sent to the page.
 pub const FRAME_LEN: usize = BANDS + 3 + WAVE;
 
+/// The running analysis threads, by the label of the webview each one feeds.
 #[derive(Default)]
-pub struct VisualizerCtl(Mutex<Option<Arc<AtomicBool>>>);
+pub struct VisualizerCtl(Mutex<HashMap<String, Arc<AtomicBool>>>);
 
-/// Start sending frames to `frames`, replacing any earlier subscriber.
+/// Start sending frames to `frames`, replacing any earlier subscriber from the same webview
+/// (a reloaded page).
 #[tauri::command]
 pub fn visualizer_start(
+    webview: tauri::Webview,
     ctl: tauri::State<'_, VisualizerCtl>,
     native: tauri::State<'_, NativeEngine>,
     frames: Channel<InvokeResponseBody>,
 ) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     {
-        let mut slot = ctl.0.lock().map_err(|e| e.to_string())?;
-        if let Some(old) = slot.replace(Arc::clone(&stop)) {
+        let mut running = ctl.0.lock().map_err(|e| e.to_string())?;
+        if let Some(old) = running.insert(webview.label().to_string(), Arc::clone(&stop)) {
             old.store(true, Ordering::Relaxed);
         }
     }
@@ -76,10 +89,67 @@ pub fn visualizer_start(
 }
 
 #[tauri::command]
-pub fn visualizer_stop(ctl: tauri::State<'_, VisualizerCtl>) -> Result<(), String> {
-    if let Some(old) = ctl.0.lock().map_err(|e| e.to_string())?.take() {
+pub fn visualizer_stop(
+    webview: tauri::Webview,
+    ctl: tauri::State<'_, VisualizerCtl>,
+) -> Result<(), String> {
+    if let Some(old) = ctl
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(webview.label())
+    {
         old.store(true, Ordering::Relaxed);
     }
+    Ok(())
+}
+
+/// Open or close the visualizer window to match the setting. Built off the calling thread:
+/// building a window from a synchronous command, which runs on the main thread, deadlocks on
+/// Windows.
+pub fn apply(app: &tauri::AppHandle, visualizer: &settings::Visualizer) {
+    let existing = app.get_webview_window(WINDOW);
+    match (visualizer.window, existing) {
+        (true, Some(_)) | (false, None) => {}
+        (true, None) => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = open_window(&app) {
+                    eprintln!("[visualizer] could not open its window: {e}");
+                    // The switch goes back off rather than claiming a window that isn't there.
+                    let _ = settings::update(&app, |s| s.visualizer.window = false);
+                }
+            });
+        }
+        (false, Some(window)) => {
+            if let Err(e) = window.destroy() {
+                eprintln!("[visualizer] could not close its window: {e}");
+            }
+        }
+    }
+}
+
+fn open_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window(WINDOW).is_some() {
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App(WINDOW_PAGE.into()))
+        .title("Jarlid Visualizer")
+        .inner_size(960.0, 540.0)
+        .min_inner_size(320.0, 180.0)
+        // Black from the first frame, not a white flash before the page paints.
+        .background_color(tauri::window::Color(0, 0, 0, 255))
+        .build()?;
+    let handle = app.clone();
+    window.on_window_event(move |event| {
+        // Closed by the listener: the setting follows. Quitting the app destroys the window
+        // without asking, so one left open comes back at the next launch.
+        if let tauri::WindowEvent::CloseRequested { .. } = event {
+            if let Err(e) = settings::update(&handle, |s| s.visualizer.window = false) {
+                eprintln!("[visualizer] could not save the window being closed: {e}");
+            }
+        }
+    });
     Ok(())
 }
 

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jarlid Visualizer</title>
+    <link rel="stylesheet" href="/src/visualizer-window.css" />
+    <script type="module" src="/src/visualizer-window.ts" defer></script>
+  </head>
+
+  <!-- The visualizer's own window (visualizer-window.ts). Opened and closed by Rust from the
+       visualizer settings; double-click or F11 for full screen. -->
+  <body>
+    <div id="stage" aria-hidden="true">
+      <canvas id="canvas"></canvas>
+      <p id="msg" hidden></p>
+    </div>
+    <div id="subtitles" aria-live="off"></div>
+    <div id="hint" role="status"></div>
+  </body>
+</html>

@@ -9,7 +9,7 @@
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// What happens once a newer version exists.
 ///
@@ -218,7 +218,8 @@ pub struct Settings {
     pub debug_log: bool,
     /// Generate synced lyrics on this machine when LRCLIB has only plain ones. See `autosync`.
     pub auto_sync: AutoSync,
-    /// The music visualizer in the lyrics pane. See `visualizer`.
+    /// The music visualizer: in the lyrics pane, behind the window, or in its own window.
+    /// See `visualizer`.
     pub visualizer: Visualizer,
 }
 
@@ -228,13 +229,37 @@ pub struct Settings {
 pub struct Visualizer {
     /// Show it in place of the lyrics when a song has none. On unless turned off: it costs
     /// nothing while lyrics are showing, and an empty pane is the alternative.
-    pub enabled: bool,
+    pub no_lyrics: bool,
+    /// Run it behind the whole main window, dimmed under the UI.
+    pub background: bool,
+    /// Its own window. Opened when this turns on (and at launch while it is on); closing the
+    /// window turns it off.
+    pub window: bool,
+    /// The lyrics in that window, subtitle-style.
+    pub subtitles: Subtitles,
 }
 
 impl Default for Visualizer {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            no_lyrics: true,
+            background: false,
+            window: false,
+            subtitles: Subtitles::Lines,
+        }
     }
+}
+
+/// How the visualizer window shows the lyrics.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum Subtitles {
+    Off,
+    /// The line being sung, like a film's subtitles.
+    #[default]
+    Lines,
+    /// The word being sung, alone and large.
+    Words,
 }
 
 /// Auto-synced lyrics. See `autosync`.
@@ -448,6 +473,27 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
     get(&app)
 }
 
+/// Change the stored settings from the backend, for a change the UI didn't make (the visualizer
+/// window closed with its own close button), and tell every window.
+pub fn update(
+    app: &tauri::AppHandle,
+    change: impl FnOnce(&mut Settings),
+) -> Result<Settings, String> {
+    let mut next = get(app);
+    change(&mut next);
+    save(app, &next)?;
+    announce(app, &next);
+    Ok(next)
+}
+
+/// Every window hears about a change, so the visualizer's window and the settings page follow
+/// it without asking.
+fn announce(app: &tauri::AppHandle, settings: &Settings) {
+    if let Err(e) = app.emit("settings://changed", settings) {
+        eprintln!("[settings] could not announce a change: {e}");
+    }
+}
+
 /// Replace the whole settings object. One command rather than one per field: the UI holds
 /// the complete state anyway, and partial setters drift out of sync with the struct.
 #[tauri::command]
@@ -460,6 +506,8 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Setting
     crate::native::apply_audio_cache(&app, &settings);
     crate::debug_log::apply(&app, settings.debug_log);
     crate::autosync::apply(&app, &settings.auto_sync);
+    crate::visualizer::apply(&app, &settings.visualizer);
+    announce(&app, &settings);
     Ok(settings)
 }
 
@@ -680,7 +728,7 @@ mod tests {
         let json = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false,"autoSync":{"enabled":false,"gpu":true,"drafts":true,"aligner":false},"visualizer":{"enabled":true}}"#
+            r#"{"updatePolicy":"afterSong","checkSchedule":{"kind":"every","minutes":30},"theme":"system","recentsOrder":"newestRight","volume":100,"blend":{"mode":"off","seconds":5.0,"maxPullPercent":6.0,"restoreTempo":true},"outputDevice":null,"audioCache":{"enabled":false,"maxMb":1024},"debugLog":false,"autoSync":{"enabled":false,"gpu":true,"drafts":true,"aligner":false},"visualizer":{"noLyrics":true,"background":false,"window":false,"subtitles":"lines"}}"#
         );
 
         let daily = Settings {
@@ -709,7 +757,12 @@ mod tests {
                 drafts: false,
                 aligner: true,
             },
-            visualizer: Visualizer { enabled: false },
+            visualizer: Visualizer {
+                no_lyrics: false,
+                background: true,
+                window: true,
+                subtitles: Subtitles::Words,
+            },
         };
         let text = serde_json::to_string(&daily).unwrap();
         assert!(text.contains(r#""updatePolicy":"notifyOnly""#), "{text}");

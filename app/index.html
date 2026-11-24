@@ -28,6 +28,12 @@
   <body>
     <div id="bg"></div>
     <div id="scrim"></div>
+    <!-- The visualizer behind the whole window, when asked for (visualizer.ts): over the art,
+         under the UI. -->
+    <div id="visualizer-bg" aria-hidden="true">
+      <canvas id="visualizer-bg-canvas"></canvas>
+      <p id="visualizer-bg-msg" hidden></p>
+    </div>
 
     <button id="version"></button>
     <!-- Technical readout, bottom-left, opposite the version badge. -->
@@ -165,19 +171,6 @@
             </div>
 
             <div class="set-item">
-              <b class="set-item-title">Visualizer when a song has no lyrics</b>
-              <div class="set-item-text">
-                <p>Fills the lyrics pane with the music itself, drawn by the graphics card from
-                  what is playing on this computer. Not for a speaker, whose audio never passes
-                  through Jarlid.</p>
-              </div>
-              <div class="set-item-ctl">
-                <input id="set-visualizer" type="checkbox"
-                  aria-label="Visualizer when a song has no lyrics" />
-              </div>
-            </div>
-
-            <div class="set-item">
               <b class="set-item-title">Recently played</b>
               <div class="set-item-text">
                 <p>Which end of the strip under the transport the song that just finished
@@ -196,6 +189,72 @@
                     <input type="radio" name="recents-order" value="newestRight" />
                     <svg viewBox="0 0 24 24"><path d="M3 12h16"/><path d="M13 6l6 6-6 6"/></svg>
                     <span>Newest right</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="set-section">
+            <h3>Visualizer</h3>
+            <div class="set-item">
+              <b class="set-item-title">When a song has no lyrics</b>
+              <div class="set-item-text">
+                <p>Fills the lyrics pane with the music itself, drawn by the graphics card from
+                  what is playing on this computer. The visualizer never runs for a speaker,
+                  whose audio doesn't pass through Jarlid.</p>
+              </div>
+              <div class="set-item-ctl">
+                <input id="set-visualizer" type="checkbox"
+                  aria-label="Visualizer when a song has no lyrics" />
+              </div>
+            </div>
+
+            <div class="set-item">
+              <b class="set-item-title">Behind the window</b>
+              <div class="set-item-text">
+                <p>Runs it all the time, dimmed behind the album art, the lyrics and everything
+                  else.</p>
+              </div>
+              <div class="set-item-ctl">
+                <input id="set-visualizer-bg" type="checkbox"
+                  aria-label="Visualizer behind the window" />
+              </div>
+            </div>
+
+            <div class="set-item">
+              <b class="set-item-title">In its own window</b>
+              <div class="set-item-text">
+                <p>A window of its own, for another screen or the whole of this one: double-click
+                  it or press F11 for full screen, and Esc to leave. Closing the window turns this
+                  off.</p>
+              </div>
+              <div class="set-item-ctl">
+                <input id="set-visualizer-window" type="checkbox"
+                  aria-label="Visualizer in its own window" />
+              </div>
+            </div>
+
+            <div class="set-item" id="set-visualizer-subtitles-item" hidden>
+              <b class="set-item-title">Lyrics in that window</b>
+              <div class="set-item-text">
+                <p>Synced lyrics over the picture, like subtitles: the line being sung, or each
+                  word alone and large as it is sung. L in the window changes this too.</p>
+              </div>
+              <div class="set-item-ctl">
+                <div class="segmented" id="set-visualizer-subtitles" role="radiogroup"
+                  aria-label="Lyrics in the visualizer window">
+                  <label class="seg">
+                    <input type="radio" name="visualizer-subtitles" value="off" />
+                    <span>Off</span>
+                  </label>
+                  <label class="seg">
+                    <input type="radio" name="visualizer-subtitles" value="lines" />
+                    <span>Line</span>
+                  </label>
+                  <label class="seg">
+                    <input type="radio" name="visualizer-subtitles" value="words" />
+                    <span>Word</span>
                   </label>
                 </div>
               </div>

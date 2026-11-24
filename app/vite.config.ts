@@ -10,6 +10,15 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // Two pages: the app, and the visualizer's own window (opened by Rust, see visualizer.rs).
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        visualizer: "visualizer.html",
+      },
+    },
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

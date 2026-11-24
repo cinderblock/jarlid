@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import * as stationsPage from "./stations-page";
 import type { StationInfo } from "./stations-page";
@@ -246,20 +246,56 @@ function paintEmpty(text: string, meta: { title: string; artist: string }) {
   if (carried) lyricsEl.scrollTo({ top: songTop(), behavior: "smooth" });
   paneEmpty = true;
   refreshVisualizer();
+  sendLyrics();
 }
 
-// ---- the visualizer, for a song with nothing to read ---------------------------
+// ---- the visualizer, behind the window or for a song with nothing to read ----------
 /// The pane holds a message rather than the current track's rows.
 let paneEmpty = false;
 
-/// Show the visualizer when the pane has nothing of this track's to show, the listener wants
-/// it, and the music is on this computer: a speaker's audio never passes through here.
+/// Show the visualizer behind the window if the listener wants it there, or in the pane when
+/// it has nothing of this track's to show. Neither while the music is on a speaker: its audio
+/// never passes through here. Behind the window, it already fills an empty pane.
 function refreshVisualizer() {
-  const on = paneEmpty && visualizer.visualizerEnabled() && !remoteMode && !lyricEditor.isEditing();
-  lyricsEl.classList.toggle("visualized", on);
-  visualizer.setShown(on);
+  const prefs = visualizer.visualizerPrefs();
+  const behind = prefs.background && !remoteMode;
+  const inPane = paneEmpty && prefs.noLyrics && !behind && !remoteMode && !lyricEditor.isEditing();
+  lyricsEl.classList.toggle("visualized", inPane);
+  visualizer.pane.setShown(inPane);
+  visualizer.behind.setShown(behind);
 }
 window.addEventListener(visualizer.VISUALIZER_PREF_CHANGED, refreshVisualizer);
+refreshVisualizer();
+
+// ---- the visualizer window's subtitles --------------------------------------------
+// The visualizer's own window (visualizer-window.ts) can show the lyrics a line or a word at a
+// time. It has no lyrics or playhead of its own, so this window sends it what the pane shows:
+// the timed lines whenever they change, and the playhead as it moves.
+
+const VISUALIZER_WINDOW = "visualizer";
+
+/// The timed lines on the pane, or none: plain lyrics, no lyrics, or a track still loading.
+function sendLyrics() {
+  const lines =
+    syncedLines?.map((l, i) => ({ t: l.t, text: l.text, words: paneLines[i]?.wordTimes ?? null })) ?? null;
+  emitTo(VISUALIZER_WINDOW, "lyrics://set", { lines }).catch((e) =>
+    console.warn("could not send the lyrics to the visualizer window", e)
+  );
+}
+
+/// Where the song is, sync offset applied, stamped with the wall clock so the window can carry
+/// it forward (each window's `performance.now()` counts from its own start).
+function sendPlayhead(position: number, playing: boolean) {
+  emitTo(VISUALIZER_WINDOW, "lyrics://playhead", { position: position + syncOffset, playing, at: Date.now() }).catch(
+    (e) => console.warn("could not send the playhead to the visualizer window", e)
+  );
+}
+
+// A window just opened (or reloaded) asks for what it missed.
+void listen("lyrics://wanted", () => {
+  sendLyrics();
+  sendPlayhead(lyricsPosition, lyricsPlaying);
+});
 
 /// `doubt` is set when the lines are a draft: per line, the words the speech engine was unsure
 /// of. Draft rows are styled as such, row by row, so a draft's look never carries over to the
@@ -516,6 +552,7 @@ function followLyrics(position: number, duration: number, playing: boolean) {
   lyricsPosition = position;
   lyricsAt = performance.now();
   lyricsPlaying = playing;
+  sendPlayhead(position, playing);
   if (syncedLines) highlightLine(position);
   else followPlainLyrics(position, duration);
 }
@@ -622,6 +659,7 @@ async function onNowPlaying(np: NowPlaying) {
     syncedLines = null;
     activeLineIdx = NO_LINE;
     syncOffset = parseFloat(localStorage.getItem(`syncoff:${key}`) || "0") || 0;
+    sendLyrics();
     // An editor left open is still editing the previous track — which is right — but
     // the playhead it was timing against now belongs to this one.
     lyricEditor.notePlaybackMoved();
@@ -1498,6 +1536,7 @@ function paintLyrics(res: Lyrics, note: string) {
     lyricsStatus.textContent = res.draft ? draftStatus(res) : `Synced lyrics${note}`;
     activeLineIdx = NO_LINE;
     highlightLine(lyricsPosition);
+    sendLyrics();
   } else if (res.plain) {
     syncedLines = null;
     const split = splitSections(res.plain.split(/\r?\n/));
@@ -1507,6 +1546,7 @@ function paintLyrics(res: Lyrics, note: string) {
     // Pairing two languages changes which row is which; their headings are left out then.
     renderPlainLyrics(dual?.lines ?? lines, lastMeta, dual ? undefined : split.heads);
     lyricsStatus.textContent = `Lyrics${note}`;
+    sendLyrics();
   } else {
     syncedLines = null;
     introEl = introBar = null;
@@ -2734,6 +2774,7 @@ function renderRemote(r: RemoteState) {
   syncedLines = null;
   activeLineIdx = NO_LINE;
   syncOffset = parseFloat(localStorage.getItem(`syncoff:${key}`) || "0") || 0;
+  sendLyrics();
   lyricFlags.trackChanged();
   loadLyricsFor({ title: r.title, artist: r.artist, album: r.album }, r.duration || null, key);
 }

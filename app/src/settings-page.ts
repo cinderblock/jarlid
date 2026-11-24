@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { createSelect, type Option } from "./select";
 import { setTheme, themePref, type ThemePref } from "./theme";
 import { recentsOrder, setRecentsOrder, type RecentsOrder } from "./recents";
-import { setVisualizerEnabled, visualizerEnabled } from "./visualizer";
+import { setVisualizerPrefs } from "./visualizer";
 import { FLAGS_CHANGED, TAGS, describe, type Flag, type TrackFlags } from "./flags";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -39,7 +39,10 @@ const cacheUsageItem = $("set-cache-usage-item");
 const cacheUsage = $("set-cache-usage");
 const cacheClearBtn = $<HTMLButtonElement>("set-cache-clear");
 const debugLog = $<HTMLInputElement>("set-debug-log");
-const visualizerOn = $<HTMLInputElement>("set-visualizer");
+const visualizerNoLyrics = $<HTMLInputElement>("set-visualizer");
+const visualizerBackground = $<HTMLInputElement>("set-visualizer-bg");
+const visualizerWindow = $<HTMLInputElement>("set-visualizer-window");
+const visualizerSubtitlesItem = $("set-visualizer-subtitles-item");
 const debugLogPath = $("set-debug-log-path");
 const debugLogShow = $<HTMLButtonElement>("set-debug-log-show");
 const autosyncSection = $("set-autosync-section");
@@ -101,6 +104,14 @@ interface CacheStats {
   bytes: number;
   songs: number;
 }
+type Subtitles = "off" | "lines" | "words";
+/** See `settings::Visualizer`. */
+interface Visualizer {
+  noLyrics: boolean;
+  background: boolean;
+  window: boolean;
+  subtitles: Subtitles;
+}
 interface Settings {
   updatePolicy: Policy;
   checkSchedule: CheckSchedule;
@@ -116,8 +127,8 @@ interface Settings {
   /** Write everything the app logs to a file; see `debug_log.rs`. */
   debugLog: boolean;
   autoSync: AutoSync;
-  /** The lyrics pane's visualizer; see `settings::Visualizer`. */
-  visualizer: { enabled: boolean };
+  /** The visualizer; see `settings::Visualizer`. */
+  visualizer: Visualizer;
 }
 
 /** The value used for "follow the Windows default", which is `null` on the wire. */
@@ -262,7 +273,7 @@ export async function applyStoredAppearance() {
     const s = await invoke<Settings>("get_settings");
     if (s.theme && s.theme !== themePref()) setTheme(s.theme);
     if (s.recentsOrder && s.recentsOrder !== recentsOrder()) setRecentsOrder(s.recentsOrder);
-    if (s.visualizer && s.visualizer.enabled !== visualizerEnabled()) setVisualizerEnabled(s.visualizer.enabled);
+    setVisualizerPrefs(s.visualizer);
   } catch {
     // Unreadable settings means the cached preferences stand.
   }
@@ -302,7 +313,10 @@ function setEnabled(on: boolean) {
   cacheEnabled.disabled = !on;
   cacheSizeSel.setDisabled(!on);
   debugLog.disabled = !on;
-  visualizerOn.disabled = !on;
+  visualizerNoLyrics.disabled = !on;
+  visualizerBackground.disabled = !on;
+  visualizerWindow.disabled = !on;
+  subtitleRadios().forEach((r) => (r.disabled = !on));
   autosyncEnabled.disabled = !on;
   autosyncGpu.disabled = !on;
   autosyncDrafts.disabled = !on;
@@ -451,7 +465,11 @@ function render(s: Settings) {
   cacheEnabled.checked = (s.audioCache ?? NO_CACHE).enabled;
   reflectCache();
   debugLog.checked = s.debugLog ?? false;
-  visualizerOn.checked = s.visualizer.enabled;
+  visualizerNoLyrics.checked = s.visualizer.noLyrics;
+  visualizerBackground.checked = s.visualizer.background;
+  visualizerWindow.checked = s.visualizer.window;
+  subtitleRadios().forEach((r) => (r.checked = r.value === s.visualizer.subtitles));
+  visualizerSubtitlesItem.hidden = !s.visualizer.window;
   const autoSync = s.autoSync ?? NO_AUTOSYNC;
   autosyncEnabled.checked = autoSync.enabled;
   autosyncGpu.checked = autoSync.gpu;
@@ -546,7 +564,12 @@ async function persist() {
     outputDevice: readOutput(),
     audioCache: readCache(),
     debugLog: debugLog.checked,
-    visualizer: { enabled: visualizerOn.checked },
+    visualizer: {
+      noLyrics: visualizerNoLyrics.checked,
+      background: visualizerBackground.checked,
+      window: visualizerWindow.checked,
+      subtitles: readSubtitles(),
+    },
     autoSync: {
       enabled: autosyncEnabled.checked,
       gpu: autosyncGpu.checked,
@@ -572,7 +595,7 @@ async function persist() {
       render(current);
       setTheme(current.theme ?? "system");
       setRecentsOrder(current.recentsOrder ?? "newestRight");
-      setVisualizerEnabled(current.visualizer.enabled);
+      setVisualizerPrefs(current.visualizer);
       applyVolume(current.volume ?? 100);
       // The device was moved optimistically too, so put playback back where the
       // stored settings say it belongs.
@@ -645,10 +668,33 @@ cacheEnabled.addEventListener("change", () => {
 
 debugLog.addEventListener("change", () => void persist());
 
-// Applied at once, like the theme: a song with no lyrics behind this page shows the change.
-visualizerOn.addEventListener("change", () => {
-  setVisualizerEnabled(visualizerOn.checked);
+// Applied at once, like the theme: the window behind this page shows the change.
+for (const input of [visualizerNoLyrics, visualizerBackground]) {
+  input.addEventListener("change", () => {
+    setVisualizerPrefs({ noLyrics: visualizerNoLyrics.checked, background: visualizerBackground.checked });
+    void persist();
+  });
+}
+// Saving opens or closes the window (see visualizer::apply).
+visualizerWindow.addEventListener("change", () => {
+  visualizerSubtitlesItem.hidden = !visualizerWindow.checked;
   void persist();
+});
+$("set-visualizer-subtitles").addEventListener("change", () => void persist());
+
+function subtitleRadios() {
+  return [...document.querySelectorAll<HTMLInputElement>('input[name="visualizer-subtitles"]')];
+}
+
+function readSubtitles(): Subtitles {
+  return (subtitleRadios().find((r) => r.checked)?.value as Subtitles | undefined) ?? "lines";
+}
+
+// The visualizer window turns its own switch off when it is closed, and its L key changes the
+// subtitles: follow changes made anywhere but here.
+void listen<Settings>("settings://changed", (e) => {
+  current = e.payload;
+  render(current);
 });
 
 // Turning it on is the consent to download: the backend starts as soon as it is saved.

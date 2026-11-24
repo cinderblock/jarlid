@@ -650,6 +650,8 @@ pub fn run() {
                 app.handle(),
                 settings::get(app.handle()).debug_log,
             );
+            // The visualizer window, if it was open when the app last closed.
+            visualizer::apply(app.handle(), &settings::get(app.handle()).visualizer);
 
             // The native engine: speaks Pandora's protocol directly and plays audio itself.
             // It emits the same `engine://` events the webview bridge did, so the UI, SMTC

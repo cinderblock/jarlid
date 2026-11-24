@@ -131,6 +131,32 @@ body {
   transition: background-image 0.8s ease;
   z-index: 0;
 }
+/* The visualizer behind the whole window (visualizer.ts): over the art and its scrim, under
+   the UI, dimmed so the lyrics and controls stay easy to read over it. */
+#visualizer-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+#visualizer-bg.on {
+  opacity: 0.55;
+}
+#visualizer-bg canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+#visualizer-bg-msg {
+  position: absolute;
+  inset: auto 0 12px;
+  margin: 0;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--faint);
+}
 #scrim {
   position: fixed;
   inset: 0;
