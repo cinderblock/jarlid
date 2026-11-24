@@ -65,6 +65,7 @@
 - [x] Standalone window + fullscreen (`visualizer.html`, `visualizer-window.ts`)
 - [x] Subtitle lyrics in the window: off / line / word (`subtitles.ts`, tested); `L` cycles
 - [x] Settings (own Visualizer section), README, checks, commit
+- [x] Released in v1.28.0 (https://github.com/cinderblock/jarlid/releases/tag/v1.28.0)
 - [ ] Watched in the real app: background mode, the window, full screen, subtitles (user)
 
 ## Findings
