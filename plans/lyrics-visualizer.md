@@ -66,6 +66,7 @@
 - [x] Subtitle lyrics in the window: off / line / word (`subtitles.ts`, tested); `L` cycles
 - [x] Settings (own Visualizer section), README, checks, commit
 - [x] Released in v1.28.0 (https://github.com/cinderblock/jarlid/releases/tag/v1.28.0)
+- [x] Bug #1 (https://github.com/cinderblock/jarlid/issues/1): stack overflow in scene changes, fixed
 - [ ] Watched in the real app: background mode, the window, full screen, subtitles (user)
 
 ## Findings
@@ -83,3 +84,9 @@
   fullscreen and events; app commands need no capability.
 - `cargo clippy -D warnings` already fails on pre-existing code with the current toolchain;
   logged in `ISSUES.md`.
+
+- v1.28.0 bug, issue #1: `Uncaught RangeError: Maximum call stack size exceeded` from
+  `visualizer-render`. `Scenes.now()` called itself for the outgoing scene, and past 30 s the inner
+  call took the same branch forever. Its clock also started at page load, so a view first shown
+  after 30 s crashed on frame one. Scenes now live in `visualizer-scenes.ts` with tests. A frame
+  that throws now stops the view and shows the error, instead of throwing every frame.

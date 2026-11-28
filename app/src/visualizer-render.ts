@@ -16,6 +16,7 @@
 // If WebGPU won't start, the view says so rather than quietly showing nothing.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { Scenes } from "./visualizer-scenes";
 
 const BANDS = 64;
 const WAVE = 256;
@@ -47,88 +48,6 @@ function unsubscribe() {
   void invoke("visualizer_stop");
   // Whatever is still fading out does so with the music falling away.
   latest = new Float32Array(FRAME_LEN);
-}
-
-// ---- scenes ------------------------------------------------------------------
-
-/** How the feedback moves, and how the wave is drawn into it. Rates are per 60 Hz frame. */
-interface Scene {
-  /** Above 1 the picture flows outward from the centre; below, it falls inward. */
-  zoom: number;
-  /** Turn per frame, in radians. */
-  rot: number;
-  /** How far, and how finely, the picture ripples. */
-  warp: number;
-  warpFreq: number;
-  /** How much of the last frame survives into this one. */
-  decay: number;
-  /** Colour drift per frame, in radians of hue. */
-  hueShift: number;
-  /** 0 a line across, 1 a ring, 2 a spiral. */
-  waveMode: number;
-  waveSize: number;
-  cx: number;
-  cy: number;
-  /** A mirrored, zoomed copy laid over the picture; 0 for none. */
-  echo: number;
-}
-
-function pickScene(): Scene {
-  const r = Math.random;
-  return {
-    zoom: r() < 0.2 ? 0.985 + r() * 0.01 : 1.004 + r() * 0.022,
-    rot: (r() - 0.5) * 0.014,
-    warp: r() * 0.006,
-    warpFreq: 2 + r() * 10,
-    decay: 0.94 + r() * 0.045,
-    hueShift: (r() - 0.5) * 0.012,
-    waveMode: Math.floor(r() * 3),
-    waveSize: 0.7 + r() * 0.6,
-    cx: 0.5 + (r() - 0.5) * 0.12,
-    cy: 0.5 + (r() - 0.5) * 0.12,
-    echo: r() < 0.35 ? 0.3 + r() * 0.4 : 0,
-  };
-}
-
-/** A scene lasts at least this long, and changes on the next strong beat after it… */
-const SCENE_MIN_S = 14;
-/** …or at this age regardless. */
-const SCENE_MAX_S = 30;
-const SCENE_BLEND_S = 3;
-
-class Scenes {
-  private from = pickScene();
-  private to = this.from;
-  private at = 0;
-
-  /** The scene now: easing from the last one to the next, the wave's shape swapping halfway. */
-  now(t: number, pulse: number): Scene {
-    const age = t - this.at;
-    if ((age > SCENE_MIN_S && pulse > 0.7) || age > SCENE_MAX_S) {
-      this.from = this.now(t, 0);
-      this.to = pickScene();
-      this.at = t;
-      return this.from;
-    }
-    const k = Math.min(1, age / SCENE_BLEND_S);
-    const e = k * k * (3 - 2 * k);
-    const a = this.from;
-    const b = this.to;
-    const mix = (x: number, y: number) => x + (y - x) * e;
-    return {
-      zoom: mix(a.zoom, b.zoom),
-      rot: mix(a.rot, b.rot),
-      warp: mix(a.warp, b.warp),
-      warpFreq: mix(a.warpFreq, b.warpFreq),
-      decay: mix(a.decay, b.decay),
-      hueShift: mix(a.hueShift, b.hueShift),
-      waveMode: e < 0.5 ? a.waveMode : b.waveMode,
-      waveSize: mix(a.waveSize, b.waveSize),
-      cx: mix(a.cx, b.cx),
-      cy: mix(a.cy, b.cy),
-      echo: mix(a.echo, b.echo),
-    };
-  }
 }
 
 // ---- WebGPU, shared by the page's views ------------------------------------------
@@ -362,7 +281,18 @@ export class VisualizerView {
   }
 
   private draw(t: Target, now: number) {
+    try {
+      this.frame(t, now);
+    } catch (e) {
+      // Stop rather than throw the same thing sixty times a second.
+      this.raf = 0;
+      this.fail(`The visualizer stopped: ${e}`);
+      return;
+    }
     this.raf = requestAnimationFrame((n) => this.draw(t, n));
+  }
+
+  private frame(t: Target, now: number) {
     const dt = Math.min(0.1, Math.max(0, (now - (this.lastNow || now)) / 1000));
     this.lastNow = now;
 
