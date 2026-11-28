@@ -12,6 +12,8 @@ describe("line mode", () => {
   test("nothing before the first line", () => expect(lineText(lines, 5)).toBe(""));
   test("the line being sung", () => expect(lineText(lines, 11)).toBe("hello there world"));
   test("a pause shows nothing", () => expect(lineText(lines, 15)).toBe(""));
+  test("a line lights a moment early, as in the lyrics pane", () =>
+    expect(lineText(lines, 9.9)).toBe("hello there world"));
 });
 
 describe("word mode", () => {
@@ -21,6 +23,9 @@ describe("word mode", () => {
       { t: 11.5, text: "next", words: null },
     ];
     expect(wordTimes(close, 0)).toEqual([10, 10.5, 11]);
+  });
+  test("a word lights a moment early, as in the lyrics pane", () => {
+    expect(wordAt(lines, 20.77)?.word).toBe("words");
   });
   test("word times are used when the line has them", () => {
     expect(wordAt(lines, 20.5)?.word).toBe("timed");

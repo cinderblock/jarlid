@@ -506,7 +506,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Setting
     crate::native::apply_audio_cache(&app, &settings);
     crate::debug_log::apply(&app, settings.debug_log);
     crate::autosync::apply(&app, &settings.auto_sync);
-    crate::visualizer::apply(&app, &settings.visualizer);
+    crate::visualizer::apply(&app);
     announce(&app, &settings);
     Ok(settings)
 }

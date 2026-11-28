@@ -10,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { VisualizerView } from "./visualizer-render";
-import { lineAt, lineText, wordAt, type SubLine } from "./subtitles";
+import { currentLine, lineText, wordAt, type SubLine } from "./subtitles";
 
 type Subtitles = "off" | "lines" | "words";
 /** The parts of `settings::Settings` this window reads and writes. */
@@ -158,7 +158,7 @@ function followLyrics() {
   const pos = position();
   if (mode === "lines") {
     const text = lineText(lines, pos);
-    show(text ? `l:${lineAt(lines, pos)}` : "", text, "line");
+    show(text ? `l:${currentLine(lines, pos)}` : "", text, "line");
   } else {
     const w = wordAt(lines, pos);
     show(w ? `w:${w.key}` : "", w?.word ?? "", "word");

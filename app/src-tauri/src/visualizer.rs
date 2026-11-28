@@ -12,8 +12,8 @@
 //!   so a quiet song's wave is as tall as a loud one's.
 //!
 //! It runs only while a page has a visualizer on screen: [`visualizer_start`] starts a thread
-//! for that webview, [`visualizer_stop`] (or the page going away) ends it. The main window and
-//! the visualizer's own window each have one.
+//! for that webview, and [`visualizer_stop`] or its window being destroyed ends it. The main
+//! window and the visualizer's own window each have one.
 //!
 //! The visualizer's own window ([`WINDOW`]) is opened and closed from its setting by [`apply`].
 //!
@@ -93,46 +93,58 @@ pub fn visualizer_stop(
     webview: tauri::Webview,
     ctl: tauri::State<'_, VisualizerCtl>,
 ) -> Result<(), String> {
-    if let Some(old) = ctl
-        .0
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(webview.label())
-    {
-        old.store(true, Ordering::Relaxed);
-    }
+    stop(&ctl, webview.label());
     Ok(())
 }
 
+/// End the analysis feeding the webview `label`, if any.
+fn stop(ctl: &VisualizerCtl, label: &str) {
+    let mut running = ctl.0.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(old) = running.remove(label) {
+        old.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Opening and closing the window, one change at a time.
+static WINDOW_LOCK: Mutex<()> = Mutex::new(());
+
 /// Open or close the visualizer window to match the setting. Built off the calling thread:
 /// building a window from a synchronous command, which runs on the main thread, deadlocks on
-/// Windows.
-pub fn apply(app: &tauri::AppHandle, visualizer: &settings::Visualizer) {
-    let existing = app.get_webview_window(WINDOW);
-    match (visualizer.window, existing) {
-        (true, Some(_)) | (false, None) => {}
-        (true, None) => {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = open_window(&app) {
-                    eprintln!("[visualizer] could not open its window: {e}");
-                    // The switch goes back off rather than claiming a window that isn't there.
-                    let _ = settings::update(&app, |s| s.visualizer.window = false);
+/// Windows. The task reads the setting when it runs, not when it was asked for, and holds
+/// [`WINDOW_LOCK`], so of several quick changes the last one wins and a window is never built
+/// twice.
+pub fn apply(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move { reconcile(&app) });
+}
+
+fn reconcile(app: &tauri::AppHandle) {
+    let opened = {
+        let _one_at_a_time = WINDOW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        match (
+            settings::get(app).visualizer.window,
+            app.get_webview_window(WINDOW),
+        ) {
+            (true, None) => open_window(app),
+            (false, Some(window)) => {
+                if let Err(e) = window.destroy() {
+                    eprintln!("[visualizer] could not close its window: {e}");
                 }
-            });
-        }
-        (false, Some(window)) => {
-            if let Err(e) = window.destroy() {
-                eprintln!("[visualizer] could not close its window: {e}");
+                Ok(())
             }
+            (true, Some(_)) | (false, None) => Ok(()),
+        }
+    };
+    if let Err(e) = opened {
+        eprintln!("[visualizer] could not open its window: {e}");
+        // The switch goes back off rather than claiming a window that isn't there.
+        if let Err(e) = settings::update(app, |s| s.visualizer.window = false) {
+            eprintln!("[visualizer] could not turn its window setting off: {e}");
         }
     }
 }
 
 fn open_window(app: &tauri::AppHandle) -> tauri::Result<()> {
-    if app.get_webview_window(WINDOW).is_some() {
-        return Ok(());
-    }
     let window = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App(WINDOW_PAGE.into()))
         .title("Jarlid Visualizer")
         .inner_size(960.0, 540.0)
@@ -141,14 +153,18 @@ fn open_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         .background_color(tauri::window::Color(0, 0, 0, 255))
         .build()?;
     let handle = app.clone();
-    window.on_window_event(move |event| {
+    window.on_window_event(move |event| match event {
         // Closed by the listener: the setting follows. Quitting the app destroys the window
         // without asking, so one left open comes back at the next launch.
-        if let tauri::WindowEvent::CloseRequested { .. } = event {
+        tauri::WindowEvent::CloseRequested { .. } => {
             if let Err(e) = settings::update(&handle, |s| s.visualizer.window = false) {
                 eprintln!("[visualizer] could not save the window being closed: {e}");
             }
         }
+        // Its analysis stops with it. Sending to a gone page doesn't fail, so the thread would
+        // never notice on its own.
+        tauri::WindowEvent::Destroyed => stop(&handle.state::<VisualizerCtl>(), WINDOW),
+        _ => {}
     });
     Ok(())
 }
@@ -250,8 +266,10 @@ impl Analyser {
                 self.trace(dt);
                 self.measure(rate, dt)
             }
+            // The low end's last level stays: a frame that only missed new audio (a long output
+            // period, or the engine busy for a moment) must not make the next one look like a
+            // hit from silence.
             None => {
-                self.last_low_db = PEAK_FLOOR_DB - RANGE_DB;
                 self.wave.iter_mut().for_each(|w| *w *= 0.8);
                 ([0.0; BANDS], 0.0, 0.0, 0.0)
             }

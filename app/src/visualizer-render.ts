@@ -144,6 +144,9 @@ export class VisualizerView {
   private raf = 0;
   private stopTimer: ReturnType<typeof setTimeout> | null = null;
   private failed = false;
+  /** Whether this view holds a share of the analysis feed. */
+  private subscribed = false;
+  private building: Promise<void> | null = null;
   private target: Target | null = null;
   private readonly scenes = new Scenes();
   private readonly u = new Float32Array(U_FLOATS);
@@ -165,7 +168,8 @@ export class VisualizerView {
     views.add(this);
   }
 
-  /** Show the picture, or fade it out. Idempotent. */
+  /** Show the picture, or fade it out. Idempotent. A view that failed shows its reason
+   *  instead, and fades the same way. */
   setShown(on: boolean) {
     if (on === this.shown) return;
     this.shown = on;
@@ -177,11 +181,14 @@ export class VisualizerView {
       }
       void this.start();
     } else {
-      unsubscribe();
+      this.release();
       this.stopTimer = setTimeout(() => {
         this.stopTimer = null;
         cancelAnimationFrame(this.raf);
         this.raf = 0;
+        // Out of sight: the feedback textures go back, a frame's worth at full window size.
+        this.target?.frames?.tex.forEach((x) => x.destroy());
+        if (this.target) this.target.frames = null;
       }, FADE_MS);
     }
   }
@@ -191,18 +198,35 @@ export class VisualizerView {
     cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.target = null;
-    if (this.shown) void this.build();
+    if (this.shown && !this.failed) void this.ensureBuilt();
   }
 
   private async start() {
     if (this.failed) return;
-    try {
-      await subscribe();
-    } catch (e) {
-      this.fail(`The visualizer couldn't start: ${e}`);
-      return;
+    if (!this.subscribed) {
+      this.subscribed = true;
+      try {
+        await subscribe();
+      } catch (e) {
+        this.fail(`The visualizer couldn't start: ${e}`);
+        return;
+      }
     }
-    await this.build();
+    await this.ensureBuilt();
+  }
+
+  /** This view's share of the page's analysis feed, given back. */
+  private release() {
+    if (!this.subscribed) return;
+    this.subscribed = false;
+    unsubscribe();
+  }
+
+  /** One build at a time: shown, hidden and shown again while the GPU is still starting would
+   *  otherwise build twice and leave one target orphaned. */
+  private ensureBuilt() {
+    this.building ??= this.build().finally(() => (this.building = null));
+    return this.building;
   }
 
   private async build() {
@@ -236,17 +260,22 @@ export class VisualizerView {
       return;
     }
     const t = this.target;
-    if (this.shown && this.raf === 0) this.raf = requestAnimationFrame((now) => this.draw(t, now));
+    if (this.shown && !this.failed && this.raf === 0) {
+      this.raf = requestAnimationFrame((now) => this.draw(t, now));
+    }
   }
 
+  /** Stop for good and show why. The view still fades in and out with `setShown`, so the
+   *  reason is on screen only where the picture would have been. */
   private fail(why: string) {
     console.error(why);
     this.failed = true;
+    cancelAnimationFrame(this.raf);
+    this.raf = 0;
     this.message.textContent = why;
     this.message.hidden = false;
     this.canvas.hidden = true;
-    if (this.shown) unsubscribe();
-    this.shown = false;
+    this.release();
   }
 
   /** The feedback textures at `w` × `h`, starting black. */

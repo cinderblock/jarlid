@@ -90,3 +90,13 @@
   call took the same branch forever. Its clock also started at page load, so a view first shown
   after 30 s crashed on frame one. Scenes now live in `visualizer-scenes.ts` with tests. A frame
   that throws now stops the view and shows the error, instead of throwing every frame.
+- Review after issue #1 found and fixed:
+  - The window's analysis thread outlived the window. Tauri 2.11.5 sends frames over 1 KB
+    through an app-wide queue and an eval that succeeds on a destroyed webview, so `send()` never
+    failed and frames piled up. The thread now stops on the window's `Destroyed` event.
+  - Quick on/off of the window setting could leave the window and the switch disagreeing.
+    `apply` now reads the setting when its task runs, one task at a time.
+  - A failed view kept its message on screen and miscounted the shared feed; each view now
+    tracks its own share, and a failure fades with the view.
+  - A frame with no new audio reset the low end to silence, so the next looked like a hit.
+  - The window's subtitles lit 0.15 s (lines) and 0.05 s (words) later than the pane.

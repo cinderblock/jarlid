@@ -17,6 +17,10 @@ export const wordsOf = (text: string) => text.trim().split(/\s+/).filter(Boolean
 const MAX_WORD_S = 0.6;
 /** How long the last word of a line stays up once it has been sung, at most. */
 const WORD_HOLD_S = 1.5;
+/** How early a line, and a word, lights: the same leads as the lyrics pane (`highlightLine` and
+ *  `followWords` in main.ts), so the window and the pane change together. */
+const LINE_LEAD_S = 0.15;
+const WORD_LEAD_S = 0.05;
 
 /** The line being sung at `pos`, by index, or -1 before the first one. */
 export function lineAt(lines: readonly SubLine[], pos: number): number {
@@ -25,10 +29,13 @@ export function lineAt(lines: readonly SubLine[], pos: number): number {
   return idx;
 }
 
+/** The line to show in line mode at `pos`, by index, or -1 for none. */
+export const currentLine = (lines: readonly SubLine[], pos: number) => lineAt(lines, pos + LINE_LEAD_S);
+
 /** The text to show in line mode at `pos`, or "" for nothing (before the first line, or a
  *  pause, which LRC writes as an empty line). */
 export function lineText(lines: readonly SubLine[], pos: number): string {
-  const i = lineAt(lines, pos);
+  const i = currentLine(lines, pos);
   return i < 0 ? "" : lines[i].text.trim();
 }
 
@@ -46,7 +53,8 @@ export function wordTimes(lines: readonly SubLine[], i: number): number[] {
 
 /** The word being sung at `pos`, with a key that changes whenever the word does (the same word
  *  twice in a row is two words), or null for nothing. */
-export function wordAt(lines: readonly SubLine[], pos: number): { key: string; word: string } | null {
+export function wordAt(lines: readonly SubLine[], at: number): { key: string; word: string } | null {
+  const pos = at + WORD_LEAD_S;
   const i = lineAt(lines, pos);
   if (i < 0) return null;
   const words = wordsOf(lines[i].text);
